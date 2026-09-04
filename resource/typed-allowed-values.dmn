@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<definitions xmlns="https://www.omg.org/spec/DMN/20230324/MODEL/" id="typed" name="Typed">
+  <itemDefinition id="employmentType" name="EmploymentStatus">
+    <typeRef>string</typeRef>
+    <allowedValues><text>"EMPLOYED", "UNEMPLOYED"</text></allowedValues>
+  </itemDefinition>
+  <inputData id="employment" name="employment">
+    <variable name="employment" typeRef="EmploymentStatus"/>
+  </inputData>
+  <decision id="result" name="result">
+    <variable name="result" typeRef="string"/>
+    <informationRequirement><requiredInput href="#employment"/></informationRequirement>
+    <literalExpression><text>employment</text></literalExpression>
+  </decision>
+</definitions>

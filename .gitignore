@@ -1,0 +1,9 @@
+/target
+dist/
+.env*
+!.env.example
+!.env.production.example
+.DS_Store
+.idea/
+fuxi-dmn*.tar.gz
+*.log

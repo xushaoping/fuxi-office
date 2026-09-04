@@ -1,0 +1,102 @@
+name: LoanApprovalTemplate
+namespace: https://example.com/dmn/templates/loan-approval
+description: Evaluates a loan application from age, annual income and credit score.
+imports: []
+itemDefinitions: []
+inputs:
+- name: Age
+  description: Applicant age.
+  typeRef: number
+- name: AnnualIncome
+  description: Applicant annual income.
+  typeRef: number
+- name: CreditScore
+  description: Applicant credit score.
+  typeRef: number
+decisions:
+- name: LoanDecision
+  description: Final loan approval result.
+  typeRef: string
+  requiredInputs:
+  - Age
+  - AnnualIncome
+  - CreditScore
+  requiredDecisions: []
+  requiredKnowledge: []
+  logic:
+    type: decisionTable
+    hit_policy: FIRST
+    aggregation: null
+    preferred_orientation: null
+    inputs:
+    - name: Age
+      expression: Age
+      typeRef: number
+    - name: AnnualIncome
+      expression: AnnualIncome
+      typeRef: number
+    - name: CreditScore
+      expression: CreditScore
+      typeRef: number
+    outputs:
+    - name: Result
+      typeRef: string
+      defaultOutput: '"Reject"'
+    rules:
+    - inputEntries:
+      - '>= 22'
+      - '>= 120000'
+      - '>= 720'
+      outputEntries:
+      - '"Approve"'
+      annotation: Stable high-quality applicant.
+    - inputEntries:
+      - '>= 22'
+      - '>= 80000'
+      - '>= 680'
+      outputEntries:
+      - '"ManualReview"'
+      annotation: Requires additional review.
+    - inputEntries:
+      - '-'
+      - '-'
+      - '-'
+      outputEntries:
+      - '"Reject"'
+      annotation: Fallback rejection.
+bkms: []
+decisionServices: []
+knowledgeSources: []
+textAnnotations: []
+diagram:
+  nodes:
+  - element: Age
+    x: 100.0
+    y: 80.0
+    width: 120.0
+    height: 60.0
+  - element: AnnualIncome
+    x: 100.0
+    y: 190.0
+    width: 120.0
+    height: 60.0
+  - element: CreditScore
+    x: 100.0
+    y: 300.0
+    width: 120.0
+    height: 60.0
+  - element: LoanDecision
+    x: 400.0
+    y: 190.0
+    width: 160.0
+    height: 80.0
+  edges:
+  - source: Age
+    target: LoanDecision
+    waypoints: []
+  - source: AnnualIncome
+    target: LoanDecision
+    waypoints: []
+  - source: CreditScore
+    target: LoanDecision
+    waypoints: []

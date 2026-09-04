@@ -1,0 +1,16 @@
+Fuxi-DMN
+
+The original Fuxi-DMN code is distributed under the MIT License. This file
+records notices for third-party material included in the distribution.
+
+This distribution includes sample DMN files that retain copyright and
+Apache License 2.0 notices from Red Hat, Inc. and/or its affiliates. Those
+notices are embedded in the applicable files under resource/ and remain
+subject to their original license terms. This includes the files named
+0001-input-data-item-def.dmn, 0004-simpletable-*.dmn,
+decisiontable-default-value.dmn, and 0004-simpletable-U.dmn.
+
+Some other DMN samples contain exporter metadata identifying Trisotech or
+other tools. Their redistribution status must be verified by the project
+maintainer before release; remove any sample for which permission cannot be
+confirmed.

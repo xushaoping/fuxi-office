@@ -1,0 +1,251 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<dmn:definitions id="definitions_1" name="LoanApprovalModel" namespace="https://example.com/dmn/loan-approval" xmlns:dmn="https://www.omg.org/spec/DMN/20231201/MODEL/" xmlns:dmndi="https://www.omg.org/spec/DMN/20231201/DMNDI/" xmlns:di="https://www.omg.org/spec/DMN/20231201/DI/" xmlns:dc="https://www.omg.org/spec/DMN/20231201/DC/" xmlns:feel="https://www.omg.org/spec/DMN/20231201/FEEL/">
+    <dmn:description>Loan approval decision model considering applicant age, annual income, and credit score.</dmn:description>
+    <dmn:inputData id="inputData_1" name="ApplicantAge">
+        <dmn:description>Age of the loan applicant</dmn:description>
+        <dmn:variable name="ApplicantAge" typeRef="feel:number"/>
+    </dmn:inputData>
+    <dmn:inputData id="inputData_2" name="ApplicantIncome">
+        <dmn:description>Annual income of the loan applicant</dmn:description>
+        <dmn:variable name="ApplicantIncome" typeRef="feel:number"/>
+    </dmn:inputData>
+    <dmn:inputData id="inputData_3" name="CreditScore">
+        <dmn:description>Credit score of the loan applicant</dmn:description>
+        <dmn:variable name="CreditScore" typeRef="feel:number"/>
+    </dmn:inputData>
+    <dmn:decision id="decision_4" name="AgeEligibility">
+        <dmn:description>Checks whether the applicant is within the acceptable age range (18 to 70).</dmn:description>
+        <dmn:variable name="AgeEligibility" typeRef="feel:boolean"/>
+        <dmn:informationRequirement id="informationRequirement_8">
+            <dmn:requiredInput href="#inputData_1"/>
+        </dmn:informationRequirement>
+        <dmn:literalExpression>
+            <dmn:text>ApplicantAge &gt;= 18 and ApplicantAge &lt;= 70</dmn:text>
+        </dmn:literalExpression>
+    </dmn:decision>
+    <dmn:decision id="decision_5" name="IncomeEligibility">
+        <dmn:description>Checks whether the applicant meets the minimum annual income threshold.</dmn:description>
+        <dmn:variable name="IncomeEligibility" typeRef="feel:boolean"/>
+        <dmn:informationRequirement id="informationRequirement_9">
+            <dmn:requiredInput href="#inputData_2"/>
+        </dmn:informationRequirement>
+        <dmn:literalExpression>
+            <dmn:text>ApplicantIncome &gt;= 30000</dmn:text>
+        </dmn:literalExpression>
+    </dmn:decision>
+    <dmn:decision id="decision_6" name="CreditScoreRating">
+        <dmn:description>Maps the numeric credit score to a rating category.</dmn:description>
+        <dmn:variable name="CreditScoreRating" typeRef="feel:string"/>
+        <dmn:informationRequirement id="informationRequirement_10">
+            <dmn:requiredInput href="#inputData_3"/>
+        </dmn:informationRequirement>
+        <dmn:decisionTable id="decisionTable_11" hitPolicy="UNIQUE">
+            <dmn:input id="input_12" label="CreditScore">
+                <dmn:inputExpression id="inputExpression_13" typeRef="feel:Any">
+                    <dmn:text>CreditScore</dmn:text>
+                </dmn:inputExpression>
+            </dmn:input>
+            <dmn:output id="output_14" name="Rating" typeRef="feel:string"/>
+            <dmn:rule id="rule_15">
+                <dmn:inputEntry id="inputEntry_16">
+                    <dmn:text>&lt; 600</dmn:text>
+                </dmn:inputEntry>
+                <dmn:outputEntry id="outputEntry_17">
+                    <dmn:text>&quot;Poor&quot;</dmn:text>
+                </dmn:outputEntry>
+            </dmn:rule>
+            <dmn:rule id="rule_18">
+                <dmn:inputEntry id="inputEntry_19">
+                    <dmn:text>[600..699]</dmn:text>
+                </dmn:inputEntry>
+                <dmn:outputEntry id="outputEntry_20">
+                    <dmn:text>&quot;Fair&quot;</dmn:text>
+                </dmn:outputEntry>
+            </dmn:rule>
+            <dmn:rule id="rule_21">
+                <dmn:inputEntry id="inputEntry_22">
+                    <dmn:text>[700..749]</dmn:text>
+                </dmn:inputEntry>
+                <dmn:outputEntry id="outputEntry_23">
+                    <dmn:text>&quot;Good&quot;</dmn:text>
+                </dmn:outputEntry>
+            </dmn:rule>
+            <dmn:rule id="rule_24">
+                <dmn:inputEntry id="inputEntry_25">
+                    <dmn:text>&gt;= 750</dmn:text>
+                </dmn:inputEntry>
+                <dmn:outputEntry id="outputEntry_26">
+                    <dmn:text>&quot;Excellent&quot;</dmn:text>
+                </dmn:outputEntry>
+            </dmn:rule>
+        </dmn:decisionTable>
+    </dmn:decision>
+    <dmn:decision id="decision_7" name="LoanApproval">
+        <dmn:description>Combines age, income, and credit rating to produce the final loan decision.</dmn:description>
+        <dmn:variable name="LoanApproval" typeRef="feel:string"/>
+        <dmn:informationRequirement id="informationRequirement_27">
+            <dmn:requiredDecision href="#decision_4"/>
+        </dmn:informationRequirement>
+        <dmn:informationRequirement id="informationRequirement_28">
+            <dmn:requiredDecision href="#decision_5"/>
+        </dmn:informationRequirement>
+        <dmn:informationRequirement id="informationRequirement_29">
+            <dmn:requiredDecision href="#decision_6"/>
+        </dmn:informationRequirement>
+        <dmn:decisionTable id="decisionTable_30" hitPolicy="UNIQUE">
+            <dmn:input id="input_31" label="AgeEligibility">
+                <dmn:inputExpression id="inputExpression_32" typeRef="feel:Any">
+                    <dmn:text>AgeEligibility</dmn:text>
+                </dmn:inputExpression>
+            </dmn:input>
+            <dmn:input id="input_33" label="IncomeEligibility">
+                <dmn:inputExpression id="inputExpression_34" typeRef="feel:Any">
+                    <dmn:text>IncomeEligibility</dmn:text>
+                </dmn:inputExpression>
+            </dmn:input>
+            <dmn:input id="input_35" label="CreditScoreRating">
+                <dmn:inputExpression id="inputExpression_36" typeRef="feel:Any">
+                    <dmn:text>CreditScoreRating</dmn:text>
+                </dmn:inputExpression>
+            </dmn:input>
+            <dmn:output id="output_37" name="Approval" typeRef="feel:string"/>
+            <dmn:rule id="rule_38">
+                <dmn:inputEntry id="inputEntry_39">
+                    <dmn:text>false</dmn:text>
+                </dmn:inputEntry>
+                <dmn:inputEntry id="inputEntry_40">
+                    <dmn:text>-</dmn:text>
+                </dmn:inputEntry>
+                <dmn:inputEntry id="inputEntry_41">
+                    <dmn:text>-</dmn:text>
+                </dmn:inputEntry>
+                <dmn:outputEntry id="outputEntry_42">
+                    <dmn:text>&quot;Reject&quot;</dmn:text>
+                </dmn:outputEntry>
+            </dmn:rule>
+            <dmn:rule id="rule_43">
+                <dmn:inputEntry id="inputEntry_44">
+                    <dmn:text>-</dmn:text>
+                </dmn:inputEntry>
+                <dmn:inputEntry id="inputEntry_45">
+                    <dmn:text>false</dmn:text>
+                </dmn:inputEntry>
+                <dmn:inputEntry id="inputEntry_46">
+                    <dmn:text>-</dmn:text>
+                </dmn:inputEntry>
+                <dmn:outputEntry id="outputEntry_47">
+                    <dmn:text>&quot;Reject&quot;</dmn:text>
+                </dmn:outputEntry>
+            </dmn:rule>
+            <dmn:rule id="rule_48">
+                <dmn:inputEntry id="inputEntry_49">
+                    <dmn:text>true</dmn:text>
+                </dmn:inputEntry>
+                <dmn:inputEntry id="inputEntry_50">
+                    <dmn:text>true</dmn:text>
+                </dmn:inputEntry>
+                <dmn:inputEntry id="inputEntry_51">
+                    <dmn:text>&quot;Excellent&quot;</dmn:text>
+                </dmn:inputEntry>
+                <dmn:outputEntry id="outputEntry_52">
+                    <dmn:text>&quot;Approve&quot;</dmn:text>
+                </dmn:outputEntry>
+            </dmn:rule>
+            <dmn:rule id="rule_53">
+                <dmn:inputEntry id="inputEntry_54">
+                    <dmn:text>true</dmn:text>
+                </dmn:inputEntry>
+                <dmn:inputEntry id="inputEntry_55">
+                    <dmn:text>true</dmn:text>
+                </dmn:inputEntry>
+                <dmn:inputEntry id="inputEntry_56">
+                    <dmn:text>&quot;Good&quot;</dmn:text>
+                </dmn:inputEntry>
+                <dmn:outputEntry id="outputEntry_57">
+                    <dmn:text>&quot;Approve&quot;</dmn:text>
+                </dmn:outputEntry>
+            </dmn:rule>
+            <dmn:rule id="rule_58">
+                <dmn:inputEntry id="inputEntry_59">
+                    <dmn:text>true</dmn:text>
+                </dmn:inputEntry>
+                <dmn:inputEntry id="inputEntry_60">
+                    <dmn:text>true</dmn:text>
+                </dmn:inputEntry>
+                <dmn:inputEntry id="inputEntry_61">
+                    <dmn:text>&quot;Fair&quot;</dmn:text>
+                </dmn:inputEntry>
+                <dmn:outputEntry id="outputEntry_62">
+                    <dmn:text>&quot;Review&quot;</dmn:text>
+                </dmn:outputEntry>
+            </dmn:rule>
+            <dmn:rule id="rule_63">
+                <dmn:inputEntry id="inputEntry_64">
+                    <dmn:text>true</dmn:text>
+                </dmn:inputEntry>
+                <dmn:inputEntry id="inputEntry_65">
+                    <dmn:text>true</dmn:text>
+                </dmn:inputEntry>
+                <dmn:inputEntry id="inputEntry_66">
+                    <dmn:text>&quot;Poor&quot;</dmn:text>
+                </dmn:inputEntry>
+                <dmn:outputEntry id="outputEntry_67">
+                    <dmn:text>&quot;Reject&quot;</dmn:text>
+                </dmn:outputEntry>
+            </dmn:rule>
+        </dmn:decisionTable>
+    </dmn:decision>
+    <dmndi:DMNDI>
+        <dmndi:DMNDiagram name="LoanApprovalModel">
+            <dmndi:DMNDiagramElement>
+                <dmndi:DMNShape dmnElementRef="inputData_1">
+                    <dc:Bounds x="60" y="50" width="130" height="60"/>
+                </dmndi:DMNShape>
+                <dmndi:DMNShape dmnElementRef="inputData_2">
+                    <dc:Bounds x="260" y="50" width="130" height="60"/>
+                </dmndi:DMNShape>
+                <dmndi:DMNShape dmnElementRef="inputData_3">
+                    <dc:Bounds x="460" y="50" width="130" height="60"/>
+                </dmndi:DMNShape>
+                <dmndi:DMNShape dmnElementRef="decision_4">
+                    <dc:Bounds x="60" y="200" width="130" height="70"/>
+                </dmndi:DMNShape>
+                <dmndi:DMNShape dmnElementRef="decision_5">
+                    <dc:Bounds x="260" y="200" width="130" height="70"/>
+                </dmndi:DMNShape>
+                <dmndi:DMNShape dmnElementRef="decision_6">
+                    <dc:Bounds x="460" y="200" width="130" height="70"/>
+                </dmndi:DMNShape>
+                <dmndi:DMNShape dmnElementRef="decision_7">
+                    <dc:Bounds x="260" y="360" width="150" height="70"/>
+                </dmndi:DMNShape>
+            </dmndi:DMNDiagramElement>
+            <dmndi:DMNDiagramElement>
+                <dmndi:DMNEdge dmnElementRef="informationRequirement_8">
+                    <di:waypoint x="125" y="80"/>
+                    <di:waypoint x="125" y="235"/>
+                </dmndi:DMNEdge>
+                <dmndi:DMNEdge dmnElementRef="informationRequirement_9">
+                    <di:waypoint x="325" y="80"/>
+                    <di:waypoint x="325" y="235"/>
+                </dmndi:DMNEdge>
+                <dmndi:DMNEdge dmnElementRef="informationRequirement_10">
+                    <di:waypoint x="525" y="80"/>
+                    <di:waypoint x="525" y="235"/>
+                </dmndi:DMNEdge>
+                <dmndi:DMNEdge dmnElementRef="informationRequirement_27">
+                    <di:waypoint x="125" y="235"/>
+                    <di:waypoint x="335" y="395"/>
+                </dmndi:DMNEdge>
+                <dmndi:DMNEdge dmnElementRef="informationRequirement_28">
+                    <di:waypoint x="325" y="235"/>
+                    <di:waypoint x="335" y="395"/>
+                </dmndi:DMNEdge>
+                <dmndi:DMNEdge dmnElementRef="informationRequirement_29">
+                    <di:waypoint x="525" y="235"/>
+                    <di:waypoint x="335" y="395"/>
+                </dmndi:DMNEdge>
+            </dmndi:DMNDiagramElement>
+        </dmndi:DMNDiagram>
+    </dmndi:DMNDI>
+</dmn:definitions>

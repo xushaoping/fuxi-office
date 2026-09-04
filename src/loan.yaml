@@ -1,0 +1,111 @@
+name: InsuranceClaimEligibility
+namespace: https://example.com/dmn/insurance-claim-eligibility
+description: Determines whether an insurance claim is eligible for approval based on policy status, accident type, and loss amount.
+imports: []
+itemDefinitions: []
+inputs:
+- name: PolicyStatus
+  description: Current status of the insurance policy.
+  typeRef: string
+- name: AccidentType
+  description: Type of accident or incident reported in the claim.
+  typeRef: string
+- name: LossAmount
+  description: Monetary amount of the claimed loss.
+  typeRef: number
+decisions:
+- name: ClaimEligibility
+  description: Final eligibility decision for the insurance claim.
+  typeRef: string
+  requiredInputs:
+  - PolicyStatus
+  - AccidentType
+  - LossAmount
+  requiredDecisions: []
+  requiredKnowledge: []
+  logic:
+    type: decisionTable
+    # The final reject rule is an ordered fallback and intentionally overlaps
+    # the approval rules, so UNIQUE is not valid for this table.
+    hit_policy: FIRST
+    aggregation: null
+    preferred_orientation: null
+    inputs:
+    - name: PolicyStatus
+      expression: PolicyStatus
+      typeRef: null
+    - name: AccidentType
+      expression: AccidentType
+      typeRef: null
+    - name: LossAmount
+      expression: LossAmount
+      typeRef: null
+    outputs:
+    - name: ClaimDecision
+      typeRef: string
+      defaultOutput: null
+    rules:
+    - inputEntries:
+      - '"Active"'
+      - in ("Collision", "Theft", "Fire")
+      - <= 50000
+      outputEntries:
+      - '"Approve"'
+      annotation: null
+    - inputEntries:
+      - '"Active"'
+      - '"NaturalDisaster"'
+      - <= 100000
+      outputEntries:
+      - '"Approve"'
+      annotation: null
+    - inputEntries:
+      - '"Active"'
+      - '"Vandalism"'
+      - <= 10000
+      outputEntries:
+      - '"Approve"'
+      annotation: null
+    - inputEntries:
+      - '-'
+      - '-'
+      - '-'
+      outputEntries:
+      - '"Reject"'
+      annotation: null
+bkms: []
+decisionServices: []
+knowledgeSources: []
+textAnnotations: []
+diagram:
+  nodes:
+  - element: PolicyStatus
+    x: 100.0
+    y: 100.0
+    width: 120.0
+    height: 60.0
+  - element: AccidentType
+    x: 100.0
+    y: 220.0
+    width: 120.0
+    height: 60.0
+  - element: LossAmount
+    x: 100.0
+    y: 340.0
+    width: 120.0
+    height: 60.0
+  - element: ClaimEligibility
+    x: 400.0
+    y: 220.0
+    width: 160.0
+    height: 80.0
+  edges:
+  - source: PolicyStatus
+    target: ClaimEligibility
+    waypoints: []
+  - source: AccidentType
+    target: ClaimEligibility
+    waypoints: []
+  - source: LossAmount
+    target: ClaimEligibility
+    waypoints: []

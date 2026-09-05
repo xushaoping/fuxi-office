@@ -1,3 +1,4 @@
+use super::ast::BinOp;
 use super::*;
 
 #[test]
@@ -12,6 +13,20 @@ fn test_literals() {
         Ok(FeelValue::String("hello".into()))
     );
     assert_eq!(eval_feel("'world'"), Ok(FeelValue::String("world".into())));
+}
+
+#[test]
+fn datetime_string_token_preserves_the_first_year_digit() {
+    let tokens =
+        super::lexer::Lexer::new("\"date and time(\\\"2026-09-05T00:36:04.275+08:00\\\")\"")
+            .tokenize()
+            .expect("date and time string token should parse");
+    assert_eq!(
+        tokens,
+        vec![super::lexer::Token::DateTime(
+            "2026-09-05T00:36:04.275+08:00".into()
+        )]
+    );
 }
 
 #[test]
@@ -825,6 +840,21 @@ fn test_conversion_functions() {
 
     let du = eval_feel("date(\"2017-05-12\") - date(\"2017-04-25\")");
     assert_eq!(du.unwrap(), FeelValue::Duration("P17D".to_string()));
+
+    let du = eval_feel(
+        "date and time(\"2026-09-05T00:36:18.473+08:00\") - date and time(\"2026-09-05T00:36:04.275+08:00\")",
+    );
+    assert_eq!(du.unwrap(), FeelValue::Duration("PT14.198S".to_string()));
+
+    let du = eval_feel(
+        "date and time(\"2026-09-05T00:36:18.473+08:00\") - date and time(\"2026-09-05T00:36:04.275\")",
+    );
+    assert_eq!(du.unwrap(), FeelValue::Duration("PT14.198S".to_string()));
+
+    let du = eval_feel(
+        "date and time(\"2026-09-05T00:36:18.473\") - date and time(\"2026-09-05T00:36:04.275+08:00\")",
+    );
+    assert_eq!(du.unwrap(), FeelValue::Duration("PT14.198S".to_string()));
 }
 
 #[test]

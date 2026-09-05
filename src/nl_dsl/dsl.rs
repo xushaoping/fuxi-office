@@ -789,7 +789,11 @@ pub struct Binding {
 /// 解析 DSL YAML，兼容顶层带 `definitions:` 包装层与不带包装两种格式
 pub fn parse_definitions(yaml: &str) -> anyhow::Result<Definitions> {
     match serde_yaml::from_str::<Definitions>(yaml) {
-        Ok(d) => Ok(d),
+        Ok(mut d) => {
+            normalize_type_refs(&mut d);
+            normalize_dependency_references(&mut d);
+            Ok(d)
+        }
         Err(e) => {
             // 直接解析失败时，尝试剥掉 `definitions:` 包装层再解析
             let value: serde_yaml::Value =
@@ -797,10 +801,171 @@ pub fn parse_definitions(yaml: &str) -> anyhow::Result<Definitions> {
             let inner = value
                 .get("definitions")
                 .ok_or_else(|| anyhow::anyhow!("YAML 解析失败: {}", e))?;
-            let d: Definitions = serde_yaml::from_value(inner.clone())
+            let mut d: Definitions = serde_yaml::from_value(inner.clone())
                 .map_err(|e2| anyhow::anyhow!("definitions 包装层解析失败: {}", e2))?;
+            normalize_type_refs(&mut d);
+            normalize_dependency_references(&mut d);
             Ok(d)
         }
+    }
+}
+
+/// Normalize common LLM numeric aliases to FEEL's single numeric type.
+///
+/// FEEL uses `number`; models frequently emit `integer`, `int`, `long`, or
+/// `double` for numeric fields. Keeping the normalization at the DSL boundary
+/// makes JSON/YAML generation and ChangeIntent application behave identically
+/// while preserving a user-defined itemDefinition with the same name.
+pub fn normalize_type_refs(definitions: &mut Definitions) {
+    let custom_types = definitions
+        .item_definitions
+        .iter()
+        .map(|item| item.name.clone())
+        .collect::<std::collections::HashSet<_>>();
+
+    for item in &mut definitions.item_definitions {
+        normalize_item_type_refs(&mut item.type_, &custom_types);
+    }
+    for input in &mut definitions.inputs {
+        normalize_optional_type_ref(&mut input.type_ref, &custom_types);
+    }
+    for decision in &mut definitions.decisions {
+        normalize_optional_type_ref(&mut decision.type_ref, &custom_types);
+        normalize_expression_type_refs(&mut decision.logic, &custom_types);
+    }
+    for bkm in &mut definitions.bkms {
+        normalize_optional_type_ref(&mut bkm.type_ref, &custom_types);
+        for parameter in &mut bkm.parameters {
+            normalize_type_ref(&mut parameter.type_ref, &custom_types);
+        }
+        normalize_expression_type_refs(&mut bkm.logic, &custom_types);
+    }
+}
+
+/// Keep information requirements aligned with the referenced element kind.
+///
+/// LLMs occasionally put a decision name in `requiredInputs` (or an input
+/// name in `requiredDecisions`). Since top-level names are globally unique,
+/// these mistakes can be corrected without guessing user intent.
+pub fn normalize_dependency_references(definitions: &mut Definitions) {
+    let input_names = definitions
+        .inputs
+        .iter()
+        .map(|input| input.name.clone())
+        .collect::<std::collections::HashSet<_>>();
+    let decision_names = definitions
+        .decisions
+        .iter()
+        .map(|decision| decision.name.clone())
+        .collect::<std::collections::HashSet<_>>();
+
+    for decision in &mut definitions.decisions {
+        let mut required_inputs = Vec::new();
+        let mut required_decisions = Vec::new();
+        for reference in decision.required_inputs.drain(..) {
+            if decision_names.contains(&reference) {
+                required_decisions.push(reference);
+            } else {
+                required_inputs.push(reference);
+            }
+        }
+        for reference in decision.required_decisions.drain(..) {
+            if input_names.contains(&reference) {
+                required_inputs.push(reference);
+            } else {
+                required_decisions.push(reference);
+            }
+        }
+        deduplicate_references(&mut required_inputs);
+        deduplicate_references(&mut required_decisions);
+        decision.required_inputs = required_inputs;
+        decision.required_decisions = required_decisions;
+    }
+}
+
+fn deduplicate_references(references: &mut Vec<String>) {
+    let mut seen = std::collections::HashSet::new();
+    references.retain(|reference| seen.insert(reference.clone()));
+}
+
+fn normalize_optional_type_ref(
+    type_ref: &mut Option<String>,
+    custom_types: &std::collections::HashSet<String>,
+) {
+    if let Some(type_ref) = type_ref {
+        normalize_type_ref(type_ref, custom_types);
+    }
+}
+
+fn normalize_type_ref(type_ref: &mut String, custom_types: &std::collections::HashSet<String>) {
+    if custom_types.contains(type_ref.as_str()) {
+        return;
+    }
+    let normalized = match type_ref.as_str() {
+        "integer" | "int" | "long" | "double" | "float" | "decimal" => "number",
+        "feel:integer" | "feel:int" | "feel:long" | "feel:double" | "feel:float"
+        | "feel:decimal" => "feel:number",
+        _ => return,
+    };
+    *type_ref = normalized.to_string();
+}
+
+fn normalize_item_type_refs(
+    item_type: &mut ItemType,
+    custom_types: &std::collections::HashSet<String>,
+) {
+    match item_type {
+        ItemType::Simple { type_ref } | ItemType::Enumeration { type_ref, .. } => {
+            normalize_type_ref(type_ref, custom_types)
+        }
+        ItemType::Structure { fields } => {
+            for field in fields {
+                normalize_type_ref(&mut field.type_, custom_types);
+            }
+        }
+        ItemType::List { item_type } => normalize_item_type_refs(item_type, custom_types),
+    }
+}
+
+fn normalize_expression_type_refs(
+    expression: &mut BoxedExpression,
+    custom_types: &std::collections::HashSet<String>,
+) {
+    match expression {
+        BoxedExpression::DecisionTable {
+            inputs, outputs, ..
+        } => {
+            for input in inputs {
+                normalize_optional_type_ref(&mut input.type_ref, custom_types);
+            }
+            for output in outputs {
+                normalize_type_ref(&mut output.type_ref, custom_types);
+            }
+        }
+        BoxedExpression::Context { entries, .. } => {
+            for entry in entries {
+                normalize_expression_type_refs(&mut entry.value, custom_types);
+            }
+        }
+        BoxedExpression::FunctionDefinition { parameters, body } => {
+            for parameter in parameters {
+                normalize_type_ref(&mut parameter.type_ref, custom_types);
+            }
+            normalize_expression_type_refs(body, custom_types);
+        }
+        BoxedExpression::LiteralExpression { type_ref, .. } => {
+            normalize_optional_type_ref(type_ref, custom_types);
+        }
+        BoxedExpression::Conditional { then, else_, .. } => {
+            normalize_expression_type_refs(then, custom_types);
+            normalize_expression_type_refs(else_, custom_types);
+        }
+        BoxedExpression::Invocation { .. }
+        | BoxedExpression::List { .. }
+        | BoxedExpression::Relation { .. }
+        | BoxedExpression::Filter { .. }
+        | BoxedExpression::For { .. }
+        | BoxedExpression::Quantified { .. } => {}
     }
 }
 
@@ -1290,6 +1455,96 @@ decisions:
 
         let error = validate(&definitions).unwrap_err().to_string();
         assert!(error.contains("input 'Applicant' 引用了未定义的 typeRef"));
+    }
+
+    #[test]
+    fn normalize_common_numeric_type_aliases_to_number() {
+        let definitions = parse_definitions(
+            r#"
+name: NumericAliases
+inputs:
+  - name: Orders
+    typeRef: integer
+  - name: Ratio
+    typeRef: feel:double
+decisions:
+  - name: Score
+    typeRef: long
+    requiredInputs: [Orders]
+    logic:
+      type: literalExpression
+      expression: Orders
+      typeRef: decimal
+"#,
+        )
+        .unwrap();
+
+        assert_eq!(definitions.inputs[0].type_ref.as_deref(), Some("number"));
+        assert_eq!(
+            definitions.inputs[1].type_ref.as_deref(),
+            Some("feel:number")
+        );
+        assert_eq!(definitions.decisions[0].type_ref.as_deref(), Some("number"));
+        assert!(matches!(
+            definitions.decisions[0].logic,
+            BoxedExpression::LiteralExpression { type_ref: Some(ref type_ref), .. }
+                if type_ref == "number"
+        ));
+        validate(&definitions).unwrap();
+    }
+
+    #[test]
+    fn normalize_numeric_alias_preserves_custom_item_definition_name() {
+        let definitions = parse_definitions(
+            r#"
+name: CustomInteger
+itemDefinitions:
+  - name: integer
+    type:
+      kind: simple
+      typeRef: string
+inputs:
+  - name: Value
+    typeRef: integer
+decisions: []
+"#,
+        )
+        .unwrap();
+
+        assert_eq!(definitions.inputs[0].type_ref.as_deref(), Some("integer"));
+        validate(&definitions).unwrap();
+    }
+
+    #[test]
+    fn normalize_dependency_references_moves_misclassified_names() {
+        let definitions = parse_definitions(
+            r#"
+name: DependencyAliases
+inputs:
+  - name: Orders
+    typeRef: number
+decisions:
+  - name: ShippingRatio
+    typeRef: number
+    requiredInputs: [Orders]
+    logic:
+      type: literalExpression
+      expression: Orders
+  - name: RiskLevel
+    typeRef: string
+    requiredInputs: [ShippingRatio]
+    requiredDecisions: [Orders]
+    logic:
+      type: literalExpression
+      expression: '"Low"'
+"#,
+        )
+        .unwrap();
+
+        let risk = &definitions.decisions[1];
+        assert_eq!(risk.required_inputs, vec!["Orders"]);
+        assert_eq!(risk.required_decisions, vec!["ShippingRatio"]);
+        validate(&definitions).unwrap();
     }
 
     #[test]

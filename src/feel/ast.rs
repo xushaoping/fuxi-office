@@ -14,6 +14,8 @@ pub enum FeelExpr {
 
     // 标识符与变量
     Name(String),
+    // 点分链 a.b.c：当前 parser 以 Path 链产出，保留节点供解释/格式化/降级转换匹配
+    #[allow(dead_code)]
     QualifiedName(Vec<String>),
 
     // 二元运算
@@ -72,7 +74,8 @@ pub enum FeelExpr {
     // 路径访问 a.b
     Path(Box<FeelExpr>, String),
 
-    // 索引访问 a[0]
+    // 索引访问 a[0]：当前 parser 统一产出 Filter，保留节点供解释/格式化匹配
+    #[allow(dead_code)]
     Index(Box<FeelExpr>, Box<FeelExpr>),
 
     // 函数定义 (x, y) -> expr
@@ -148,6 +151,7 @@ pub enum BinOp {
 
 #[derive(Debug, Clone, Copy)]
 pub enum UnOp {
+    #[allow(dead_code)] // Neg（一元 +）：当前 parser 不产出，解释/格式化分支已支持
     Neg,
     Minus,
 }

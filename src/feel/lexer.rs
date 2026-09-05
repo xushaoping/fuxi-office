@@ -287,7 +287,9 @@ impl Lexer {
         }
         // 检查是否是 date("...") 或 date and time("...")
         if s.starts_with("date and time(\"") && s.ends_with("\")") {
-            let inner = s[16..s.len() - 2].to_string();
+            // `date and time("` is 15 bytes; keeping the first year digit is
+            // important for values such as `2026-09-05T...`.
+            let inner = s[15..s.len() - 2].to_string();
             Ok(Token::DateTime(inner))
         } else if s.starts_with("date(\"") && s.ends_with("\")") {
             let inner = s[6..s.len() - 2].to_string();

@@ -154,6 +154,7 @@ async fn ensure_review_permission(
     state: &AppState,
     project_id: i64,
     username: &str,
+    action: &str,
 ) -> Result<(), ProjectApiError> {
     let allowed =
         project_access::has_permission(&state.db, project_id, username, ProjectPermission::Review)
@@ -162,9 +163,9 @@ async fn ensure_review_permission(
     if allowed {
         Ok(())
     } else {
-        Err(ProjectApiError::forbidden(
-            "当前账号没有复核权限，请切换复核者账号后批准验收案例",
-        ))
+        Err(ProjectApiError::forbidden(format!(
+            "当前账号没有项目复核权限，请切换拥有“复核者”角色的账号后{action}"
+        )))
     }
 }
 
@@ -2138,8 +2139,12 @@ fn apply_change_intent(
             }
         }
     }
-    serde_json::from_value(document)
-        .map_err(|error| ProjectApiError::patch_target(format!("变更结果无法解析为 DSL：{error}")))
+    let mut definitions = serde_json::from_value(document).map_err(|error| {
+        ProjectApiError::patch_target(format!("变更结果无法解析为 DSL：{error}"))
+    })?;
+    nl_dsl::normalize_type_refs(&mut definitions);
+    nl_dsl::normalize_dependency_references(&mut definitions);
+    Ok(definitions)
 }
 
 fn validate_intent_base(
@@ -2652,6 +2657,8 @@ struct GeneratedBusinessCandidate {
     input_json: Value,
     expected_output_json: Value,
     rule_key: String,
+    // 仅在测试断言中读取（验证依赖决策兜底候选生成），非 test 构建允许未读
+    #[cfg_attr(not(test), allow(dead_code))]
     fallback: bool,
 }
 
@@ -3008,22 +3015,55 @@ fn representative_input_value(
     clause_type_ref: Option<&str>,
     input_values: Option<&str>,
 ) -> Option<Value> {
+    // First check if the clause has inputValues constraint
     if let Some(input_values) = input_values
         && let Some(value) = representative_unary_value(input_values)
     {
         return Some(value);
     }
-    let input_type = clause_type_ref.or_else(|| {
-        model
-            .input_data
+
+    // A generated decision-table column commonly uses `feel:Any` when the
+    // DSL omitted a clause type. For an external input, the inputData
+    // declaration is more specific and must drive candidate generation;
+    // otherwise a boolean field falls back to the string sample value.
+    let clause_is_generic = clause_type_ref
+        .is_some_and(|type_ref| normalized_type_name(type_ref).eq_ignore_ascii_case("any"));
+    let declared_input_type = model
+        .input_data
+        .iter()
+        .find(|input| input.name == expression || input.variable.as_deref() == Some(expression))
+        .and_then(|input| input.type_ref.as_deref());
+    let input_type = if clause_is_generic {
+        declared_input_type.or(clause_type_ref)
+    } else {
+        clause_type_ref.or(declared_input_type)
+    }?;
+
+    // Check if it's a custom type with allowedValues
+    let normalized_type = normalized_type_name(input_type);
+    if !matches!(
+        normalized_type.to_ascii_lowercase().as_str(),
+        "number" | "integer" | "long" | "double" | "boolean" | "string" | "any"
+        | "date" | "time" | "date and time" | "datetime"
+        | "duration" | "daytimeduration" | "yearmonthduration"
+    ) {
+        // It's a custom type, check for allowedValues
+        if let Some(item) = model
+            .item_definitions
             .iter()
-            .find(|input| input.name == expression || input.variable.as_deref() == Some(expression))
-            .and_then(|input| input.type_ref.as_deref())
-    })?;
-    match normalized_type_name(input_type)
-        .to_ascii_lowercase()
-        .as_str()
-    {
+            .find(|item| item.name.eq_ignore_ascii_case(normalized_type) || item.name == input_type)
+        {
+            if let Some(allowed_values) = &item.allowed_values {
+                // Extract first allowed value from the constraint
+                if let Some(value) = representative_unary_value(allowed_values) {
+                    return Some(value);
+                }
+            }
+        }
+    }
+
+    // Fall back to default values for built-in types
+    match normalized_type.to_ascii_lowercase().as_str() {
         // Candidate inputs are executed immediately to derive expected
         // outputs. A non-zero default avoids making denominator-based
         // decisions fail before a user can run the generated case.
@@ -3034,19 +3074,68 @@ fn representative_input_value(
         "date and time" | "datetime" => Some(json!("2024-01-01T12:00:00")),
         "duration" | "daytimeduration" | "yearmonthduration" => Some(json!("P1D")),
         "string" | "any" => Some(json!("sample")),
-        custom => model
-            .item_definitions
-            .iter()
-            .find(|item| item.name.eq_ignore_ascii_case(custom) || item.name == input_type)
-            .and_then(|item| item.allowed_values.as_deref())
-            .and_then(representative_unary_value),
+        _ => None,
     }
 }
 
-const MAX_CANDIDATE_INPUT_VARIANTS: usize = 128;
+fn baseline_number(model: &crate::dmn::DmnModel, baseline: &Value, name: &str) -> Option<f64> {
+    let key = model
+        .input_data
+        .iter()
+        .find(|input| input.name == name || input.variable.as_deref() == Some(name))
+        .map(|input| input.variable.as_deref().unwrap_or(&input.name))
+        .unwrap_or(name);
+    baseline.get(key).and_then(Value::as_f64)
+}
+
+/// Derive a representative value for comparisons against another input, such
+/// as `> AvgPurchaseAmount * 5`. These expressions cannot be inverted from a
+/// unary test alone, but the baseline provides a deterministic reference.
+fn representative_input_value_for_entry(
+    model: &crate::dmn::DmnModel,
+    baseline: &Value,
+    expression: &str,
+    entry: &str,
+) -> Option<Value> {
+    if let Some(value) = representative_unary_value(entry) {
+        return Some(value);
+    }
+    static RELATIVE: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
+    let relative = RELATIVE.get_or_init(|| {
+        Regex::new(
+            r"^(>=|>|<=|<|=|!=|<>)\s*([A-Za-z_][A-Za-z0-9_.]*)\s*(?:\*\s*(-?\d+(?:\.\d+)?))?$",
+        )
+        .expect("valid relative comparison regex")
+    });
+    let captures = relative.captures(entry.trim())?;
+    let reference = captures.get(2)?.as_str();
+    if reference == expression {
+        return None;
+    }
+    let factor = captures
+        .get(3)
+        .map(|value| value.as_str().parse::<f64>().ok())
+        .flatten()
+        .unwrap_or(1.0);
+    let threshold = baseline_number(model, baseline, reference)? * factor;
+    let delta = numeric_delta(threshold);
+    let sample = match captures.get(1)?.as_str() {
+        ">" => threshold + delta,
+        ">=" | "=" => threshold,
+        "<" => threshold - delta,
+        "<=" | "!=" | "<>" => threshold + delta,
+        _ => return None,
+    };
+    Some(json!(sample))
+}
+
+// Keep enough combinations for reused inputs and derived-input paths while
+// bounding evaluation cost for unusually wide models.
+const MAX_CANDIDATE_INPUT_VARIANTS: usize = 16384;
 
 fn candidate_input_variants(model: &crate::dmn::DmnModel, baseline: &Value) -> Vec<Value> {
     let mut variants = vec![baseline.clone()];
+    let mut expanded_external_inputs = HashSet::new();
     // Literal decisions often establish the boolean/derived inputs consumed
     // by downstream tables (for example `age >= 18`). Include threshold
     // representatives from those expressions so dependent tables can be
@@ -3102,6 +3191,63 @@ fn candidate_input_variants(model: &crate::dmn::DmnModel, baseline: &Value) -> V
             variants = expanded;
         }
     }
+    // Some generators put the condition in the input expression itself, for
+    // example `OrderFrequency > 20 or ShippingRatio > 0.3`, with a boolean
+    // table entry. Extract thresholds for any external fields mentioned by
+    // such expressions so dependent decisions can still be driven by inputs.
+    let expression_thresholds = Regex::new(r"(?:>=|>|<=|<|=|!=|<>)\s*(-?\d+(?:\.\d+)?)")
+        .expect("valid table expression threshold regex");
+    for input in &model.input_data {
+        let key = input.variable.as_deref().unwrap_or(&input.name);
+        let mut values = Vec::new();
+        for decision in &model.decisions {
+            let crate::dmn::DecisionLogic::DecisionTable(table) = &decision.logic else {
+                continue;
+            };
+            for clause in &table.inputs {
+                if !clause.expression.contains(&input.name) && !clause.expression.contains(key) {
+                    continue;
+                }
+                for capture in expression_thresholds.captures_iter(&clause.expression) {
+                    let Ok(number) = capture[1].parse::<f64>() else {
+                        continue;
+                    };
+                    for value in [number, number + numeric_delta(number)] {
+                        let value = json!(value);
+                        if !values.iter().any(|existing| existing == &value) {
+                            values.push(value);
+                        }
+                    }
+                }
+            }
+        }
+        if values.is_empty() {
+            continue;
+        }
+        if let Some(value) = baseline.get(key).cloned()
+            && !values.iter().any(|existing| existing == &value)
+        {
+            values.push(value);
+        }
+        let mut expanded = Vec::new();
+        for variant in &variants {
+            for value in &values {
+                let mut candidate = variant.clone();
+                if assign_generated_input(model, &mut candidate, key, value.clone()) {
+                    expanded.push(candidate);
+                    if expanded.len() >= MAX_CANDIDATE_INPUT_VARIANTS {
+                        break;
+                    }
+                }
+            }
+            if expanded.len() >= MAX_CANDIDATE_INPUT_VARIANTS {
+                break;
+            }
+        }
+        if !expanded.is_empty() {
+            variants = expanded;
+        }
+    }
     for decision in &model.decisions {
         let crate::dmn::DecisionLogic::DecisionTable(table) = &decision.logic else {
             continue;
@@ -3114,6 +3260,17 @@ fn candidate_input_variants(model: &crate::dmn::DmnModel, baseline: &Value) -> V
             if !is_external {
                 continue;
             }
+            let input_key = model
+                .input_data
+                .iter()
+                .find(|input| {
+                    input.name == clause.expression
+                        || input.variable.as_deref() == Some(clause.expression.as_str())
+                })
+                .map(|input| input.variable.as_deref().unwrap_or(&input.name).to_owned());
+            let repeated_input = input_key.as_ref().is_some_and(|input_key| {
+                !expanded_external_inputs.insert(input_key.clone())
+            });
             let mut values = Vec::new();
             for rule in &table.rules {
                 let Some(entry) = rule
@@ -3132,9 +3289,19 @@ fn candidate_input_variants(model: &crate::dmn::DmnModel, baseline: &Value) -> V
                         clause.input_values.as_deref(),
                     )
                 } else {
-                    representative_unary_value(entry)
+                    representative_input_value_for_entry(model, baseline, &clause.expression, entry)
                 };
                 if let Some(value) = value
+                    && !values.iter().any(|existing| existing == &value)
+                {
+                    values.push(value);
+                }
+                // Add a value on the other side of simple numeric bounds so
+                // later FIRST rules can be reached (e.g. an adult value for
+                // a preceding `< 14` rule).
+                if !entry.contains(" or ")
+                    && !entry.contains(" and ")
+                    && let Some(value) = representative_unary_value(&format!("not({entry})"))
                     && !values.iter().any(|existing| existing == &value)
                 {
                     values.push(value);
@@ -3149,6 +3316,55 @@ fn candidate_input_variants(model: &crate::dmn::DmnModel, baseline: &Value) -> V
                 )
             {
                 values.push(value);
+            }
+            if repeated_input {
+                // Merge values discovered by another table for the same
+                // input. Replacing the dimension would lose boundaries such
+                // as both `< 7` and `< 1` when a model reuses an input.
+                for variant in &variants {
+                    if let Some(value) = variant
+                        .get(input_key.as_deref().unwrap_or(&clause.expression))
+                        .cloned()
+                        && !values.iter().any(|existing| existing == &value)
+                    {
+                        values.push(value);
+                    }
+                }
+            }
+            // Keep the neutral baseline in every dimension. Without it, the
+            // first constrained table column can discard all unconstrained
+            // values needed to reach later FIRST rules (for example an
+            // eligible adult with a normal account age).
+            if let Some(baseline_value) = model
+                .input_data
+                .iter()
+                .find(|input| {
+                    input.name == clause.expression
+                        || input.variable.as_deref() == Some(clause.expression.as_str())
+                })
+                .and_then(|input| baseline.get(input.variable.as_deref().unwrap_or(&input.name)))
+                .cloned()
+                && !values.iter().any(|existing| existing == &baseline_value)
+            {
+                values.push(baseline_value);
+            }
+            if model
+                .input_data
+                .iter()
+                .find(|input| {
+                    input.name == clause.expression
+                        || input.variable.as_deref() == Some(clause.expression.as_str())
+                })
+                .and_then(|input| input.type_ref.as_deref())
+                .is_some_and(|type_ref| {
+                    normalized_type_name(type_ref).eq_ignore_ascii_case("number")
+                })
+                && !values.iter().any(|existing| existing == &json!(0))
+            {
+                // Zero is useful for numerator inputs such as shipping cost
+                // and is filtered by execution when it would be an invalid
+                // denominator.
+                values.push(json!(0));
             }
             if values.is_empty() {
                 continue;
@@ -3178,7 +3394,128 @@ fn candidate_input_variants(model: &crate::dmn::DmnModel, baseline: &Value) -> V
             }
         }
     }
+    // Include numeric input data that only participates in literal
+    // expressions (for example the numerator of a derived ratio). Such
+    // inputs do not have a decision-table column to contribute variants, but
+    // changing them is necessary to reach dependent table rules.
+    for input in &model.input_data {
+        let type_ref = input.type_ref.as_deref().unwrap_or_default();
+        if !normalized_type_name(type_ref).eq_ignore_ascii_case("number") {
+            continue;
+        }
+        let key = input.variable.as_deref().unwrap_or(&input.name);
+        if model.decisions.iter().any(|decision| {
+            let crate::dmn::DecisionLogic::DecisionTable(table) = &decision.logic else {
+                return false;
+            };
+            table
+                .inputs
+                .iter()
+                .any(|clause| clause.expression == input.name || clause.expression == key)
+        }) {
+            continue;
+        }
+        let used_in_literal = model.decisions.iter().any(|decision| {
+            matches!(&decision.logic, crate::dmn::DecisionLogic::LiteralExpression(expression)
+                if expression.contains(&input.name) || expression.contains(key))
+        });
+        if !used_in_literal {
+            continue;
+        }
+        let mut values = vec![json!(0)];
+        if let Some(value) = baseline.get(key).cloned()
+            && !values.iter().any(|existing| existing == &value)
+        {
+            values.push(value);
+        }
+        for variant in &variants {
+            if let Some(value) = variant.get(key).cloned()
+                && !values.iter().any(|existing| existing == &value)
+            {
+                values.push(value);
+            }
+        }
+        let mut expanded = Vec::new();
+        for variant in &variants {
+            for value in &values {
+                let mut candidate = variant.clone();
+                if assign_generated_input(model, &mut candidate, key, value.clone()) {
+                    expanded.push(candidate);
+                    if expanded.len() >= MAX_CANDIDATE_INPUT_VARIANTS {
+                        break;
+                    }
+                }
+            }
+            if expanded.len() >= MAX_CANDIDATE_INPUT_VARIANTS {
+                break;
+            }
+        }
+        if !expanded.is_empty() {
+            variants = expanded;
+        }
+    }
     variants
+}
+
+fn evaluate_rule_candidate(
+    model: &crate::dmn::DmnModel,
+    decision_id: &str,
+    rule_id: &str,
+    input: &Value,
+) -> Option<(Value, crate::dmn::DmnResult)> {
+    let inputs = json_inputs_to_feel(model, input).ok()?;
+    let result = crate::dmn::DmnExecutor::new(model).evaluate_all(inputs);
+    let target = result.decision_by_id(decision_id)?;
+    if target.status == crate::dmn::DecisionStatus::Succeeded
+        && target
+            .matched_rule_ids
+            .iter()
+            .any(|matched| matched == rule_id)
+    {
+        Some((input.clone(), result))
+    } else {
+        None
+    }
+}
+
+/// Evaluate a candidate input and return diagnostic information about why it failed.
+fn evaluate_rule_candidate_with_diagnostic(
+    model: &crate::dmn::DmnModel,
+    decision_id: &str,
+    rule_id: &str,
+    input: &Value,
+) -> Result<(Value, crate::dmn::DmnResult), String> {
+    let inputs = json_inputs_to_feel(model, input)
+        .map_err(|e| format!("输入转换失败: {}", e))?;
+    let result = crate::dmn::DmnExecutor::new(model).evaluate_all(inputs);
+
+    // Check if any decision failed with dependency issues
+    for decision_result in &result.decision_results {
+        if decision_result.status == crate::dmn::DecisionStatus::Failed
+            || decision_result.status == crate::dmn::DecisionStatus::Skipped {
+            // Find error messages for this decision
+            let errors: Vec<_> = result.messages.iter()
+                .filter(|msg| msg.source.decision_id.as_deref() == Some(&decision_result.decision_id))
+                .map(|msg| format!("{}: {}", msg.code, msg.message))
+                .collect();
+            if !errors.is_empty() {
+                return Err(format!("决策 '{}' 失败: {}", decision_result.decision_name, errors.join("; ")));
+            }
+        }
+    }
+
+    let target = result.decision_by_id(decision_id)
+        .ok_or_else(|| format!("找不到目标决策 {}", decision_id))?;
+
+    if target.status != crate::dmn::DecisionStatus::Succeeded {
+        return Err(format!("目标决策状态: {:?}", target.status));
+    }
+
+    if !target.matched_rule_ids.iter().any(|matched| matched == rule_id) {
+        return Err(format!("规则未命中，实际命中: {:?}", target.matched_rule_ids));
+    }
+
+    Ok((input.clone(), result))
 }
 
 fn generate_business_candidates(
@@ -3266,15 +3603,18 @@ fn generate_business_candidates(
                                 continue;
                             }
                             supported = false;
-                            skip_counts.unsupported_expression += 1;
                             break;
                         }
                     }
                     continue;
                 }
-                let Some(value) = representative_unary_value(entry) else {
+                let Some(value) = representative_input_value_for_entry(
+                    model,
+                    &baseline,
+                    &clause.expression,
+                    entry,
+                ) else {
                     supported = false;
-                    skip_counts.unsupported_expression += 1;
                     break;
                 };
                 if !assign_generated_input(model, &mut input, &clause.expression, value) {
@@ -3283,45 +3623,35 @@ fn generate_business_candidates(
                     // uses the variable key, so resolve the alternate name
                     // before declaring the rule unsupported.
                     supported = false;
-                    skip_counts.unsupported_expression += 1;
                     break;
                 }
             }
-            if !supported {
+            let mut fallback = false;
+            let evaluated = if supported {
+                evaluate_rule_candidate(model, &decision.id, &rule_id, &input)
+            } else {
+                None
+            };
+            let Some((input, result)) = evaluated.or_else(|| {
+                fallback = true;
+                input_variants.iter().find_map(|variant| {
+                    evaluate_rule_candidate(model, &decision.id, &rule_id, variant)
+                })
+            }) else {
                 skipped_rule_count += 1;
-                continue;
-            }
-            let Ok(inputs) = json_inputs_to_feel(model, &input) else {
-                skipped_rule_count += 1;
-                skip_counts.input_conversion += 1;
+                if !supported {
+                    skip_counts.unsupported_expression += 1;
+                } else {
+                    // Log diagnostic information for target_failed cases
+                    if let Err(reason) = evaluate_rule_candidate_with_diagnostic(
+                        model, &decision.id, &rule_id, &input
+                    ) {
+                        eprintln!("规则 {} 失败: {}", rule_key, reason);
+                    }
+                    skip_counts.target_failed += 1;
+                }
                 continue;
             };
-            let result = crate::dmn::DmnExecutor::new(model).evaluate_all(inputs);
-            let Some(target) = result.decision_by_id(&decision.id) else {
-                skipped_rule_count += 1;
-                skip_counts.target_missing += 1;
-                continue;
-            };
-            // `evaluate_all` aggregates every decision in the model. An
-            // unrelated decision may fail while this decision still
-            // evaluates and matches the requested rule. Gate generation on
-            // the target decision, not the global model status, otherwise a
-            // single broken branch makes every otherwise valid case appear
-            // as "skipped".
-            if target.status != crate::dmn::DecisionStatus::Succeeded {
-                skipped_rule_count += 1;
-                skip_counts.target_failed += 1;
-                continue;
-            }
-            if !target
-                .matched_rule_ids
-                .iter()
-                .any(|matched| matched == &rule_id)
-            {
-                skipped_rule_count += 1;
-                skip_counts.target_not_matched += 1;
-                continue;
-            }
             let trace = build_execution_trace(
                 model,
                 Some(version_id),
@@ -3349,7 +3679,7 @@ fn generate_business_candidates(
                 input_json: input,
                 expected_output_json,
                 rule_key,
-                fallback: false,
+                fallback,
             });
         }
 
@@ -3725,7 +4055,18 @@ fn execute_test_case(
         &result,
     );
     let trace_json = serde_json::to_value(&trace).expect("execution trace is serializable");
-    if result.status == crate::dmn::DmnResultStatus::Failed {
+    let relevant_failure = test_case
+        .expected_output_json
+        .as_object()
+        .and_then(|expected| {
+            expected.keys().find_map(|name| {
+                result
+                    .decision_by_name(name)
+                    .or_else(|| result.decision_by_id(name))
+                    .filter(|decision| decision.status != crate::dmn::DecisionStatus::Succeeded)
+            })
+        });
+    if relevant_failure.is_some() {
         let error = result
             .first_error()
             .map(|message| message.message.clone())
@@ -3835,7 +4176,7 @@ async fn approve_test_case(
     Path((project_id, version_id, case_id)): Path<(i64, i64, i64)>,
     Json(payload): Json<ApproveDecisionTestCase>,
 ) -> Result<Json<DecisionTestCase>, ProjectApiError> {
-    ensure_review_permission(&state, project_id, &claims.sub).await?;
+    ensure_review_permission(&state, project_id, &claims.sub, "批准验收案例").await?;
     let mut transaction = state
         .db
         .begin()
@@ -4082,7 +4423,10 @@ async fn review_project_version(
     Extension(claims): Extension<Claims>,
     Path((project_id, version_id)): Path<(i64, i64)>,
 ) -> Result<Json<DecisionVersion>, ProjectApiError> {
-    ensure_project_permission(&state, project_id, &claims.sub, ProjectPermission::Review).await?;
+    // Keep nonexistent projects indistinguishable from inaccessible projects,
+    // while giving viewers a useful permission error for the review action.
+    ensure_project_permission(&state, project_id, &claims.sub, ProjectPermission::View).await?;
+    ensure_review_permission(&state, project_id, &claims.sub, "确认高风险变更").await?;
     let mut transaction = state
         .db
         .begin()
@@ -5786,6 +6130,31 @@ decisions:
     }
 
     #[test]
+    fn change_intent_normalizes_integer_input_type_to_feel_number() {
+        let base =
+            nl_dsl::parse_definitions("name: Approval\ninputs: []\ndecisions: []\n").unwrap();
+        let updated = apply_change_intent(
+            &base,
+            &ModelChangeIntent {
+                base_revision: 1,
+                base_hash: String::new(),
+                changes: vec![crate::models::ModelChangeOperation {
+                    target: "input:OrdersLast30Days".into(),
+                    action: "add".into(),
+                    field: None,
+                    value: Some(json!({
+                        "name": "OrdersLast30Days",
+                        "typeRef": "integer"
+                    })),
+                    reason: String::new(),
+                }],
+            },
+        )
+        .unwrap();
+        assert_eq!(updated.inputs[0].type_ref.as_deref(), Some("number"));
+    }
+
+    #[test]
     fn change_intent_rejects_unknown_targets_and_fields() {
         let base =
             nl_dsl::parse_definitions("name: Approval\ninputs: []\ndecisions: []\n").unwrap();
@@ -6245,6 +6614,32 @@ decisions:
     }
 
     #[test]
+    fn generated_cases_use_input_type_when_wildcard_column_defaults_to_any() {
+        let xml = format!(
+            r##"<definitions xmlns="{}">
+                <inputData id="device" name="Device"><variable name="usesNewDevice" typeRef="feel:boolean"/></inputData>
+                <decision id="result" name="Result">
+                    <informationRequirement><requiredInput href="#device"/></informationRequirement>
+                    <decisionTable hitPolicy="FIRST">
+                        <input><inputExpression typeRef="feel:Any"><text>usesNewDevice</text></inputExpression></input>
+                        <output name="result" typeRef="feel:string"/>
+                        <rule id="any-device"><inputEntry><text>-</text></inputEntry><outputEntry><text>"ok"</text></outputEntry></rule>
+                    </decisionTable>
+                </decision>
+            </definitions>"##,
+            crate::dmn::DMN_NAMESPACE
+        );
+        let model = crate::dmn::parse_dmn(&xml).expect("parse wildcard boolean model");
+        let generated = generate_business_candidates(&model, 1, 1).expect("generate case");
+        assert_eq!(generated.skipped_rule_count, 0, "{:?}", generated.notes);
+        assert_eq!(generated.candidates.len(), 1, "{:?}", generated.notes);
+        assert_eq!(
+            generated.candidates[0].input_json["usesNewDevice"],
+            json!(false)
+        );
+    }
+
+    #[test]
     fn generated_cases_ignore_unrelated_decision_failures() {
         let xml = format!(
             r##"<definitions xmlns="{}">
@@ -6377,6 +6772,95 @@ decisions:
                 .iter()
                 .any(|candidate| candidate.rule_key == "decision_7:rule_63")
         );
+    }
+
+    #[test]
+    fn generated_cases_cover_ecommerce_dependency_rules() {
+        let xml = format!(
+            r##"<definitions xmlns="{}">
+                <inputData id="userAge" name="UserAge"><variable name="UserAge" typeRef="number"/></inputData>
+                <inputData id="accountAge" name="AccountAgeDays"><variable name="AccountAgeDays" typeRef="number"/></inputData>
+                <inputData id="frequency" name="OrderFrequency"><variable name="OrderFrequency" typeRef="number"/></inputData>
+                <inputData id="average" name="AvgPurchaseAmount"><variable name="AvgPurchaseAmount" typeRef="number"/></inputData>
+                <inputData id="amount" name="OrderAmount"><variable name="OrderAmount" typeRef="number"/></inputData>
+                <inputData id="shipping" name="ShippingCost"><variable name="ShippingCost" typeRef="number"/></inputData>
+                <inputData id="device" name="IsNewDevice"><variable name="IsNewDevice" typeRef="boolean"/></inputData>
+                <decision id="shippingRatio" name="ShippingRatio">
+                    <informationRequirement><requiredInput href="#shipping"/></informationRequirement>
+                    <informationRequirement><requiredInput href="#amount"/></informationRequirement>
+                    <literalExpression><text>ShippingCost / OrderAmount</text></literalExpression>
+                </decision>
+                <decision id="risk" name="OrderRiskGrade">
+                    <informationRequirement><requiredInput href="#frequency"/></informationRequirement>
+                    <informationRequirement><requiredInput href="#accountAge"/></informationRequirement>
+                    <informationRequirement><requiredDecision href="#shippingRatio"/></informationRequirement>
+                    <decisionTable hitPolicy="FIRST">
+                        <input><inputExpression typeRef="number"><text>OrderFrequency</text></inputExpression></input>
+                        <input><inputExpression typeRef="number"><text>AccountAgeDays</text></inputExpression></input>
+                        <input><inputExpression typeRef="number"><text>ShippingRatio</text></inputExpression></input>
+                        <output name="OrderRiskGrade" typeRef="string"/>
+                        <rule id="high-frequency"><inputEntry><text>&gt; 20</text></inputEntry><inputEntry><text>-</text></inputEntry><inputEntry><text>-</text></inputEntry><outputEntry><text>"High"</text></outputEntry></rule>
+                        <rule id="high-shipping"><inputEntry><text>-</text></inputEntry><inputEntry><text>-</text></inputEntry><inputEntry><text>&gt; 0.3</text></inputEntry><outputEntry><text>"High"</text></outputEntry></rule>
+                        <rule id="medium-frequency"><inputEntry><text>&gt; 10</text></inputEntry><inputEntry><text>-</text></inputEntry><inputEntry><text>-</text></inputEntry><outputEntry><text>"Medium"</text></outputEntry></rule>
+                        <rule id="medium-account"><inputEntry><text>-</text></inputEntry><inputEntry><text>&lt; 7</text></inputEntry><inputEntry><text>-</text></inputEntry><outputEntry><text>"Medium"</text></outputEntry></rule>
+                        <rule id="low"><inputEntry><text>-</text></inputEntry><inputEntry><text>-</text></inputEntry><inputEntry><text>-</text></inputEntry><outputEntry><text>"Low"</text></outputEntry></rule>
+                    </decisionTable>
+                </decision>
+                <decision id="eligibility" name="OrderEligibility">
+                    <informationRequirement><requiredInput href="#userAge"/></informationRequirement>
+                    <informationRequirement><requiredInput href="#accountAge"/></informationRequirement>
+                    <informationRequirement><requiredInput href="#average"/></informationRequirement>
+                    <informationRequirement><requiredInput href="#amount"/></informationRequirement>
+                    <decisionTable hitPolicy="FIRST">
+                        <input><inputExpression typeRef="number"><text>UserAge</text></inputExpression></input>
+                        <input><inputExpression typeRef="number"><text>AccountAgeDays</text></inputExpression></input>
+                        <input><inputExpression typeRef="number"><text>OrderAmount</text></inputExpression></input>
+                        <output name="OrderEligibility" typeRef="string"/>
+                        <rule id="underage"><inputEntry><text>&lt; 14</text></inputEntry><inputEntry><text>-</text></inputEntry><inputEntry><text>-</text></inputEntry><outputEntry><text>"Reject"</text></outputEntry></rule>
+                        <rule id="new-account"><inputEntry><text>-</text></inputEntry><inputEntry><text>&lt; 1</text></inputEntry><inputEntry><text>-</text></inputEntry><outputEntry><text>"Reject"</text></outputEntry></rule>
+                        <rule id="large-order"><inputEntry><text>-</text></inputEntry><inputEntry><text>-</text></inputEntry><inputEntry><text>&gt; AvgPurchaseAmount * 5</text></inputEntry><outputEntry><text>"ManualReview"</text></outputEntry></rule>
+                        <rule id="eligible"><inputEntry><text>-</text></inputEntry><inputEntry><text>-</text></inputEntry><inputEntry><text>-</text></inputEntry><outputEntry><text>"Eligible"</text></outputEntry></rule>
+                    </decisionTable>
+                </decision>
+                <decision id="final" name="FinalOrderDecision">
+                    <informationRequirement><requiredDecision href="#risk"/></informationRequirement>
+                    <informationRequirement><requiredDecision href="#eligibility"/></informationRequirement>
+                    <informationRequirement><requiredInput href="#device"/></informationRequirement>
+                    <decisionTable hitPolicy="FIRST">
+                        <input><inputExpression typeRef="string"><text>OrderEligibility</text></inputExpression></input>
+                        <input><inputExpression typeRef="string"><text>OrderRiskGrade</text></inputExpression></input>
+                        <input><inputExpression typeRef="boolean"><text>IsNewDevice</text></inputExpression></input>
+                        <output name="FinalOrderDecision" typeRef="string"/>
+                        <rule id="reject-eligibility"><inputEntry><text>"Reject"</text></inputEntry><inputEntry><text>-</text></inputEntry><inputEntry><text>-</text></inputEntry><outputEntry><text>"Reject"</text></outputEntry></rule>
+                        <rule id="reject-high-risk"><inputEntry><text>-</text></inputEntry><inputEntry><text>"High"</text></inputEntry><inputEntry><text>-</text></inputEntry><outputEntry><text>"Reject"</text></outputEntry></rule>
+                        <rule id="review-large-order"><inputEntry><text>"ManualReview"</text></inputEntry><inputEntry><text>-</text></inputEntry><inputEntry><text>-</text></inputEntry><outputEntry><text>"ManualReview"</text></outputEntry></rule>
+                        <rule id="review-new-device"><inputEntry><text>-</text></inputEntry><inputEntry><text>"Medium"</text></inputEntry><inputEntry><text>true</text></inputEntry><outputEntry><text>"ManualReview"</text></outputEntry></rule>
+                        <rule id="approve"><inputEntry><text>-</text></inputEntry><inputEntry><text>-</text></inputEntry><inputEntry><text>-</text></inputEntry><outputEntry><text>"Approve"</text></outputEntry></rule>
+                    </decisionTable>
+                </decision>
+            </definitions>"##,
+            crate::dmn::DMN_NAMESPACE
+        );
+        let model = crate::dmn::parse_dmn(&xml).expect("parse ecommerce model");
+        let generated = generate_business_candidates(&model, 1, 1).expect("generate cases");
+        assert_eq!(generated.total_rule_count, 14, "{:?}", generated.notes);
+        assert_eq!(generated.skipped_rule_count, 0, "{:?}", generated.notes);
+        assert_eq!(generated.candidates.len(), 14, "{:?}", generated.notes);
+        for rule_key in [
+            "risk:high-shipping",
+            "eligibility:large-order",
+            "final:reject-eligibility",
+            "final:review-new-device",
+            "final:approve",
+        ] {
+            assert!(
+                generated
+                    .candidates
+                    .iter()
+                    .any(|candidate| candidate.rule_key == rule_key),
+                "missing {rule_key}"
+            );
+        }
     }
 
     #[test]

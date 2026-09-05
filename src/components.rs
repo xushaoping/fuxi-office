@@ -1,3 +1,5 @@
+mod dmn_app;
+
 use std::collections::{BTreeMap, HashSet};
 
 use gloo_storage::{LocalStorage, Storage};
@@ -28,500 +30,26 @@ use crate::workflow::{
 };
 use web_sys::AbortController;
 
-#[derive(Clone, Debug)]
-struct ChatMessage {
-    role: &'static str,
-    content: String,
-}
+// Re-export the new modular DmnApp components
+pub use dmn_app::execution::ExecutionTraceView;
+pub use dmn_app::layout::{Header, ProjectBar};
+pub use dmn_app::team::{AuditLogPanel, MemberManagementPanel, RollbackPanel};
+pub use dmn_app::types::ChatMessage;
+pub use dmn_app::version::{
+    SavedVersionReviewView, VerificationReportView, VersionChangeReviewView, VersionChangeRow,
+};
+pub use dmn_app::workflow::{
+    ClarificationInput, DecisionBriefView, DecisionPlanView, RequirementAnalysisProgress,
+    WorkflowFieldRow,
+};
 
-#[component]
-fn ClarificationInput(
-    item: Clarification,
-    answers: ReadSignal<BTreeMap<String, String>>,
-    set_answers: WriteSignal<BTreeMap<String, String>>,
-) -> impl IntoView {
-    let id_for_value = item.id.clone();
-    let id_for_change = item.id.clone();
-    let control = if item.options.is_empty() {
-        view! {
-            <input
-                type="text"
-                placeholder="输入你的回答"
-                prop:value=move || answers.get().get(&id_for_value).cloned().unwrap_or_default()
-                on:input=move |event| {
-                    let value = event_target_value(&event);
-                    set_answers.update(|answers| { answers.insert(id_for_change.clone(), value); });
-                }
-            />
-        }
-        .into_any()
-    } else {
-        let options = RwSignal::new(item.options.clone());
-        view! {
-            <select
-                prop:value=move || answers.get().get(&id_for_value).cloned().unwrap_or_default()
-                on:change=move |event| {
-                    let value = event_target_value(&event);
-                    set_answers.update(|answers| { answers.insert(id_for_change.clone(), value); });
-                }
-            >
-                <option value="">"请选择"</option>
-                <For each=move || options.get() key=|option| option.clone() let:option>
-                    <option value=option.clone()>{option.clone()}</option>
-                </For>
-            </select>
-        }
-        .into_any()
-    };
-    view! {
-        <label class="clarification-item">
-            <span>{item.question}</span>
-            <small>{item.reason}</small>
-            {control}
-        </label>
-    }
-}
-
-#[component]
-fn WorkflowFieldRow(field: DecisionField) -> impl IntoView {
-    let display_name = if field.label.is_empty() {
-        field.name.clone()
-    } else {
-        field.label
-    };
-    let unit = if field.unit.is_empty() {
-        None
-    } else {
-        Some(field.unit)
-    };
-
-    view! {
-        <div class="workflow-field-row">
-            <div>
-                <strong>{display_name}</strong>
-                <code>{field.name}</code>
-            </div>
-            <span>{field.type_ref}</span>
-            <small>{field.description}</small>
-            <div class="workflow-field-meta">
-                <Show when=move || field.required><b>"必填"</b></Show>
-                {unit.map(|value| view! { <em>{value}</em> })}
-            </div>
-        </div>
-    }
-}
-
-#[component]
-fn DecisionBriefView(brief: DecisionBrief) -> impl IntoView {
-    let inputs = RwSignal::new(brief.inputs);
-    let outputs = RwSignal::new(brief.outputs);
-    let constraints = RwSignal::new(brief.constraints);
-    let assumptions = RwSignal::new(brief.assumptions);
-    let terms = RwSignal::new(brief.terms);
-    let input_count = inputs.get_untracked().len();
-    let output_count = outputs.get_untracked().len();
-
-    view! {
-        <div class="workflow-brief">
-            <div>
-                <span>"业务目标"</span>
-                <strong>{brief.goal}</strong>
-                <small>{brief.description}</small>
-            </div>
-            <div class="workflow-stat"><strong>{input_count}</strong><span>"输入"</span></div>
-            <div class="workflow-stat"><strong>{output_count}</strong><span>"输出"</span></div>
-            <div class="workflow-stat"><strong>{brief.risk_level}</strong><span>"风险"</span></div>
-        </div>
-        <div class="workflow-field-grid">
-            <section>
-                <strong>"输入字段"</strong>
-                <Show
-                    when=move || !inputs.get().is_empty()
-                    fallback=|| view! { <small class="workflow-empty">"暂无输入字段"</small> }
-                >
-                    <For each=move || inputs.get() key=|field| field.name.clone() let:field>
-                        <WorkflowFieldRow field=field />
-                    </For>
-                </Show>
-            </section>
-            <section>
-                <strong>"输出字段"</strong>
-                <Show
-                    when=move || !outputs.get().is_empty()
-                    fallback=|| view! { <small class="workflow-empty">"暂无输出字段"</small> }
-                >
-                    <For each=move || outputs.get() key=|field| field.name.clone() let:field>
-                        <WorkflowFieldRow field=field />
-                    </For>
-                </Show>
-            </section>
-        </div>
-        <Show when=move || !constraints.get().is_empty() || !assumptions.get().is_empty() || !terms.get().is_empty()>
-            <div class="workflow-context-grid">
-                <Show when=move || !constraints.get().is_empty()>
-                    <section><strong>"约束"</strong><For each=move || constraints.get() key=|item| item.clone() let:item><span>{item}</span></For></section>
-                </Show>
-                <Show when=move || !assumptions.get().is_empty()>
-                    <section><strong>"假设"</strong><For each=move || assumptions.get() key=|item| item.clone() let:item><span>{item}</span></For></section>
-                </Show>
-                <Show when=move || !terms.get().is_empty()>
-                    <section><strong>"业务术语"</strong><For each=move || terms.get() key=|item| item.term.clone() let:item><span><b>{item.term}</b>{format!("：{}", item.meaning)}</span></For></section>
-                </Show>
-            </div>
-        </Show>
-    }
-}
-
-#[component]
-fn RequirementAnalysisProgress(
-    prompt: ReadSignal<String>,
-    agent_activity: ReadSignal<String>,
-) -> impl IntoView {
-    view! {
-        <section class="requirement-analysis-progress" aria-live="polite">
-            <div class="analysis-progress-heading">
-                <span class="analysis-progress-indicator" aria-hidden="true"><i></i><i></i><i></i></span>
-                <div><strong>"正在分析需求"</strong><small>{move || agent_activity.get()}</small></div>
-            </div>
-            <p class="analysis-progress-prompt">{move || prompt.get()}</p>
-            <div class="analysis-progress-steps">
-                <span class="is-complete">"提取业务目标和决策范围"</span>
-                <span class="is-active">"识别输入、输出和关键规则"</span>
-                <span>"检查歧义并准备澄清问题"</span>
-            </div>
-        </section>
-    }
-}
-
-#[component]
-fn DecisionPlanView(plan: DecisionPlan) -> impl IntoView {
-    let decisions = RwSignal::new(plan.decisions);
-    let knowledge_models = RwSignal::new(plan.business_knowledge_models);
-    let services = RwSignal::new(plan.decision_services);
-    let defaults = RwSignal::new(plan.defaults);
-    let criteria = RwSignal::new(plan.acceptance_criteria);
-    view! {
-        <div class="decision-plan-view">
-            <p>{plan.summary}</p>
-            <div class="plan-decision-list">
-                <For each=move || decisions.get() key=|decision| decision.name.clone() let:decision>
-                    <div><strong>{decision.name}</strong><span>{decision.expression_type}</span><small>{decision.purpose}</small><code>{decision.dependencies.join(" → ")}</code></div>
-                </For>
-            </div>
-            <Show when=move || !knowledge_models.get().is_empty()>
-                <div class="plan-secondary-list">
-                    <strong>"业务知识模型"</strong>
-                    <For each=move || knowledge_models.get() key=|model| model.name.clone() let:model>
-                        <div>
-                            <strong>{model.name}</strong><span>{model.output_type}</span>
-                            <small>{model.purpose}</small>
-                            <code>{format!("参数：{}", model.parameters.join("、"))}</code>
-                        </div>
-                    </For>
-                </div>
-            </Show>
-            <Show when=move || !services.get().is_empty()>
-                <div class="plan-secondary-list">
-                    <strong>"决策服务"</strong>
-                    <For each=move || services.get() key=|service| service.name.clone() let:service>
-                        <div>
-                            <strong>{service.name}</strong>
-                            <small>{format!("输入：{}", service.input_data.join("、"))}</small>
-                            <code>{format!("封装：{}；输出：{}", service.encapsulated_decisions.join("、"), service.output_decisions.join("、"))}</code>
-                        </div>
-                    </For>
-                </div>
-            </Show>
-            <Show when=move || !defaults.get().is_empty()>
-                <div class="acceptance-list plan-defaults"><strong>"默认策略"</strong><For each=move || defaults.get() key=|item| item.clone() let:item><span>{item}</span></For></div>
-            </Show>
-            <Show when=move || !criteria.get().is_empty()>
-                <div class="acceptance-list"><strong>"验收标准"</strong><For each=move || criteria.get() key=|item| item.clone() let:item><span>{item}</span></For></div>
-            </Show>
-        </div>
-    }
-}
-
-#[component]
-fn VersionChangeReviewView(
-    review: VersionChangeReview,
-    confirmed: ReadSignal<bool>,
-    set_confirmed: WriteSignal<bool>,
-    on_confirm: impl Fn(leptos::ev::MouseEvent) + Copy + 'static,
-    on_discard: impl Fn(leptos::ev::MouseEvent) + Copy + 'static,
-    saving: ReadSignal<bool>,
-) -> impl IntoView {
-    let changes = RwSignal::new(review.changes);
-    let findings = RwSignal::new(review.findings);
-    let risk_class = format!("review-risk risk-{}", review.overall_risk);
-    view! {
-        <section class="change-review-panel" aria-label="版本变更确认">
-            <div class="change-review-heading">
-                <div>
-                    <span class="yaml-kicker">"VERSION GOVERNANCE"</span>
-                    <strong>"变更确认"</strong>
-                    <small>{review.summary}</small>
-                </div>
-                <span class=risk_class>{format!("{}风险", review.overall_risk)}</span>
-            </div>
-            <Show when=move || !findings.get().is_empty()>
-                <div class="risk-finding-list">
-                    <For each=move || findings.get() key=|finding| finding.code.clone() let:finding>
-                        <div class=format!("risk-finding risk-{}", finding.level)>
-                            <strong>{finding.code}</strong>
-                            <span>{finding.message}</span>
-                            <small>{finding.element}</small>
-                        </div>
-                    </For>
-                </div>
-            </Show>
-            <div class="change-list">
-                <For each=move || changes.get() key=|change| format!("{}:{}:{}", change.change_type, change.element, change.path) let:change>
-                    <VersionChangeRow change=change />
-                </For>
-            </div>
-            <label class="review-acknowledgement">
-                <input
-                    type="checkbox"
-                    prop:checked=move || confirmed.get()
-                    on:change=move |event| set_confirmed.set(event_target_checked(&event))
-                />
-                <span>"我已检查本次变更、风险提示和变更前后值，确认保存为新草稿版本并解锁后续修改"</span>
-            </label>
-            <div class="review-actions">
-                <button class="button button-quiet" on:click=on_discard disabled=move || saving.get()>"放弃结果"</button>
-                <button class="button button-primary" on:click=on_confirm disabled=move || saving.get() || !confirmed.get()>
-                    {move || if saving.get() { "保存中..." } else { "确认并保存版本" }}
-                </button>
-            </div>
-        </section>
-    }
-}
-
-#[component]
-fn SavedVersionReviewView(review: VersionChangeReview) -> impl IntoView {
-    let changes = RwSignal::new(review.changes);
-    let findings = RwSignal::new(review.findings);
-    let risk_class = format!("review-risk risk-{}", review.overall_risk);
-    view! {
-        <div class="saved-version-review">
-            <div class="saved-review-summary">
-                <span class=risk_class>{format!("{}风险", review.overall_risk)}</span>
-                <strong>{review.summary}</strong>
-            </div>
-            <Show when=move || !findings.get().is_empty()>
-                <div class="risk-finding-list">
-                    <For each=move || findings.get() key=|finding| finding.code.clone() let:finding>
-                        <div class=format!("risk-finding risk-{}", finding.level)>
-                            <strong>{finding.code}</strong><span>{finding.message}</span><small>{finding.element}</small>
-                        </div>
-                    </For>
-                </div>
-            </Show>
-            <div class="change-list">
-                <For each=move || changes.get() key=|change| format!("{}:{}:{}", change.change_type, change.element, change.path) let:change>
-                    <VersionChangeRow change=change />
-                </For>
-            </div>
-        </div>
-    }
-}
-
-fn compact_review_value(value: &serde_json::Value) -> String {
-    match value {
-        serde_json::Value::Null => "未设置".into(),
-        serde_json::Value::String(value) => value.clone(),
-        _ => serde_json::to_string(value).unwrap_or_else(|_| "无法显示".into()),
-    }
-}
-
-#[component]
-fn VersionChangeRow(change: VersionDiffEntry) -> impl IntoView {
-    let class = format!("change-row change-{}", change.change_type);
-    let path = (!change.path.is_empty()).then_some(change.path);
-    let before = compact_review_value(&change.before);
-    let after = compact_review_value(&change.after);
-    view! {
-        <div class=class>
-            <div class="change-row-title">
-                <strong>{change.element}</strong>
-                <span>{change.element_type}</span>
-                <em>{change.change_type}</em>
-            </div>
-            {path.map(|path| view! { <code>{path}</code> })}
-            <div class="change-values">
-                <div><small>"变更前"</small><code>{before}</code></div>
-                <div><small>"变更后"</small><code>{after}</code></div>
-            </div>
-            <small class="change-reason">{change.reason}</small>
-        </div>
-    }
-}
-
-#[component]
-fn VerificationReportView(
-    report: VersionVerificationReport,
-    publish_confirmed: ReadSignal<bool>,
-    set_publish_confirmed: WriteSignal<bool>,
-    on_verify: impl Fn(leptos::ev::MouseEvent) + Copy + 'static,
-    on_publish: impl Fn(leptos::ev::MouseEvent) + Copy + 'static,
-    busy: ReadSignal<bool>,
-    published: bool,
-    on_review: impl Fn(leptos::ev::MouseEvent) + Copy + Send + Sync + 'static,
-) -> impl IntoView {
-    let passed = report.status == "passed";
-    let gates = RwSignal::new(report.gates);
-    let cases = RwSignal::new(report.cases);
-    let findings = RwSignal::new(report.findings);
-    view! {
-        <section class="verification-panel" aria-label="版本验收与发布">
-            <div class="verification-heading">
-                <div>
-                    <span class="yaml-kicker">"RELEASE GATES"</span>
-                    <strong>{if published { "已发布版本" } else { "自动验收与发布门禁" }}</strong>
-                    <small>{format!("{} / {} 个案例通过，自动边界案例 {} 个", report.passed, report.total, report.boundary_cases)}</small>
-                </div>
-                <span class=if passed { "gate-summary gate-passed" } else { "gate-summary gate-failed" }>
-                    {if passed { "门禁通过" } else { "门禁失败" }}
-                </span>
-            </div>
-            <div class="verification-gates">
-                <For each=move || gates.get() key=|gate| gate.code.clone() let:gate>
-                    <div class=format!("verification-gate gate-{}", gate.status)>
-                        <strong>{gate.name}</strong>
-                        <span>{match gate.status.as_str() { "passed" => "通过", "warning" => "警告", _ => "失败" }}</span>
-                        <small>{gate.message}</small>
-                    </div>
-                </For>
-            </div>
-            <Show when=move || !published && gates.get().iter().any(|gate| gate.code == "CHANGE_REVIEW" && gate.status == "failed")>
-                <div class="verification-review-callout" role="alert">
-                    <div>
-                        <strong>"高风险变更需要独立复核"</strong>
-                        <span>"请由非版本创建者的复核者完成复核，完成后重新执行自动验收。"</span>
-                    </div>
-                    <button class="button button-quiet" on:click=on_review disabled=move || busy.get()>
-                        {move || if busy.get() { "处理中..." } else { "独立复核当前版本" }}
-                    </button>
-                </div>
-            </Show>
-            <div class="verification-findings">
-                <For each=move || findings.get() key=|finding| format!("{}:{}:{}", finding.code, finding.element, finding.rule_ids.join(",")) let:finding>
-                    <div class=format!("verification-finding finding-{}", finding.level)>
-                        <div><strong>{finding.code}</strong><span>{finding.element}</span></div>
-                        <small>{finding.message}</small>
-                        <code>{if finding.rule_ids.is_empty() { "模型级".into() } else { format!("规则：{}", finding.rule_ids.join("、")) }}</code>
-                    </div>
-                </For>
-            </div>
-            <details class="verification-cases">
-                <summary>{format!("查看 {} 个自动验收案例", report.total)}</summary>
-                <div class="verification-case-list">
-                    <For each=move || cases.get() key=|case| format!("{}:{}", case.category, case.name) let:case>
-                        <div class=format!("verification-case case-{}", case.status)>
-                            <div><strong>{case.name}</strong><span>{case.category}</span></div>
-                            <small>{format!("{}；实际：{}", case.expectation, case.actual)}</small>
-                            <code>{serde_json::to_string(&case.input).unwrap_or_default()}</code>
-                        </div>
-                    </For>
-                </div>
-            </details>
-            <div class=if published { "verification-publish-actions is-hidden" } else { "verification-publish-actions" }>
-                <label class="review-acknowledgement">
-                    <input
-                        type="checkbox"
-                        prop:checked=move || publish_confirmed.get()
-                        on:change=move |event| set_publish_confirmed.set(event_target_checked(&event))
-                    />
-                    <span>"我已检查自动验收结果，确认将当前版本作为项目的正式发布版本"</span>
-                </label>
-                <small class="publish-identity-hint">"发布审批必须由未创建当前版本、且未执行独立复核的审批人账号完成；同一账号拥有多个角色不会绕过此门禁。"</small>
-                <div class="review-actions">
-                    <button class="button button-quiet" on:click=on_verify disabled=move || busy.get()>
-                        {move || if busy.get() { "处理中..." } else { "重新验收" }}
-                    </button>
-                    <button class="button button-primary" on:click=on_publish disabled=move || busy.get() || !passed || !publish_confirmed.get()>
-                        "确认发布"
-                    </button>
-                </div>
-            </div>
-        </section>
-    }
-}
-
-#[component]
-fn ExecutionTraceView(trace: ExecutionTrace) -> impl IntoView {
-    let decisions = RwSignal::new(trace.decisions);
-    let messages = RwSignal::new(trace.messages);
-    let normalized_input =
-        serde_json::to_string_pretty(&trace.normalized_input).unwrap_or_default();
-    let output = serde_json::to_string_pretty(&trace.output).unwrap_or_default();
-    let status = trace.status.clone();
-    let status_class = format!("trace-status trace-status-{status}");
-    view! {
-        <section class="execution-trace" aria-label="确定性执行轨迹">
-            <div class="execution-trace-heading">
-                <div>
-                    <span class="yaml-kicker">"DETERMINISTIC TRACE"</span>
-                    <strong>{format!("{}{}", trace.model_name, trace.version_number.map(|number| format!(" · v{number}")).unwrap_or_default())}</strong>
-                    <small>{format!("{} 个决策步骤 · {status}", decisions.get_untracked().len())}</small>
-                </div>
-                <span class=status_class>{status}</span>
-            </div>
-            <p class="trace-explanation">{trace.explanation}</p>
-            <div class="trace-contract">
-                <details class="trace-contract-item trace-contract-input"><summary>"标准化输入"</summary><code>{normalized_input}</code></details>
-                <details class="trace-contract-item trace-contract-output"><summary>"完整输出"</summary><code>{output}</code></details>
-            </div>
-            <div class="trace-steps">
-                <For each=move || decisions.get() key=|step| format!("{}:{}", step.order, step.decision_id) let:step>
-                    {let dependencies = step.dependencies.clone();
-                    let dependency_text = dependencies.join("、");
-                    let has_dependencies = !dependencies.is_empty();
-                    let rule_ids = step.matched_rule_ids.clone();
-                    let rule_text = rule_ids.join("、");
-                    let has_rules = !rule_ids.is_empty();
-                    view! {
-                    <article class=format!("trace-step trace-outcome-{}", step.outcome)>
-                        <div class="trace-step-index">{format!("{:02}", step.order)}</div>
-                        <div class="trace-step-body">
-                            <div class="trace-step-heading">
-                                <strong>{step.decision_name}</strong>
-                                <span>{step.logic_type.replace('_', " ")}</span>
-                                <em>{match step.outcome.as_str() {
-                                    "rule_match" => "规则命中",
-                                    "default_output" => "默认输出",
-                                    "no_match" => "未命中",
-                                    "failed" => "失败",
-                                    "skipped" => "跳过",
-                                    _ => "表达式求值",
-                                }}</em>
-                            </div>
-                            <p>{step.explanation}</p>
-                            <div class="trace-step-meta">
-                                <Show when=move || has_dependencies>
-                                    <small>{format!("依赖：{dependency_text}")}</small>
-                                </Show>
-                                <Show when=move || has_rules>
-                                    <small>{format!("规则：{rule_text}")}</small>
-                                </Show>
-                            </div>
-                            <code>{serde_json::to_string_pretty(&step.result).unwrap_or_default()}</code>
-                        </div>
-                    </article>
-                    }}
-                </For>
-            </div>
-            <Show when=move || !messages.get().is_empty()>
-                <div class="trace-messages">
-                    <For each=move || messages.get() key=|message| format!("{}:{}:{}", message.severity, message.code, message.message) let:message>
-                        <div><span>{message.severity}</span><code>{message.code}</code><p>{message.message}</p></div>
-                    </For>
-                </div>
-            </Show>
-        </section>
-    }
-}
+// 已提取的组件定义已移至 dmn_app 模块
+// ClarificationInput, WorkflowFieldRow, DecisionBriefView, RequirementAnalysisProgress, DecisionPlanView
+// VersionChangeReviewView, SavedVersionReviewView, VersionChangeRow, VerificationReportView
+// ExecutionTraceView
+// 请使用: use crate::components::dmn_app::workflow::*;
+// 或: use crate::components::dmn_app::version::*;
+// 或: use crate::components::dmn_app::execution::*;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum RunStatus {
@@ -2028,7 +1556,6 @@ pub fn DmnApp() -> impl IntoView {
         }
         let request_revision = test_case_load_revision.get();
         set_test_case_error.set(None);
-        set_test_case_generation_summary.set(None);
         set_test_case_run_summary.set(None);
         spawn_local(async move {
             match api::list_decision_test_cases(&token_value, project.id, version.id).await {
@@ -3607,6 +3134,11 @@ pub fn DmnApp() -> impl IntoView {
                         set_test_case_busy.set(false);
                         return;
                     }
+                    // Invalidate every list request started before the
+                    // generation transaction completed. The follow-up list
+                    // request is allowed to refresh persisted cases, but an
+                    // older empty response must never replace this result.
+                    set_test_case_load_revision.update(|revision| *revision += 1);
                     let mut summary = format!(
                         "新增 {} 个，覆盖 {}/{} 条规则，跳过 {} 条，重复 {} 个",
                         result.generated_count,
@@ -5872,6 +5404,7 @@ pub fn DmnApp() -> impl IntoView {
                                 on_review=review_current_version
                                 busy=verification_busy
                                 published=published
+                                action_error=release_error
                             />
                         }.into_any()
                     }
@@ -5891,7 +5424,7 @@ pub fn DmnApp() -> impl IntoView {
                     }.into_any(),
                 }}
             </Show>
-            <Show when=move || workspace_view.get() == WorkspaceView::Validation && release_error.get().is_some()>
+            <Show when=move || workspace_view.get() == WorkspaceView::Validation && verification_report.get().is_none() && release_error.get().is_some()>
                 <div class="release-error">{move || release_error.get().unwrap_or_default()}</div>
             </Show>
 

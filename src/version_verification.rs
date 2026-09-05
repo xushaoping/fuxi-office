@@ -102,6 +102,31 @@ pub fn verify_version(
         .filter(|case| case.category == "boundary")
         .collect::<Vec<_>>();
     let boundaries_passed = boundary_cases.iter().all(|case| case.status == "passed");
+    let boundary_failure_details = boundary_cases
+        .iter()
+        .filter(|case| case.status != "passed")
+        .take(3)
+        .map(|case| format!("{}：{}", case.name, case.actual))
+        .collect::<Vec<_>>();
+    let boundary_failure_message = if boundary_failure_details.is_empty() {
+        String::new()
+    } else {
+        let remaining = boundary_cases
+            .iter()
+            .filter(|case| case.status != "passed")
+            .count()
+            .saturating_sub(boundary_failure_details.len());
+        let suffix = if remaining == 0 {
+            String::new()
+        } else {
+            format!("；另有 {remaining} 个失败案例")
+        };
+        format!(
+            "部分阈值边界执行失败：{}{}；请查看失败案例并修正模型后重新验收",
+            boundary_failure_details.join("；"),
+            suffix
+        )
+    };
     let high_risk_count = review
         .map(|review| {
             review
@@ -111,6 +136,26 @@ pub fn verify_version(
                 .count()
         })
         .unwrap_or(0);
+    let high_risk_details = review
+        .map(|review| {
+            review
+                .findings
+                .iter()
+                .filter(|finding| finding.level == "high")
+                .map(|finding| {
+                    if finding.element.trim().is_empty() {
+                        format!("{}：{}", finding.code, finding.message)
+                    } else {
+                        format!(
+                            "{}（{}）：{}",
+                            finding.element, finding.code, finding.message
+                        )
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join("、")
+        })
+        .unwrap_or_default();
     let review_passed = review.is_some() && (high_risk_count == 0 || reviewed);
     let findings = analyze_rules(&model);
     let blocking_rule_findings = findings
@@ -121,6 +166,20 @@ pub fn verify_version(
         .iter()
         .filter(|finding| finding.code == "MISSING_COVERAGE")
         .count();
+
+    let change_review_message = if review.is_none() {
+        "版本缺少变更审查快照".to_string()
+    } else if high_risk_count > 0 && !reviewed {
+        if high_risk_details.is_empty() {
+            "高风险变更尚未确认".to_string()
+        } else {
+            format!("高风险变更尚未确认：{high_risk_details}")
+        }
+    } else if high_risk_count > 0 {
+        "高风险变更已确认".to_string()
+    } else {
+        "没有未确认的高风险变更".to_string()
+    };
 
     let mut gates = vec![
         gate(
@@ -160,22 +219,14 @@ pub fn verify_version(
             } else if boundaries_passed {
                 "已验证可识别阈值的下界、等值和上界"
             } else {
-                "部分阈值边界执行失败"
+                &boundary_failure_message
             },
         ),
         gate(
             "CHANGE_REVIEW",
             "变更审查",
             review_passed,
-            if review.is_none() {
-                "版本缺少变更审查快照"
-            } else if high_risk_count > 0 && !reviewed {
-                "高风险变更尚未确认"
-            } else if high_risk_count > 0 {
-                "高风险变更已确认"
-            } else {
-                "没有未确认的高风险变更"
-            },
+            &change_review_message,
         ),
     ];
     gates.push(gate(
@@ -912,6 +963,23 @@ fn typed_json_to_feel(
         return json_value_to_feel(value);
     };
     match (normalize_type(type_ref), value) {
+        // The interactive test form is backed by a JSON textarea, and values
+        // entered there often arrive as quoted scalar strings. Normalize only
+        // unambiguous representations so declared numeric/boolean inputs stay
+        // executable without weakening rejection of incompatible values.
+        ("number", Value::String(value)) => {
+            if let Ok(number) = value.trim().parse::<f64>()
+                && number.is_finite()
+            {
+                return Ok(FeelValue::Number(number));
+            }
+        }
+        ("boolean", Value::String(value)) if value.trim().eq_ignore_ascii_case("true") => {
+            return Ok(FeelValue::Bool(true));
+        }
+        ("boolean", Value::String(value)) if value.trim().eq_ignore_ascii_case("false") => {
+            return Ok(FeelValue::Bool(false));
+        }
         ("date", Value::String(value)) => return Ok(FeelValue::Date(value.clone())),
         ("time", Value::String(value)) => return Ok(FeelValue::Time(value.clone())),
         ("date and time" | "dateTime", Value::String(value)) => {
@@ -1010,6 +1078,7 @@ fn json_value_to_feel(value: &Value) -> Result<FeelValue, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::models::VersionRiskFinding;
 
     const MODEL: &str = r##"
     <definitions xmlns="https://www.omg.org/spec/DMN/20230324/MODEL/" id="model" name="Boundary">
@@ -1048,6 +1117,43 @@ mod tests {
     }
 
     #[test]
+    fn boundary_gate_reports_failed_case_details() {
+        let model = r##"
+        <definitions xmlns="https://www.omg.org/spec/DMN/20230324/MODEL/" id="boundary-failure" name="BoundaryFailure">
+          <inputData id="amount-input" name="Amount"><variable name="Amount" typeRef="number"/></inputData>
+          <decision id="ratio" name="Ratio">
+            <informationRequirement><requiredInput href="#amount-input"/></informationRequirement>
+            <literalExpression><text>Amount / Amount</text></literalExpression>
+          </decision>
+          <decision id="bucket" name="Bucket">
+            <informationRequirement><requiredInput href="#amount-input"/></informationRequirement>
+            <decisionTable hitPolicy="FIRST">
+              <input><inputExpression typeRef="number"><text>Amount</text></inputExpression></input>
+              <output name="Bucket" typeRef="string"/>
+              <rule id="positive"><inputEntry><text>&gt;= 0</text></inputEntry><outputEntry><text>"positive"</text></outputEntry></rule>
+              <rule id="negative"><inputEntry><text>-</text></inputEntry><outputEntry><text>"negative"</text></outputEntry></rule>
+            </decisionTable>
+          </decision>
+        </definitions>
+        "##;
+        let report = verify_version(model, 9, Some(&review()), true).unwrap();
+        let gate = report
+            .gates
+            .iter()
+            .find(|gate| gate.code == "BOUNDARY_EXECUTION")
+            .expect("boundary gate");
+        assert_eq!(gate.status, "failed");
+        assert!(gate.message.contains("阈值等值：Amount = 0"));
+        assert!(gate.message.contains("Division by zero"));
+        assert!(
+            report
+                .cases
+                .iter()
+                .any(|case| case.category == "boundary" && case.status == "failed")
+        );
+    }
+
+    #[test]
     fn verification_blocks_missing_review_snapshot() {
         let report = verify_version(MODEL, 7, None, false).unwrap();
         assert_eq!(report.status, "failed");
@@ -1056,6 +1162,30 @@ mod tests {
                 .gates
                 .iter()
                 .any(|gate| gate.code == "CHANGE_REVIEW" && gate.status == "failed")
+        );
+    }
+
+    #[test]
+    fn verification_identifies_unconfirmed_high_risk_change() {
+        let review = VersionChangeReview {
+            findings: vec![VersionRiskFinding {
+                level: "high".into(),
+                code: "DECISION_LOGIC_CHANGED".into(),
+                message: "决策逻辑发生变化".into(),
+                element: "授信决策".into(),
+            }],
+            ..review()
+        };
+        let report = verify_version(MODEL, 7, Some(&review), false).unwrap();
+        let gate = report
+            .gates
+            .iter()
+            .find(|gate| gate.code == "CHANGE_REVIEW")
+            .expect("change review gate");
+        assert_eq!(gate.status, "failed");
+        assert_eq!(
+            gate.message,
+            "高风险变更尚未确认：授信决策（DECISION_LOGIC_CHANGED）：决策逻辑发生变化"
         );
     }
 
@@ -1123,6 +1253,68 @@ mod tests {
         let values = json_inputs_to_feel(&model, &json!({ "Date": "2024-01-01" })).unwrap();
         assert!(
             matches!(values.get("Date"), Some(FeelValue::Date(value)) if value == "2024-01-01")
+        );
+    }
+
+    #[test]
+    fn typed_input_conversion_normalizes_scalar_strings_for_form_inputs() {
+        let model = dmn::parse_dmn(
+            r##"<definitions xmlns="https://www.omg.org/spec/DMN/20230324/MODEL/" id="m" name="ScalarInputs">
+                <inputData id="age-input" name="Age"><variable name="Age" typeRef="number"/></inputData>
+                <inputData id="device-input" name="UsesNewDevice"><variable name="UsesNewDevice" typeRef="boolean"/></inputData>
+                <decision id="check" name="Check">
+                    <informationRequirement><requiredInput href="#age-input"/></informationRequirement>
+                    <informationRequirement><requiredInput href="#device-input"/></informationRequirement>
+                    <literalExpression><text>true</text></literalExpression>
+                </decision>
+            </definitions>"##,
+        )
+        .unwrap();
+        let values =
+            json_inputs_to_feel(&model, &json!({ "Age": " 35 ", "UsesNewDevice": "false" }))
+                .unwrap();
+        assert!(matches!(values.get("Age"), Some(FeelValue::Number(value)) if *value == 35.0));
+        assert!(matches!(
+            values.get("UsesNewDevice"),
+            Some(FeelValue::Bool(false))
+        ));
+    }
+
+    #[test]
+    fn typed_input_conversion_keeps_incompatible_scalar_strings_invalid() {
+        let model = dmn::parse_dmn(
+            r##"<definitions xmlns="https://www.omg.org/spec/DMN/20230324/MODEL/" id="m" name="InvalidScalarInputs">
+                <inputData id="age-input" name="Age"><variable name="Age" typeRef="number"/></inputData>
+                <inputData id="device-input" name="UsesNewDevice"><variable name="UsesNewDevice" typeRef="boolean"/></inputData>
+                <decision id="check" name="Check">
+                    <informationRequirement><requiredInput href="#age-input"/></informationRequirement>
+                    <informationRequirement><requiredInput href="#device-input"/></informationRequirement>
+                    <literalExpression><text>true</text></literalExpression>
+                </decision>
+            </definitions>"##,
+        )
+        .unwrap();
+        let values = json_inputs_to_feel(
+            &model,
+            &json!({ "Age": "thirty-five", "UsesNewDevice": "maybe" }),
+        )
+        .unwrap();
+        assert!(matches!(
+            values.get("Age"),
+            Some(FeelValue::String(value)) if value == "thirty-five"
+        ));
+        assert!(matches!(
+            values.get("UsesNewDevice"),
+            Some(FeelValue::String(value)) if value == "maybe"
+        ));
+        let result = dmn::DmnExecutor::new(&model).evaluate_all(values);
+        assert!(result.has_errors());
+        assert_eq!(
+            result
+                .errors()
+                .filter(|message| message.code == "DMN-EVAL-TYPE")
+                .count(),
+            2
         );
     }
 

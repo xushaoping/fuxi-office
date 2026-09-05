@@ -128,6 +128,7 @@ impl DmnModel {
 }
 
 /// Serializes a boxed expression for editors that preserve unsupported expression kinds.
+#[allow(dead_code)] // 编辑器集成预留 API：当前模块随 dmn 测试构建编译，暂无调用者
 pub fn decision_logic_to_dmn_xml(logic: &DecisionLogic) -> Result<String> {
     let mut output = String::new();
     write_logic(&mut output, logic)?;
@@ -135,6 +136,7 @@ pub fn decision_logic_to_dmn_xml(logic: &DecisionLogic) -> Result<String> {
 }
 
 /// Serializes an encapsulated BKM body, including its formal parameters when present.
+#[allow(dead_code)] // 编辑器集成预留 API（BKM 对称序列化），暂无调用者
 pub fn bkm_logic_to_dmn_xml(logic: &DecisionLogic) -> Result<String> {
     let mut output = String::new();
     write_bkm_logic(&mut output, logic)?;

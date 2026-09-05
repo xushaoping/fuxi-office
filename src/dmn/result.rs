@@ -3,7 +3,6 @@ use crate::feel::FeelValue;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DmnMessageSeverity {
-    Info,
     Warn,
     Error,
 }
@@ -47,6 +46,8 @@ pub struct DmnResult {
 }
 
 impl DmnResult {
+    // 以下查询方法当前仅被单元测试直接调用（结果汇总/断言），产品路径直接读字段与 status
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn messages(&self) -> &[DmnMessage] {
         &self.messages
     }
@@ -64,16 +65,19 @@ impl DmnResult {
         self.messages_by_severity(DmnMessageSeverity::Error)
     }
 
+    #[cfg_attr(not(test), allow(dead_code))] // 测试专用查询（见 impl 注释）
     pub fn warnings(&self) -> impl Iterator<Item = &DmnMessage> {
         self.messages_by_severity(DmnMessageSeverity::Warn)
     }
 
+    #[cfg_attr(not(test), allow(dead_code))] // 测试专用查询（见 impl 注释）
     pub fn has_errors(&self) -> bool {
         self.messages
             .iter()
             .any(|message| message.severity == DmnMessageSeverity::Error)
     }
 
+    #[cfg_attr(not(test), allow(dead_code))] // 测试专用查询（见 impl 注释）
     pub fn has_warnings(&self) -> bool {
         self.warnings().next().is_some()
     }
@@ -82,10 +86,12 @@ impl DmnResult {
         self.errors().next()
     }
 
+    #[cfg_attr(not(test), allow(dead_code))] // 测试专用查询（见 impl 注释）
     pub fn error_count(&self) -> usize {
         self.errors().count()
     }
 
+    #[cfg_attr(not(test), allow(dead_code))] // 测试专用查询（见 impl 注释）
     pub fn warning_count(&self) -> usize {
         self.warnings().count()
     }

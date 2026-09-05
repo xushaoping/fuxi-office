@@ -1,7 +1,10 @@
 use super::ast::*;
 use super::value::FeelValue;
 use crate::feel::parse_feel;
-use chrono::{DateTime, Datelike, NaiveDate, NaiveDateTime, NaiveTime, Timelike};
+use chrono::{
+    DateTime, Datelike, Duration as ChronoDuration, FixedOffset, Local, NaiveDate, NaiveDateTime,
+    NaiveTime, TimeZone, Timelike,
+};
 use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::sync::OnceLock;
@@ -23,6 +26,8 @@ fn builtin_parameter_names(name: &str) -> Option<&'static [&'static str]> {
 // ============================================================
 
 pub struct FeelInterpreter {
+    // 状态化解释器上下文：产品路径以 eval_expr 显式传 ctx，仅状态化 API（with_context/eval/eval_ast）读取
+    #[cfg_attr(not(test), allow(dead_code))]
     context: HashMap<String, FeelValue>,
 }
 
@@ -41,21 +46,25 @@ impl FeelInterpreter {
         }
     }
 
+    #[cfg_attr(not(test), allow(dead_code))] // 状态化解释器入口，当前仅 eval_feel_with（测试）使用
     pub fn with_context(ctx: HashMap<String, FeelValue>) -> Self {
         FeelInterpreter { context: ctx }
     }
 
+    #[allow(dead_code)] // 可变状态设置：无调用者（含测试），状态化 API 预留
     pub fn set(&mut self, name: &str, value: FeelValue) {
         self.context.insert(name.to_string(), value);
     }
 
     /// 解析并执行 FEEL 表达式
+    #[cfg_attr(not(test), allow(dead_code))] // 当前仅 eval_feel（测试）使用
     pub fn eval(&self, input: &str) -> Result<FeelValue, String> {
         let ast = parse_feel(input)?;
         self.eval_expr(&ast, &self.context)
     }
 
     /// 在当前上下文基础上，额外添加变量后执行
+    #[allow(dead_code)] // 状态化扩展执行：无调用者，与 eval 对称保留
     pub fn eval_with(
         &self,
         input: &str,
@@ -69,10 +78,12 @@ impl FeelInterpreter {
         self.eval_expr(&ast, &ctx)
     }
 
+    #[allow(dead_code)] // AST 直接求值：无调用者，与 eval 对称保留
     pub fn eval_ast(&self, expr: &FeelExpr) -> Result<FeelValue, String> {
         self.eval_expr(expr, &self.context)
     }
 
+    #[allow(dead_code)] // 状态化 AST 扩展求值：无调用者，预留 API
     pub fn eval_ast_with(
         &self,
         expr: &FeelExpr,
@@ -677,6 +688,87 @@ impl FeelInterpreter {
         }
     }
 
+    fn parse_datetime_for_arithmetic(
+        value: &str,
+        fallback_offset: Option<FixedOffset>,
+    ) -> Result<DateTime<FixedOffset>, String> {
+        if let Ok(value) = DateTime::parse_from_rfc3339(value) {
+            return Ok(value);
+        }
+        let naive = NaiveDateTime::parse_from_str(value, "%Y-%m-%dT%H:%M:%S%.f")
+            .map_err(|error| format!("Invalid date and time '{value}': {error}"))?;
+        // `datetime-local` inputs intentionally omit an offset. If the other
+        // operand carries one, use it so arithmetic is independent of the
+        // server's timezone. With two local values, use the process timezone.
+        match fallback_offset {
+            Some(offset) => offset
+                .from_local_datetime(&naive)
+                .single()
+                .ok_or_else(|| format!("Invalid local date and time '{value}'")),
+            None => Local
+                .from_local_datetime(&naive)
+                .single()
+                .map(|value| value.fixed_offset())
+                .ok_or_else(|| format!("Invalid local date and time '{value}'")),
+        }
+    }
+
+    fn parse_datetime_pair_for_arithmetic(
+        left: &str,
+        right: &str,
+    ) -> Result<(DateTime<FixedOffset>, DateTime<FixedOffset>), String> {
+        let left_zoned = DateTime::parse_from_rfc3339(left);
+        let right_zoned = DateTime::parse_from_rfc3339(right);
+        match (left_zoned, right_zoned) {
+            (Ok(left), Ok(right)) => Ok((left, right)),
+            (Ok(left), Err(_)) => Ok((
+                left,
+                Self::parse_datetime_for_arithmetic(right, Some(*left.offset()))?,
+            )),
+            (Err(_), Ok(right)) => Ok((
+                Self::parse_datetime_for_arithmetic(left, Some(*right.offset()))?,
+                right,
+            )),
+            (Err(_), Err(_)) => Ok((
+                Self::parse_datetime_for_arithmetic(left, None)?,
+                Self::parse_datetime_for_arithmetic(right, None)?,
+            )),
+        }
+    }
+
+    fn format_day_time_duration(duration: ChronoDuration) -> String {
+        let negative = duration < ChronoDuration::zero();
+        let duration = if negative { -duration } else { duration };
+        let seconds = duration.num_seconds();
+        let nanos = (duration - ChronoDuration::seconds(seconds))
+            .num_nanoseconds()
+            .unwrap_or_default();
+        let days = seconds / 86_400;
+        let hours = (seconds % 86_400) / 3_600;
+        let minutes = (seconds % 3_600) / 60;
+        let whole_seconds = seconds % 60;
+        let mut value = String::new();
+        if days > 0 {
+            value.push_str(&format!("{days}D"));
+        }
+        if hours > 0 || minutes > 0 || whole_seconds > 0 || nanos > 0 || value.is_empty() {
+            value.push('T');
+            if hours > 0 {
+                value.push_str(&format!("{hours}H"));
+            }
+            if minutes > 0 {
+                value.push_str(&format!("{minutes}M"));
+            }
+            if nanos > 0 {
+                let fraction = format!("{nanos:09}").trim_end_matches('0').to_string();
+                value.push_str(&format!("{whole_seconds}.{fraction}S"));
+            } else {
+                value.push_str(&format!("{whole_seconds}S"));
+            }
+        }
+        format!("{}P{value}", if negative { "-" } else { "" })
+    }
+
     fn expand_iterable(&self, val: &FeelValue) -> Result<Vec<FeelValue>, String> {
         match val {
             FeelValue::List(items) => Ok(items.clone()),
@@ -905,6 +997,13 @@ impl FeelInterpreter {
                     } else {
                         format!("P{days}D")
                     }))
+                }
+                (FeelValue::DateTime(a), FeelValue::DateTime(b)) => {
+                    let (left, right) = Self::parse_datetime_pair_for_arithmetic(a, b)?;
+                    let duration = left.signed_duration_since(right);
+                    Ok(FeelValue::Duration(Self::format_day_time_duration(
+                        duration,
+                    )))
                 }
                 _ => match (l.to_f64(), r.to_f64()) {
                     (Some(a), Some(b)) => Ok(FeelValue::Number(a - b)),

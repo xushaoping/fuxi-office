@@ -321,6 +321,7 @@ struct LlmTaskSettings {
 #[cfg(not(target_family = "wasm"))]
 impl LlmState {
     pub fn from_env() -> Self {
+        dotenvy::dotenv().ok();
         let api_key = std::env::var("OPENAI_API_KEY")
             .ok()
             .filter(|key| !key.trim().is_empty());
@@ -328,6 +329,7 @@ impl LlmState {
             .unwrap_or_else(|_| "https://api.openai.com/v1".to_string());
         let default_model =
             std::env::var("OPENAI_MODEL").unwrap_or_else(|_| "gpt-4o-mini".to_string());
+        println!("==== OPENAI_MODEL: {default_model}");
         let default_options = llm_request_options_from_env();
         let agent_for = |task| {
             let mut settings = llm_task_settings_from_env(task, &default_model, &default_options);
@@ -362,6 +364,7 @@ impl LlmState {
 }
 
 #[cfg(not(target_family = "wasm"))]
+#[cfg_attr(not(test), allow(dead_code))] // 当前仅在单元测试中直接断言，产品路径经 disable_thinking 生效
 fn is_deepseek_reasoning_model(model: &str) -> bool {
     let model = model.trim().to_ascii_lowercase();
     // DeepSeek-compatible gateways expose thinking under several model
@@ -372,6 +375,7 @@ fn is_deepseek_reasoning_model(model: &str) -> bool {
 }
 
 #[cfg(not(target_family = "wasm"))]
+#[cfg_attr(not(test), allow(dead_code))] // 仅在单元测试中直接断言，产品路径经 disable_thinking 生效
 fn has_thinking_option(options: &Map<String, Value>) -> bool {
     options.contains_key("enable_thinking") || options.contains_key("thinking")
 }

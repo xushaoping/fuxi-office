@@ -81,8 +81,6 @@ name = "fuxi-dmn"
 path = "src/main.rs"
 
 [package.metadata.leptos]
-# 实际输出的 JS/WASM 文件名前缀
-name = "fuxi-dmn"
 # site 根目录
 site-root = "target/site"
 site-pkg-dir = "pkg"

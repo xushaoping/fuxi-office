@@ -1029,6 +1029,166 @@ decisions:
     }
 
     #[test]
+    fn generated_enum_decisions_can_preserve_unconfirmed_null_results() {
+        let definitions = parse_definitions(
+            r#"
+name: EcommerceOrderApproval
+namespace: https://example.com/dmn/ecommerce-order-approval
+description: 依次计算运费比例、风险等级、订单资格和最终审批结果；未确认的规则不臆造业务结果。
+imports: []
+itemDefinitions:
+  - name: RiskLevelType
+    type:
+      kind: enumeration
+      type_ref: string
+      values: [低风险, 中风险, 高风险]
+  - name: OrderEligibilityType
+    type:
+      kind: enumeration
+      type_ref: string
+      values: [符合资格, 拒绝, 人工审核]
+  - name: FinalResultType
+    type:
+      kind: enumeration
+      type_ref: string
+      values: [批准, 拒绝, 人工审核]
+inputs:
+  - name: shippingFee
+    typeRef: number
+  - name: orderAmount
+    typeRef: number
+  - name: ordersLast30Days
+    typeRef: number
+  - name: accountRegistrationTime
+    typeRef: dateTime
+  - name: userAge
+    typeRef: number
+  - name: historicalAverageSpending
+    typeRef: number
+  - name: usesNewDevice
+    typeRef: boolean
+decisions:
+  - name: ShippingFeeRatio
+    typeRef: number
+    requiredInputs: [shippingFee, orderAmount]
+    logic:
+      type: literalExpression
+      expression: if orderAmount > 0 then shippingFee / orderAmount else null
+      typeRef: number
+  - name: RiskLevel
+    typeRef: RiskLevelType
+    requiredInputs: [ordersLast30Days, accountRegistrationTime]
+    requiredDecisions: [ShippingFeeRatio]
+    logic:
+      type: decisionTable
+      hitPolicy: FIRST
+      inputs:
+        - name: OrdersLast30Days
+          expression: ordersLast30Days
+        - name: ShippingFeeRatio
+          expression: ShippingFeeRatio
+        - name: RegistrationAge
+          expression: duration(now() - accountRegistrationTime)
+      outputs:
+        - name: RiskLevel
+          typeRef: RiskLevelType
+      rules:
+        - inputEntries: ['-', 'null', '-']
+          outputEntries: ['null']
+        - inputEntries: ['> 20', '-', '-']
+          outputEntries: ['"高风险"']
+        - inputEntries: ['-', '> 0.30', '-']
+          outputEntries: ['"高风险"']
+        - inputEntries: ['> 10', '-', '-']
+          outputEntries: ['"中风险"']
+        - inputEntries: ['-', '-', '< duration("P7D")']
+          outputEntries: ['"中风险"']
+        - inputEntries: ['-', '-', '-']
+          outputEntries: ['"低风险"']
+  - name: OrderEligibility
+    typeRef: OrderEligibilityType
+    requiredInputs: [userAge, accountRegistrationTime, orderAmount]
+    logic:
+      type: decisionTable
+      hitPolicy: FIRST
+      inputs:
+        - name: UserAge
+          expression: userAge
+        - name: RegistrationAge
+          expression: duration(now() - accountRegistrationTime)
+        - name: OrderAmount
+          expression: orderAmount
+      outputs:
+        - name: OrderEligibility
+          typeRef: OrderEligibilityType
+      rules:
+        - inputEntries: ['-', '-', '-']
+          outputEntries: ['null']
+  - name: FinalResult
+    typeRef: FinalResultType
+    requiredInputs: [usesNewDevice]
+    requiredDecisions: [OrderEligibility, RiskLevel]
+    logic:
+      type: decisionTable
+      hitPolicy: FIRST
+      inputs:
+        - name: OrderEligibility
+          expression: OrderEligibility
+        - name: RiskLevel
+          expression: RiskLevel
+        - name: UsesNewDevice
+          expression: usesNewDevice
+      outputs:
+        - name: FinalResult
+          typeRef: FinalResultType
+      rules:
+        - inputEntries: ['"拒绝"', '-', '-']
+          outputEntries: ['"拒绝"']
+        - inputEntries: ['"符合资格"', '"高风险"', '-']
+          outputEntries: ['"拒绝"']
+        - inputEntries: ['"人工审核"', '"高风险"', '-']
+          outputEntries: ['"拒绝"']
+        - inputEntries: ['-', '-', '-']
+          outputEntries: ['null']
+bkms: []
+decisionServices: []
+knowledgeSources: []
+textAnnotations: []
+diagram: null
+"#,
+        )
+        .unwrap();
+        validate(&definitions).unwrap();
+        let xml = generate_dmn_xml(&definitions).unwrap();
+        let model = parse_dmn(&xml).unwrap();
+        let result = DmnExecutor::new(&model).evaluate_all(HashMap::from([
+            ("shippingFee".into(), FeelValue::Number(10.0)),
+            ("orderAmount".into(), FeelValue::Number(0.0)),
+            ("ordersLast30Days".into(), FeelValue::Number(1.0)),
+            (
+                "accountRegistrationTime".into(),
+                FeelValue::DateTime("2025-01-01T00:00:00Z".into()),
+            ),
+            ("userAge".into(), FeelValue::Number(30.0)),
+            ("historicalAverageSpending".into(), FeelValue::Number(100.0)),
+            ("usesNewDevice".into(), FeelValue::Bool(false)),
+        ]));
+        assert!(!result.has_errors(), "{:?}", result.messages);
+        for decision in [
+            "ShippingFeeRatio",
+            "RiskLevel",
+            "OrderEligibility",
+            "FinalResult",
+        ] {
+            assert_eq!(
+                result.decision_by_name(decision).unwrap().value,
+                FeelValue::Null,
+                "{decision} should remain unresolved"
+            );
+        }
+    }
+
+    #[test]
     fn generated_bkm_invocation_preserves_parameters_and_knowledge_requirements() {
         let definitions = parse_definitions(
             r#"

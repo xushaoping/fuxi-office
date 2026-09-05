@@ -12,8 +12,9 @@ pub enum ProjectPermission {
 
 impl ProjectPermission {
     fn allows(self, role: &str) -> bool {
+        let role = role.trim().to_ascii_lowercase();
         matches!(
-            (self, role),
+            (self, role.as_str()),
             (Self::View, "modeler" | "reviewer" | "approver" | "viewer")
                 | (Self::Model, "modeler")
                 | (Self::Review, "reviewer")
@@ -50,14 +51,16 @@ pub async fn has_permission(
     .bind(username)
     .fetch_one(db)
     .await?;
-    if owner {
-        return Ok(matches!(
+    if owner
+        && matches!(
             permission,
             ProjectPermission::View
                 | ProjectPermission::Model
                 | ProjectPermission::Manage
                 | ProjectPermission::ManageService
-        ));
+        )
+    {
+        return Ok(true);
     }
     let roles = sqlx::query_scalar::<_, String>(
         "SELECT role FROM project_members WHERE project_id = $1 AND username = $2",
@@ -66,6 +69,9 @@ pub async fn has_permission(
     .bind(username)
     .fetch_all(db)
     .await?;
+    // Ownership does not implicitly grant delegated review or approval. If a
+    // legacy project explicitly assigned one of those roles to its owner,
+    // honor that assignment just like any other project member role.
     Ok(roles.iter().any(|role| permission.allows(role)))
 }
 
@@ -84,5 +90,6 @@ mod tests {
         assert!(!ProjectPermission::ManageService.allows("reviewer"));
         assert!(ProjectPermission::View.allows("viewer"));
         assert!(!ProjectPermission::Model.allows("viewer"));
+        assert!(ProjectPermission::Approve.allows(" APPROVER "));
     }
 }

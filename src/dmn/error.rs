@@ -12,6 +12,8 @@ pub enum DmnError {
         decision: String,
         reference: String,
     },
+    // 仅由预留的单决策执行 API（evaluate 等）与 artifact 测试路径构造
+    #[cfg_attr(not(test), allow(dead_code))]
     UnknownDecision(String),
     UnknownDecisionService(String),
     MissingInput(String),
@@ -49,6 +51,8 @@ pub enum DmnError {
         decision: String,
         feature: String,
     },
+    // 仅由已编译工件（artifact，测试构建）路径构造
+    #[cfg_attr(not(test), allow(dead_code))]
     Artifact(String),
 }
 

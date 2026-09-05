@@ -16,6 +16,8 @@ pub(crate) struct CompiledType {
 #[derive(Debug, Clone)]
 pub struct CompiledDmnModel<'a> {
     pub(crate) model: Cow<'a, DmnModel>,
+    // 仅编译期做重名校验并供按名执行（evaluate/evaluate_by_name，测试/预留 API）读取
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) decision_ids_by_name: HashMap<String, String>,
     pub(crate) decision_indices_by_id: HashMap<String, usize>,
     pub(crate) input_indices_by_id: HashMap<String, usize>,
@@ -185,6 +187,7 @@ impl<'a> CompiledDmnModel<'a> {
         })
     }
 
+    #[cfg_attr(not(test), allow(dead_code))] // 当前仅已编译工件（artifact 测试）访问
     pub fn model(&self) -> &DmnModel {
         self.model.as_ref()
     }
@@ -215,6 +218,7 @@ fn validate_model_languages(model: &DmnModel) -> Result<()> {
 }
 
 impl CompiledDmnModel<'static> {
+    #[cfg_attr(not(test), allow(dead_code))] // 供已编译工件（artifact，测试构建）持有静态模型
     pub(crate) fn compile_owned(model: DmnModel) -> Result<Self> {
         Self::compile_model(Cow::Owned(model))
     }

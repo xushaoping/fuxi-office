@@ -1,8 +1,8 @@
 -- Run this file while connected to the default `postgres` database.
 -- `\gexec` creates the application database only when it does not exist.
-SELECT 'CREATE DATABASE fuxi_office'
-WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'fuxi_office')\gexec
-\connect fuxi_office
+SELECT 'CREATE DATABASE fuxi_dmn'
+WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'fuxi_dmn')\gexec
+\connect fuxi_dmn
 
 
 CREATE TABLE IF NOT EXISTS users (
@@ -432,7 +432,8 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE
     knowledge_audit_events,
     agent_runs,
     decision_workflows,
-    model_change_candidates
+    model_change_candidates,
+    decision_service_api_keys
 TO :"app_user";
 GRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES IN SCHEMA public TO :"app_user";
 ALTER DEFAULT PRIVILEGES IN SCHEMA public

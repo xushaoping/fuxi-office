@@ -2407,6 +2407,27 @@ fn dmn15_builtin_type_aliases_compile_and_validate_runtime_values() {
 }
 
 #[test]
+fn dmn15_decision_outputs_may_be_null_for_unconfirmed_rules() {
+    let model = parse_dmn(&format!(
+        r##"<definitions xmlns="{DMN_NAMESPACE}">
+            <itemDefinition name="Eligibility"><typeRef>string</typeRef><allowedValues><text>"eligible", "rejected"</text></allowedValues></itemDefinition>
+            <decision id="result" name="result">
+                <variable name="result" typeRef="Eligibility"/>
+                <decisionTable hitPolicy="FIRST">
+                    <output name="result" typeRef="Eligibility"/>
+                    <rule><outputEntry><text>null</text></outputEntry></rule>
+                </decisionTable>
+            </decision>
+        </definitions>"##
+    ))
+    .unwrap();
+    let result = DmnExecutor::new(&model)
+        .evaluate("result", HashMap::new())
+        .unwrap();
+    assert_eq!(result.value, FeelValue::Null);
+}
+
+#[test]
 fn dmn15_context_function_definitions_are_invocable_and_round_trip() {
     let xml = format!(
         r##"<definitions xmlns="{DMN_NAMESPACE}"><decision id="result" name="result"><context>

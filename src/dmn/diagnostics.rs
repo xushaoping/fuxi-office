@@ -132,6 +132,7 @@ pub(crate) fn failed_result(error: DmnError, source: DmnMessageSource) -> DmnRes
     result_from(Vec::new(), diagnostics)
 }
 
+#[cfg_attr(not(test), allow(dead_code))] // 供单决策执行（evaluate）预留 API 提取首个错误
 pub(crate) fn result_error(result: &DmnResult) -> Option<DmnError> {
     result
         .messages

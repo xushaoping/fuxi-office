@@ -97,6 +97,8 @@ pub struct DmnExecutor<'a> {
 
 enum ExecutorSource<'a> {
     Model(Box<Result<CompiledDmnModel<'a>>>),
+    // 仅从 from_compiled（按名/ID 单决策执行等预留 API）构造
+    #[cfg_attr(not(test), allow(dead_code))]
     Compiled(&'a CompiledDmnModel<'a>),
 }
 
@@ -115,6 +117,7 @@ impl<'a> DmnExecutor<'a> {
         }
     }
 
+    #[cfg_attr(not(test), allow(dead_code))] // 复用已编译模型：当前仅单决策执行/决策服务预留 API 与测试使用
     pub fn from_compiled(model: &'a CompiledDmnModel<'a>) -> Self {
         Self {
             source: ExecutorSource::Compiled(model),
@@ -306,6 +309,7 @@ impl<'a> DmnExecutor<'a> {
             .unwrap_or(FeelValue::Null)
     }
 
+    #[cfg_attr(not(test), allow(dead_code))] // 按名称/ID 执行单个决策：预留 API，当前仅测试直接调用
     pub fn evaluate(
         &self,
         decision: &str,
@@ -331,6 +335,7 @@ impl<'a> DmnExecutor<'a> {
         }
     }
 
+    #[cfg_attr(not(test), allow(dead_code))] // 单决策执行预留 API，当前仅测试直接调用
     pub fn evaluate_by_id(&self, id: &str, inputs: HashMap<String, FeelValue>) -> DmnResult {
         let compiled = match self.compiled() {
             Ok(model) => model,
@@ -345,6 +350,7 @@ impl<'a> DmnExecutor<'a> {
         self.evaluate_targets(compiled, std::iter::once(id), inputs)
     }
 
+    #[cfg_attr(not(test), allow(dead_code))] // 单决策执行预留 API，当前仅测试直接调用
     pub fn evaluate_by_name(&self, name: &str, inputs: HashMap<String, FeelValue>) -> DmnResult {
         let compiled = match self.compiled() {
             Ok(model) => model,
@@ -371,6 +377,7 @@ impl<'a> DmnExecutor<'a> {
         )
     }
 
+    #[cfg_attr(not(test), allow(dead_code))] // 决策服务执行预留 API，当前仅测试直接调用（产品用 with_details）
     pub fn evaluate_decision_service(
         &self,
         service: &str,
@@ -393,6 +400,7 @@ impl<'a> DmnExecutor<'a> {
         }
     }
 
+    #[allow(dead_code)] // 编译态决策服务按 ID 执行预留 API（与 evaluate_decision_service 对称），暂无调用者（含测试）
     pub fn evaluate_decision_service_by_id(
         &self,
         id: &str,
@@ -411,6 +419,7 @@ impl<'a> DmnExecutor<'a> {
         }
     }
 
+    #[allow(dead_code)] // 编译态决策服务按名称执行预留 API（与 evaluate_decision_service 对称），暂无调用者（含测试）
     pub fn evaluate_decision_service_by_name(
         &self,
         name: &str,
@@ -623,7 +632,7 @@ impl<'a> DmnExecutor<'a> {
             .bind_knowledge_requirements(decision, state, compiled, &mut knowledge_bindings)
             .and_then(|_| self.evaluate_logic(decision, state, compiled))
             .and_then(|table| {
-                self.validate_declared_value(
+                self.validate_decision_value(
                     decision.type_ref.as_deref(),
                     &table.value,
                     &decision.name,
@@ -806,6 +815,23 @@ impl<'a> DmnExecutor<'a> {
             return self.validate_item_type(item_type, value, location, compiled);
         }
         self.validate_builtin_type(type_ref, value, location)
+    }
+
+    // A decision may intentionally produce null when its business rule is
+    // incomplete or no rule matches. Null is absence of a decision result,
+    // rather than an enum member, so keep strict type checks for inputs while
+    // allowing this value through decision-output paths.
+    fn validate_decision_value(
+        &self,
+        type_ref: Option<&str>,
+        value: &FeelValue,
+        location: &str,
+        compiled: &CompiledDmnModel<'_>,
+    ) -> Result<()> {
+        if matches!(value, FeelValue::Null) {
+            return Ok(());
+        }
+        self.validate_declared_value(type_ref, value, location, compiled)
     }
 
     fn validate_item_type(
@@ -1619,7 +1645,7 @@ impl<'a> DmnExecutor<'a> {
             .zip(&table.outputs)
             .map(|(entry, output)| {
                 let value = self.eval_expression(compiled, entry, context, &decision.name)?;
-                self.validate_declared_value(
+                self.validate_decision_value(
                     output.type_ref.as_deref(),
                     &value,
                     &format!(
@@ -1629,10 +1655,12 @@ impl<'a> DmnExecutor<'a> {
                     ),
                     compiled,
                 )?;
-                if !matches!(
-                    table.hit_policy,
-                    HitPolicy::Priority | HitPolicy::OutputOrder
-                ) {
+                if !matches!(value, FeelValue::Null)
+                    && !matches!(
+                        table.hit_policy,
+                        HitPolicy::Priority | HitPolicy::OutputOrder
+                    )
+                {
                     self.validate_output_values(decision, output, &value, context, compiled)?;
                 }
                 Ok(value)
@@ -1670,7 +1698,7 @@ impl<'a> DmnExecutor<'a> {
                 Some(entry) => self.eval_expression(compiled, entry, context, &decision.name),
                 None => Ok(FeelValue::Null),
             }?;
-            self.validate_declared_value(
+            self.validate_decision_value(
                 output.type_ref.as_deref(),
                 &value,
                 &format!(
@@ -1680,7 +1708,9 @@ impl<'a> DmnExecutor<'a> {
                 ),
                 compiled,
             )?;
-            self.validate_output_values(decision, output, &value, context, compiled)?;
+            if !matches!(value, FeelValue::Null) {
+                self.validate_output_values(decision, output, &value, context, compiled)?;
+            }
             return Ok(value);
         }
         if table
@@ -1696,7 +1726,7 @@ impl<'a> DmnExecutor<'a> {
                 Some(entry) => self.eval_expression(compiled, entry, context, &decision.name)?,
                 None => FeelValue::Null,
             };
-            self.validate_declared_value(
+            self.validate_decision_value(
                 output.type_ref.as_deref(),
                 &value,
                 &format!(
@@ -1706,7 +1736,9 @@ impl<'a> DmnExecutor<'a> {
                 ),
                 compiled,
             )?;
-            self.validate_output_values(decision, output, &value, context, compiled)?;
+            if !matches!(value, FeelValue::Null) {
+                self.validate_output_values(decision, output, &value, context, compiled)?;
+            }
             let name = output
                 .name
                 .clone()

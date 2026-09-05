@@ -29,6 +29,7 @@ pub struct OwnedCompiledDmnModel {
 }
 
 impl OwnedCompiledDmnModel {
+    #[allow(dead_code)] // 编译态模型访问器：回归用例当前经 evaluate_* 断言结果，暂无直接调用
     pub fn model(&self) -> &DmnModel {
         self.compiled.model()
     }
@@ -53,10 +54,12 @@ impl OwnedCompiledDmnModel {
         DmnExecutor::from_compiled(&self.compiled).evaluate_by_id(id, inputs)
     }
 
+    #[allow(dead_code)] // 按名称执行预留 API（与 evaluate_by_id 对称），回归用例暂未覆盖
     pub fn evaluate_by_name(&self, name: &str, inputs: HashMap<String, FeelValue>) -> DmnResult {
         DmnExecutor::from_compiled(&self.compiled).evaluate_by_name(name, inputs)
     }
 
+    #[allow(dead_code)] // 全量执行预留 API，回归用例暂未覆盖
     pub fn evaluate_all(&self, inputs: HashMap<String, FeelValue>) -> DmnResult {
         DmnExecutor::from_compiled(&self.compiled).evaluate_all(inputs)
     }

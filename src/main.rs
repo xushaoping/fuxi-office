@@ -50,8 +50,6 @@ async fn index() -> Html<&'static str> {
 
 enum ApiError {
     Database,
-    BadRequest(&'static str),
-    NotFound,
 }
 
 impl From<sqlx::Error> for ApiError {
@@ -64,8 +62,6 @@ impl IntoResponse for ApiError {
     fn into_response(self) -> axum::response::Response {
         let (status, message) = match self {
             ApiError::Database => (StatusCode::INTERNAL_SERVER_ERROR, "服务器内部错误"),
-            ApiError::BadRequest(message) => (StatusCode::BAD_REQUEST, message),
-            ApiError::NotFound => (StatusCode::NOT_FOUND, "记录不存在"),
         };
         (status, message).into_response()
     }

@@ -24,7 +24,7 @@ use crate::project_access::{self, ProjectPermission};
 use crate::types::{AppState, Claims};
 use crate::workflow::{
     AnalyzeRequirementRequest, Clarification, ClarificationAnswer, CreateDecisionPlanRequest,
-    DecisionBrief, DecisionPlan, DecisionWorkflowState, RequirementAnalysis,
+    DecisionPlan, DecisionWorkflowState, RequirementAnalysis,
 };
 
 struct WorkflowApiError {
@@ -281,7 +281,7 @@ async fn ensure_model_permission(
 async fn load_workflow(
     state: &AppState,
     project_id: i64,
-    username: &str,
+    _username: &str,
 ) -> Result<Option<DecisionWorkflowState>, WorkflowApiError> {
     sqlx::query_as::<_, WorkflowRow>(
         r#"
@@ -645,7 +645,7 @@ pub fn routes(llm_state: Arc<LlmState>) -> Router<AppState> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::workflow::{DecisionField, PlannedDecision};
+    use crate::workflow::{DecisionBrief, DecisionField, PlannedDecision};
 
     #[test]
     fn required_clarifications_must_be_answered() {

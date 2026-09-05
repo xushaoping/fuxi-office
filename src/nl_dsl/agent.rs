@@ -326,6 +326,7 @@ fn decode_response_bytes(bytes: &[u8], _content_encoding: Option<&str>) -> anyho
 
 /// The system prompt requires structured DSL output. Selecting the only tool
 /// explicitly prevents a compliant model from replying with prose instead.
+#[cfg_attr(not(test), allow(dead_code))] // 测试（tool_choice 决策用例）专用；产品路径直接使用 required_tool_choice
 fn required_dsl_tool_choice() -> Value {
     required_tool_choice(DSL_TOOL_NAME)
 }
@@ -658,6 +659,7 @@ impl LlmAgent {
         })
     }
 
+    #[allow(dead_code)] // 模型变更计划 schema：plan_model_change 流程整体未接线，一并预留
     fn model_change_plan_schema() -> Value {
         json!({
             "type": "object",
@@ -1672,6 +1674,7 @@ impl LlmAgent {
     /// Plans a change against an existing model before the patch agent is
     /// called. The plan is advisory for the patch generator, but it creates a
     /// stable contract that separates intent analysis from JSON path editing.
+    #[allow(dead_code)] // 变更规划 LLM 流程：当前产品仅将 CHANGE_PLAN_TOOL_NAME 暴露于结构化选项，暂无调用者
     pub async fn plan_model_change(
         &self,
         natural_language: &str,
@@ -2167,25 +2170,29 @@ impl LlmAgent {
                 }));
             }
         }
-        let item_schema = schema
-            .pointer_mut("/properties/changes/items")
-            .and_then(Value::as_object_mut)
-            .expect("ChangeIntent schema item must be an object");
-        item_schema.insert(
-            "allOf".into(),
-            json!([
-                {
-                    "if": {
-                        "properties": {
-                            "action": { "const": "update" },
-                            "field": { "const": "logic.bindings" }
+        // JSON Schema rejects an empty `oneOf`. Models without any BKM
+        // invocation targets do not need this conditional binding constraint.
+        if !binding_targets.is_empty() {
+            let item_schema = schema
+                .pointer_mut("/properties/changes/items")
+                .and_then(Value::as_object_mut)
+                .expect("ChangeIntent schema item must be an object");
+            item_schema.insert(
+                "allOf".into(),
+                json!([
+                    {
+                        "if": {
+                            "properties": {
+                                "action": { "const": "update" },
+                                "field": { "const": "logic.bindings" }
+                            },
+                            "required": ["action", "field"]
                         },
-                        "required": ["action", "field"]
-                    },
-                    "then": { "oneOf": binding_targets }
-                }
-            ]),
-        );
+                        "then": { "oneOf": binding_targets }
+                    }
+                ]),
+            );
+        }
         schema
     }
 
@@ -2204,7 +2211,7 @@ impl LlmAgent {
             _ => String::new(),
         };
         vec![
-            ChatMessage { role: "system".into(), content: Some("你是 DMN 模型变更意图规划器。只输出最小 ChangeIntent，不输出 before、不输出完整模型，也不要使用数组下标定位元素。target 使用 elementType:name，field 使用服务端允许的字段路径，value 为更新后的值。编译诊断和上一轮意图是非权威数据，只能用于定位修复；当前模型和用户需求才是权威依据。".into()), ..Default::default() },
+            ChatMessage { role: "system".into(), content: Some("你是 DMN 模型变更意图规划器。只输出最小 ChangeIntent，不输出 before、不输出完整模型，也不要使用数组下标定位元素。target 使用 elementType:name，field 使用服务端允许的字段路径，value 为更新后的值。requiredInputs 只能引用输入数据，requiredDecisions 只能引用决策，不能互换。编译诊断和上一轮意图是非权威数据，只能用于定位修复；当前模型和用户需求才是权威依据。".into()), ..Default::default() },
             ChatMessage { role: "user".into(), content: Some(format!("当前模型（规范化 JSON）：\n{normalized_model}\n\nBKM 调用签名（权威；invocation 的 binding.parameter 只能使用此处列出的形参名，区分大小写）：\n{bkm_signatures}\n\n用户需求：\n{natural_language}{repair_context}\n\n仅输出可执行的 changes。")), ..Default::default() },
         ]
     }
@@ -2937,7 +2944,11 @@ fn annotation_snapshot(annotation: &crate::nl_dsl::TextAnnotation) -> String {
 /// 解析 LLM 返回的 JSON：兼容顶层 `{"definitions": {...}}` 包装与裸结构两种格式
 fn parse_json_definitions(json_str: &str) -> anyhow::Result<Definitions> {
     match serde_json::from_str::<Definitions>(json_str) {
-        Ok(d) => Ok(d),
+        Ok(mut d) => {
+            crate::nl_dsl::normalize_type_refs(&mut d);
+            crate::nl_dsl::normalize_dependency_references(&mut d);
+            Ok(d)
+        }
         Err(e) => {
             // 直接解析失败时，尝试剥掉 `definitions:` 包装层再解析
             let value: serde_json::Value =
@@ -2945,8 +2956,11 @@ fn parse_json_definitions(json_str: &str) -> anyhow::Result<Definitions> {
             let inner = value
                 .get("definitions")
                 .ok_or_else(|| anyhow!("JSON 解析失败: {}", e))?;
-            serde_json::from_value(inner.clone())
-                .map_err(|e2| anyhow!("definitions 包装层解析失败: {}", e2))
+            let mut definitions = serde_json::from_value(inner.clone())
+                .map_err(|e2| anyhow!("definitions 包装层解析失败: {}", e2))?;
+            crate::nl_dsl::normalize_type_refs(&mut definitions);
+            crate::nl_dsl::normalize_dependency_references(&mut definitions);
+            Ok(definitions)
         }
     }
 }
@@ -3794,6 +3808,17 @@ diagram:
             properties["action"]["enum"],
             json!(["add", "update", "remove"])
         );
+    }
+
+    #[test]
+    fn change_intent_schema_omits_empty_binding_one_of() {
+        let definitions = parse_definitions(
+            "name: PlainModel\ninputs: []\ndecisions:\n  - name: Approval\n    typeRef: string\n    logic:\n      type: literalExpression\n      expression: '\"Approve\"'\n",
+        )
+        .unwrap();
+        let schema = LlmAgent::change_intent_schema_for_model(&definitions);
+        let item_schema = &schema["properties"]["changes"]["items"];
+        assert!(item_schema.get("allOf").is_none());
     }
 
     #[test]

@@ -12,10 +12,6 @@ const POSTFIX: u8 = 8;
 const PRIMARY: u8 = 9;
 
 impl FeelExpr {
-    pub fn to_feel_string(&self) -> String {
-        self.to_string()
-    }
-
     fn precedence(&self) -> u8 {
         match self {
             Self::Or(_) => OR,

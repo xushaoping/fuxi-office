@@ -42,6 +42,10 @@
 
 知识库录入、项目绑定、自然语言建模关联和 DSL 示例见 [知识库与建模关联示例](docs/knowledge-base-examples.md)。
 
+### 视频说明
+
+项目功能演示和操作流程请观看：[哔哩哔哩视频说明](https://www.bilibili.com/video/BV1e3t26bEKc/?spm_id_from=333.1387.homepage.video_card.click&vd_source=3010a57b99a8070ad0f56bbd638873b0)。
+
 ## 技术架构
 
 ### 技术栈

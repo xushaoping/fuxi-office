@@ -2,6 +2,12 @@
 
 企业级 DMN 决策自动化平台，全栈 Rust 实现。用户以自然语言描述业务规则，系统通过 LLM 智能体生成结构化 DSL，经多层校验后编译为标准 DMN 1.5 XML，并提供完整的版本管理、业务验收、发布运行和数据分析能力。
 
+线上演示：[https://fuxioffice.cn/](https://fuxioffice.cn/)
+
+账号1：admin/admin1234
+
+账号2：fuxi/admin1234
+
 ## 核心特性
 
 ### 智能建模
@@ -45,6 +51,10 @@
 ### 视频说明
 
 项目功能演示和操作流程请观看：[哔哩哔哩视频说明](https://www.bilibili.com/video/BV1e3t26bEKc/?spm_id_from=333.1387.homepage.video_card.click&vd_source=3010a57b99a8070ad0f56bbd638873b0)。
+
+作品介绍文档：[下载 PDF](docs/project-introduction.pdf)，内容包括项目背景、技术架构、应用场景和创新点。
+
+项目推广文章：[让业务规则真正“会思考、能落地”](docs/project-promotion.md)。
 
 ## 技术架构
 
@@ -121,7 +131,7 @@ docs/                        设计文档和操作手册
 
 ### 前置条件
 
-- Rust 1.88（仓库工具链固定版本；`Cargo.toml` 的最低版本要求为 Rust 1.85，项目使用 Rust 2024 edition）
+- Rust 1.90（仓库工具链固定版本；`Cargo.toml` 的最低版本要求为 Rust 1.85，项目使用 Rust 2024 edition）
 - PostgreSQL 14 或更高版本
 - `wasm32-unknown-unknown` Rust target
 - `cargo-leptos`
@@ -129,6 +139,7 @@ docs/                        设计文档和操作手册
 ```bash
 rustup target add wasm32-unknown-unknown
 cargo install cargo-leptos --version 0.3.7 --locked
+cargo install wasm-bindgen-cli --version 0.2.127 --locked
 ```
 
 ### 环境配置
@@ -146,7 +157,7 @@ cp .env.example .env
 DB_PASSWORD=<数据库密码>
 
 # PostgreSQL 连接信息；数据库名称需与 script/init.sql 一致
-DATABASE_URL=postgres://<用户名>:<密码>@127.0.0.1:5432/fuxi_office
+DATABASE_URL=postgres://<用户名>:<密码>@127.0.0.1:5432/fuxi_dmn
 
 # 至少使用 32 位随机字符串
 JWT_SECRET=<随机且保密的 JWT 密钥>
@@ -190,71 +201,71 @@ OPENAI_CHANGE_INTENT_REQUEST_OPTIONS_JSON='{"enable_thinking":false}'
 # 首次部署时创建应用数据库角色；已存在时跳过此命令
 psql -U <管理员用户名> -d postgres -c "CREATE USER fuxi WITH PASSWORD '<数据库密码>';"
 
-# init.sql 会创建 fuxi_office 数据库并初始化表结构
+# init.sql 会创建 fuxi_dmn 数据库并初始化表结构
 psql -U <管理员用户名> -d postgres -v app_user=fuxi -f script/init.sql
 ```
 
-`<数据库密码>` 必须与 `.env` 中 `DATABASE_URL` 使用的密码一致。`script/init.sql` 会创建 `fuxi_office` 数据库、用户表，以及决策项目、版本、制品和智能运行记录表。
+`<数据库密码>` 必须与 `.env` 中 `DATABASE_URL` 使用的密码一致。`script/init.sql` 会创建 `fuxi_dmn` 数据库、用户表，以及决策项目、版本、制品和智能运行记录表。
 
 **已有数据库升级**（按顺序执行所需脚本）：
 
 ```bash
 # 决策项目和版本管理
-psql -U <管理员> -d fuxi_office -v app_user=fuxi -f script/002_decision_projects.sql
+psql -U <管理员> -d fuxi_dmn -v app_user=fuxi -f script/002_decision_projects.sql
 
 # 需求工作流
-psql -U <管理员> -d fuxi_office -v app_user=fuxi -f script/003_decision_workflow.sql
+psql -U <管理员> -d fuxi_dmn -v app_user=fuxi -f script/003_decision_workflow.sql
 
 # 增量修改和补丁审计
-psql -U <管理员> -d fuxi_office -v app_user=fuxi -f script/004_model_patch.sql
+psql -U <管理员> -d fuxi_dmn -v app_user=fuxi -f script/004_model_patch.sql
 
 # 版本差异和变更确认
-psql -U <管理员> -d fuxi_office -v app_user=fuxi -f script/005_version_review.sql
+psql -U <管理员> -d fuxi_dmn -v app_user=fuxi -f script/005_version_review.sql
 
 # 业务验收测试套件
-psql -U <管理员> -d fuxi_office -v app_user=fuxi -f script/006_decision_test_cases.sql
+psql -U <管理员> -d fuxi_dmn -v app_user=fuxi -f script/006_decision_test_cases.sql
 
 # 执行轨迹持久化
-psql -U <管理员> -d fuxi_office -v app_user=fuxi -f script/007_execution_trace.sql
+psql -U <管理员> -d fuxi_dmn -v app_user=fuxi -f script/007_execution_trace.sql
 
 # 决策服务运行记录
-psql -U <管理员> -d fuxi_office -v app_user=fuxi -f script/008_decision_services.sql
+psql -U <管理员> -d fuxi_dmn -v app_user=fuxi -f script/008_decision_services.sql
 
 # 版本回滚和审计日志
-psql -U <管理员> -d fuxi_office -v app_user=fuxi -f script/009_version_rollback_audit.sql
+psql -U <管理员> -d fuxi_dmn -v app_user=fuxi -f script/009_version_rollback_audit.sql
 
 # 模型库和模板复用
-psql -U <管理员> -d fuxi_office -v app_user=fuxi -f script/010_model_library.sql
+psql -U <管理员> -d fuxi_dmn -v app_user=fuxi -f script/010_model_library.sql
 
 # 知识库和术语字典
-psql -U <管理员> -d fuxi_office -v app_user=fuxi -f script/011_knowledge_sources.sql
+psql -U <管理员> -d fuxi_dmn -v app_user=fuxi -f script/011_knowledge_sources.sql
 
 # 业务结果反馈闭环
-psql -U <管理员> -d fuxi_office -v app_user=fuxi -f script/012_decision_run_outcomes.sql
+psql -U <管理员> -d fuxi_dmn -v app_user=fuxi -f script/012_decision_run_outcomes.sql
 
 # 优化建议
-psql -U <管理员> -d fuxi_office -v app_user=fuxi -f script/013_optimization_proposals.sql
+psql -U <管理员> -d fuxi_dmn -v app_user=fuxi -f script/013_optimization_proposals.sql
 
 # 项目协作成员
-psql -U <管理员> -d fuxi_office -v app_user=fuxi -f script/014_project_members.sql
+psql -U <管理员> -d fuxi_dmn -v app_user=fuxi -f script/014_project_members.sql
 
 # 模型变更候选（预览/提交）
-psql -U <管理员> -d fuxi_office -v app_user=fuxi -f script/015_model_change_candidates.sql
+psql -U <管理员> -d fuxi_dmn -v app_user=fuxi -f script/015_model_change_candidates.sql
 
 # revision 并发控制字段
-psql -U <管理员> -d fuxi_office -v app_user=fuxi -f script/016_model_revisions.sql
+psql -U <管理员> -d fuxi_dmn -v app_user=fuxi -f script/016_model_revisions.sql
 
 # 协作成员多角色支持（已有数据库必须执行）
-psql -U <管理员> -d fuxi_office -v app_user=fuxi -f script/017_project_member_roles.sql
+psql -U <管理员> -d fuxi_dmn -v app_user=fuxi -f script/017_project_member_roles.sql
 
 # 对外决策服务调用凭证
-psql -U <管理员> -d fuxi_office -v app_user=fuxi -f script/018_decision_service_api_keys.sql
+psql -U <管理员> -d fuxi_dmn -v app_user=fuxi -f script/018_decision_service_api_keys.sql
 
 # 系统用户角色（已有数据库必须执行）
-psql -U <管理员> -d fuxi_office -v app_user=fuxi -f script/019_user_roles.sql
+psql -U <管理员> -d fuxi_dmn -v app_user=fuxi -f script/019_user_roles.sql
 
 # 修复决策服务调用凭证表权限（已有数据库必须执行）
-psql -U <管理员> -d fuxi_office -v app_user=fuxi -f script/020_decision_service_api_keys_permissions.sql
+psql -U <管理员> -d fuxi_dmn -v app_user=fuxi -f script/020_decision_service_api_keys_permissions.sql
 ```
 
 **权限问题修复**：
@@ -690,12 +701,137 @@ docker compose --env-file .env ps
 
 `DB_PASSWORD`、`JWT_SECRET` 和 `ADMIN_PASSWORD` 是必需配置；`OPENAI_API_KEY` 仅在使用智能建模时需要。数据库初始化脚本只会在首次创建 `postgres_data` 卷时自动执行，已有数据库升级请按上面的增量 SQL 顺序执行。停止服务时使用 `docker compose --env-file .env down`；不要使用 `down -v`，除非确认要删除数据库卷。
 
-如果 Docker Hub 不可访问，可使用能访问的 Rust 1.88 镜像构建：
+如果 Docker Hub 不可访问，可使用能访问的 Rust 1.90 镜像构建：
 
 ```bash
-RUST_IMAGE=your-registry/rust:1.88-bookworm \
+RUST_IMAGE=your-registry/rust:1.90-bookworm \
   docker compose --env-file .env build
 docker compose --env-file .env up -d
+```
+
+国内网络构建建议启用 Docker BuildKit。Dockerfile 会自动复用 Cargo registry、git
+依赖和 apt 缓存；首次使用某个 Rust 版本时仍需下载一次
+`wasm32-unknown-unknown` 标准库。Dockerfile 只缓存 `/usr/local/rustup/downloads`，
+不挂载整个 `/usr/local/rustup`，以免遮蔽镜像自带的工具链；安装结果由 Docker 构建层复用。
+项目 `rust-toolchain.toml` 固定 Rust 1.90，建议镜像版本保持一致：
+
+```bash
+DOCKER_BUILDKIT=1 docker build \
+  --platform linux/amd64 \
+  --build-arg RUST_IMAGE=rust:1.90-bookworm \
+  --build-arg RUST_TOOLCHAIN=1.90 \
+  --build-arg RUSTUP_DIST_SERVER=https://rsproxy.cn \
+  --build-arg RUSTUP_UPDATE_ROOT=https://rsproxy.cn/rustup \
+  -t fuxi-dmn:$VERSION .
+```
+
+在 CI 或远程 BuildKit builder 中，可额外配置 `--cache-to` 和 `--cache-from` 将
+缓存推送到镜像仓库，避免构建节点更换后再次下载依赖。
+
+如果构建在 `resolve image config for docker-image://docker.io/docker/dockerfile:1.7`
+阶段报 `context deadline exceeded`，这是下载 Dockerfile frontend 超时，尚未运行
+Binaryen 安装，与本地安装包或 SHA-256 无关。当前 Dockerfile 已移除
+`# syntax=docker/dockerfile:1.7`，改用 BuildKit 内置 frontend，避免这次额外的远程下载。
+仍需启用 BuildKit，且其内置 frontend 必须支持 Dockerfile 1.2 的 `RUN --mount`；
+不要通过关闭 BuildKit 绕过错误。内置 frontend 版本随 builder 更新，不再固定为 1.7。
+更新后直接重试原构建命令，无需主动清空缓存。如果仍出现相同 frontend 下载日志，
+检查 `--file` 是否指向旧 Dockerfile，以及上层脚本是否传入了 `BUILDKIT_SYNTAX` 构建参数。
+此调整并不修复 Docker Hub 网络，也不代表整个构建离线：默认的
+`rust:1.90-bookworm`、`debian:bookworm-slim` 基础镜像仍需可用，apt、Rust 和 Cargo
+依赖也仍需网络或缓存。基础镜像元数据若继续超时，应排查实际 builder 的代理或可信镜像源。
+
+如果出现 `rustc 1.88.0 is not supported`，并提示 `cargo-util-schemas` 需要 1.90、
+`tokio-process-tools` 需要 1.89，请同时使用 `RUST_IMAGE=rust:1.90-bookworm` 和
+`RUST_TOOLCHAIN=1.90`。仅更换基础镜像不足以修复旧配置中的 1.88 工具链选择。
+保留 `cargo install cargo-leptos --version 0.3.7 --locked`，不要通过删除锁文件绕过错误。
+
+如果出现 `Could not download wasm-bindgen-0.2.127`，宿主机已安装 CLI 并不代表
+Docker builder 容器内也已安装。cargo-leptos 0.3.7 优先从 `PATH` 查找 `wasm-bindgen`，
+找不到时才从 GitHub Releases 下载；`RUSTUP_DIST_SERVER` 和 Cargo 的 rsproxy 配置
+不会改写这个下载地址。
+Dockerfile 已在 builder 内通过 Cargo 安装 CLI 并打印版本，使用现有 Cargo 镜像配置，
+不再依赖 wasm-bindgen 的 GitHub 预编译包下载。首次安装仍需要访问 Cargo 镜像并编译 CLI。
+`WASM_BINDGEN_VERSION` 默认是 `0.2.127`，必须与 `Cargo.toml` 和 `Cargo.lock` 中的
+wasm-bindgen 版本保持一致。升级时同步更新这三处。重新执行上述构建命令即可，
+可加 `--progress=plain` 查看安装日志，无需使用 `--no-cache` 清除已有缓存。
+
+如果出现 `Could not download wasm-opt-version_123`，同样需要在 Docker builder
+容器内安装工具，宿主机的 `wasm-opt` 不会自动进入容器，也不能直接复制 macOS
+二进制给 Linux 容器使用。cargo-leptos 0.3.7 优先使用 `PATH` 中的 `wasm-opt`，
+只有找不到时才尝试下载 GitHub Releases 上的 Binaryen；`version_123` 是其默认
+下载版本，并不是对 `PATH` 中工具的强制版本检查。rsproxy 配置不影响这个下载地址。
+Dockerfile 现在通过 `script/install-binaryen.sh` 安装固定版本 Binaryen 132，
+不再使用 Bookworm apt 源中的旧优化器。安装后立即执行并校验版本，错误架构、
+版本不一致或缺少运行库会在编译项目前失败。安装层保留在 Rust 构建工具安装之后，
+以复用前面耗时的构建层；仅 builder 安装，不增加最终运行镜像的依赖。
+
+如果卡在安装 `curl ca-certificates` 的第二次 `apt-get update`，请使用更新后的
+Dockerfile：已删除这一步及其 apt 缓存挂载，不改动前面的 Rust 工具安装层。
+Binaryen 在线安装现在只检查 builder 中已有的 `curl` 和 CA 证书；自定义
+`RUST_IMAGE` 若缺少它们，会立即报错，需在基础镜像中预装，或使用下述本地包。
+使用本地包不需要该下载检查。此调整不代表整个 Docker 构建离线：前面的系统
+依赖安装、运行镜像依赖安装仍使用 apt，Cargo/Rust 下载也仍需网络或缓存。
+重新构建前先终止自己遗留的构建任务，使用 `--progress=plain` 保留完整输出，
+不要使用 `--no-cache` 或清空构建缓存。若其他 apt 步骤也卡住，仅凭 RUN 标题
+无法确定是网络还是缓存锁等待；需要查看后续的 apt 输出并检查是否存在并行构建。
+
+默认下载官方 GitHub Releases 的 Linux 包，仍需要 builder 能访问 GitHub，
+rsproxy 不能解决这部分网络问题。无法访问时，可在有网络的环境下载官方
+`binaryen-version_132-x86_64-linux.tar.gz`，通过可信渠道传到项目 `script/` 目录，
+然后在 macOS 宿主机执行以下命令，让 builder 直接使用该包，不访问 GitHub：
+
+```bash
+VERSION=0.1.0
+BINARYEN_ARCHIVE=binaryen-version_132-x86_64-linux.tar.gz
+BINARYEN_SHA256=$(shasum -a 256 "script/$BINARYEN_ARCHIVE" | awk '{print $1}')
+set -o pipefail
+DOCKER_BUILDKIT=1 docker build --progress=plain \
+  --platform linux/amd64 \
+  --build-arg BINARYEN_ARCHIVE="$BINARYEN_ARCHIVE" \
+  --build-arg BINARYEN_SHA256="$BINARYEN_SHA256" \
+  -t "fuxi-dmn:$VERSION" . 2>&1 | tee docker-build.log
+```
+
+上述摘要用于检测传输或构建上下文中文件的变化，不代替来源真实性核验；请使用
+可信来源的安装包。Linux 宿主机可用 `sha256sum` 代替 `shasum -a 256`。
+构建 `linux/arm64` 时应改用对应的 `aarch64-linux` 包。
+也支持通过 `BINARYEN_DOWNLOAD_URL` 指向可信 HTTPS 内部镜像，并用
+`BINARYEN_SHA256` 校验文件；设置 `BINARYEN_ARCHIVE` 时优先使用本地包。
+`BINARYEN_VERSION` 默认 `132`，覆盖时必须与包版本一致，不要传入 macOS 可执行文件。
+本地包已加入 Git 忽略规则，但必须保留在 Docker 构建上下文中。
+
+在线下载使用 BuildKit 的 `/var/cache/binaryen` 缓存：下载中断会保留
+`*.tar.gz.partial`，下次构建尝试 HTTP Range 续传（需要服务器支持）；不会像旧逻辑
+一样超时后丢弃已下载的内容并从头自动重试。默认单次最多下载 120 秒，连续
+30 秒低于 32 KiB/s 会停止；通过 `--build-arg BINARYEN_MAX_TIME=...`、
+`--build-arg BINARYEN_SPEED_TIME=...`、`--build-arg BINARYEN_SPEED_LIMIT=...` 调整。
+完整包会验证后复用；版本、架构、下载地址或预期摘要不同会使用不同缓存。
+已完成下载但校验失败的包会删除，避免对损坏内容反复续传。缓存仅在同一个 builder
+且未被清理时可复用，旧版本脚本下载到临时目录的残片无法通过新缓存恢复。
+这些限制只避免无期限等待，不会让 GitHub 链路变快；当前网络速度约 10 KiB/s 时，
+建议改用可信内部镜像或本地包。
+
+如果错误变为 `wasm-opt optimization failed`，表示已找到优化器，但执行优化失败，
+与下载失败不同。旧 Binaryen 与新 Rust/wasm-bindgen 产物的兼容性是需要排查的原因之一，
+仅凭 cargo-leptos 的 `front.rs:302` 包装层报错还不能确定根因。
+本机 Rust 1.90、wasm-bindgen 0.2.127、Binaryen 132 的 release 前端构建已通过；
+Linux 容器仍需用上述命令复测。构建脚本会打印工具路径与版本、保存前端日志到
+`target/build-release.log`，并在失败时重新输出末尾 100 行。失败的 Docker RUN 中
+该文件不能当作宿主机文件读取，应保留宿主机的 `docker-build.log`。
+若仍失败，请提供 `wasm-opt failed with:` 后的完整 stderr 和优化器版本；
+解析/特性不支持、动态库缺失或进程被杀死需要分别处理，不应直接跳过优化或吞掉错误。
+
+如果仍卡在 `downloading component 'rust-std'`，需检查首次下载的镜像网络连接。
+Dockerfile 会显式安装 `RUST_TOOLCHAIN`（默认 1.90），并在安装构建工具前输出 rustc 版本。
+也可以先构建 builder 阶段以预热依赖缓存（此命令会执行完整构建阶段）：
+
+```bash
+docker buildx build --target builder \
+  --build-arg RUST_IMAGE=rust:1.90-bookworm \
+  --build-arg RUST_TOOLCHAIN=1.90 \
+  --build-arg RUSTUP_DIST_SERVER=https://rsproxy.cn \
+  --build-arg RUSTUP_UPDATE_ROOT=https://rsproxy.cn/rustup \
+  --progress=plain .
 ```
 
 也可以使用 `docker-compose.prebuilt.yml` 启动已经导入本机的 `fuxi-dmn:latest` 镜像：
@@ -726,11 +862,11 @@ docker buildx build \
   -t fuxi-dmn-builder:release .
 ```
 
-Dockerfile 默认从 Docker Hub 使用 `rust:1.88-bookworm`。如果当前网络无法访问 Docker Hub，
-可将 `RUST_IMAGE` 替换为组织或云厂商提供的、可访问的 Rust 1.88 镜像：
+Dockerfile 默认从 Docker Hub 使用 `rust:1.90-bookworm`。如果当前网络无法访问 Docker Hub，
+可将 `RUST_IMAGE` 替换为组织或云厂商提供的、可访问的 Rust 1.90 镜像：
 
 ```bash
-docker buildx build --build-arg RUST_IMAGE=your-registry/rust:1.88-bookworm \
+docker buildx build --build-arg RUST_IMAGE=your-registry/rust:1.90-bookworm \
   --platform linux/amd64 --target builder --load \
   -t fuxi-dmn-builder:release .
 ```
@@ -779,7 +915,7 @@ sudo -u postgres psql -v app_user=fuxi -f /tmp/fuxi-init.sql
 创建 `/etc/fuxi-dmn.env`，至少配置以下变量：
 
 ```dotenv
-DATABASE_URL=postgres://fuxi:<数据库密码>@127.0.0.1:5432/fuxi_office
+DATABASE_URL=postgres://fuxi:<数据库密码>@127.0.0.1:5432/fuxi_dmn
 ADMIN_PASSWORD=<管理员初始密码，至少6位>
 JWT_SECRET=<至少32位随机字符串>
 APP_ENV=production
@@ -925,11 +1061,11 @@ cargo test --lib
 
 **6. Docker 基础镜像无法拉取**
 ```text
-错误：failed to resolve source metadata for rust:1.88-bookworm
+错误：failed to resolve source metadata for rust:1.90-bookworm
 解决：
 - 确认 Docker Desktop 或服务器 Docker daemon 正在运行
 - 为 Docker 配置可访问的镜像仓库，并通过 RUST_IMAGE 覆盖基础镜像：
-  RUST_IMAGE=your-registry/rust:1.88-bookworm docker compose --env-file .env build
+  RUST_IMAGE=your-registry/rust:1.90-bookworm docker compose --env-file .env build
 - 使用 build-and-upload-image.sh 时同样设置 RUST_IMAGE 环境变量
 ```
 
@@ -955,7 +1091,7 @@ cargo test --lib
 
 ### 技术栈版本
 
-- Rust 1.88 / Rust 2024 edition
+- Rust 1.90 / Rust 2024 edition
 - Axum 0.8
 - Leptos 0.8.20
 - PostgreSQL 14+

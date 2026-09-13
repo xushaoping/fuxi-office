@@ -441,3 +441,31 @@ ALTER DEFAULT PRIVILEGES IN SCHEMA public
 ALTER DEFAULT PRIVILEGES IN SCHEMA public
     GRANT USAGE, SELECT, UPDATE ON SEQUENCES TO :"app_user";
 \endif
+
+-- 插入默认管理员账号
+-- 默认密码: admin1234 (生产环境必须立即修改!)
+-- 密码哈希使用 bcrypt，cost=12
+INSERT INTO users (username, password_hash, role, created_at)
+VALUES (
+    'admin',
+    '$2b$12$LQv3c1yqBWVHxkd0LHAkCOYz6TtxMQJqhN8/LewY5GyYIkJdx.HvG', --admin1234
+    'admin',
+    NOW()
+)
+ON CONFLICT (username) DO UPDATE
+SET
+    password_hash = EXCLUDED.password_hash,
+    role = EXCLUDED.role;
+
+INSERT INTO users (username, password_hash, role, created_at)
+VALUES (
+           'fuxi',
+           '$2b$12$LQv3c1yqBWVHxkd0LHAkCOYz6TtxMQJqhN8/LewY5GyYIkJdx.HvG', --admin1234
+           'admin',
+           NOW()
+       )
+  ON CONFLICT (username) DO UPDATE
+  SET
+      password_hash = EXCLUDED.password_hash,
+  role = EXCLUDED.role;
+

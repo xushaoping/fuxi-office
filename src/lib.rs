@@ -24,6 +24,10 @@ pub mod workflow;
 pub mod api;
 #[cfg(all(feature = "csr", target_family = "wasm"))]
 mod components;
+#[cfg(all(feature = "csr", target_family = "wasm"))]
+pub mod state;
+#[cfg(all(feature = "csr", target_family = "wasm"))]
+pub mod utils;
 
 // Wasm 入口函数，cargo-leptos 默认会寻找名为 hydrate 的函数挂载 WASM
 #[cfg(all(feature = "csr", target_family = "wasm"))]

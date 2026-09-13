@@ -1,9 +1,20 @@
 mod dmn_app;
+mod yaml_artifacts;
+
+pub mod admin;
+pub mod analytics;
+pub mod auth;
+pub mod common;
+pub mod knowledge;
+pub mod model;
+pub mod projects;
+pub mod workspace;
 
 use std::collections::{BTreeMap, HashSet};
 
 use gloo_storage::{LocalStorage, Storage};
 use leptos::ev::KeyboardEvent;
+use leptos::leptos_dom::helpers::{request_animation_frame, window_event_listener};
 use leptos::logging::{log, warn};
 use leptos::prelude::*;
 use leptos::task::spawn_local;
@@ -17,18 +28,43 @@ use wasm_bindgen_futures::JsFuture;
 
 use crate::api::{self, ChangeSummary, EvaluateResult, RunResult, SseEvent};
 use crate::models::{
-    AdminUser, AuditEvent, CreateDecisionProject, CreateDecisionTestCase, CreateDecisionVersion,
-    CreateUser, DecisionAnalyticsReport, DecisionOptimizationProposal, DecisionProject,
-    DecisionServiceApiKey, DecisionServiceRun, DecisionTestCase, DecisionVersion, ExecutionTrace,
-    KnowledgeCitation, KnowledgeSource, ModelChangeIntent, ModelLibraryItem, ProjectMember,
-    PublishedDecisionService, SaveDecisionRunOutcome, SaveDecisionTemplate, SaveKnowledgeSource,
-    UpdateUser, VersionChangeReview, VersionDiffEntry, VersionVerificationReport,
+    AdminUser, AuditEvent, CreateDecisionTestCase, CreateDecisionVersion, CreateUser,
+    DecisionAnalyticsReport, DecisionOptimizationProposal, DecisionProject, DecisionServiceApiKey,
+    DecisionServiceRun, DecisionTestCase, DecisionVersion, ExecutionTrace, KnowledgeCitation,
+    KnowledgeSource, ModelChangeIntent, ModelLibraryItem, ProjectMember, PublishedDecisionService,
+    SaveDecisionRunOutcome, SaveDecisionTemplate, SaveKnowledgeSource, UpdateUser,
+    VersionChangeReview, VersionDiffEntry, VersionVerificationReport,
 };
+use crate::state::AppState;
+use crate::utils::use_keyboard_shortcut;
 use crate::workflow::{
     Clarification, ClarificationAnswer, DecisionBrief, DecisionField, DecisionPlan,
     DecisionWorkflowState,
 };
 use web_sys::AbortController;
+
+// Import from modular components
+use admin::AdminUsersPage;
+use auth::{AuthExpiryWatcher, LoginPage, RequireAuth, TOKEN_KEY, auth_token};
+use dmn_app::context::provide_app_context;
+use dmn_app::resources::knowledge_type_label;
+use dmn_app::services::{ServiceContractList, ServiceCredentialsPanel};
+use knowledge::KnowledgeLibraryPanel;
+use projects::ProjectManagementPage;
+use workspace::{
+    CopyStatus, GenerationMode, MAX_DMN_COMPILE_REPAIRS, MobileModelFocus, ResourceView, RunStatus,
+    WorkspaceView, YAML_GRAPH_NODE_HEIGHT, YAML_GRAPH_NODE_WIDTH, YAML_GRAPH_WIDTH, YamlGraphEdge,
+    YamlGraphNode, agent_activity_for_step, analytics_finding_label, analytics_percent,
+    apply_result, apply_result_message, escape_html, highlight_code, highlight_json,
+    highlight_value, highlight_xml, highlight_xml_text, highlight_yaml_line,
+    incremental_result_message, indexed, is_repairable_model_change_error,
+    optimization_proposal_actions, optimization_proposal_status_label, outcome_assessment_label,
+    public_service_curl, public_service_endpoint, recent_service_runs, service_input_template,
+    service_sample_value, summary_names, timeline_item_class, timeline_item_text, token_span,
+    workflow_status_label, yaml_get, yaml_graph_edge_anchors, yaml_graph_edge_path,
+    yaml_graph_height, yaml_graph_knowledge_points, yaml_graph_label, yaml_joined_list, yaml_list,
+    yaml_map, yaml_text,
+};
 
 // Re-export the new modular DmnApp components
 pub use dmn_app::execution::ExecutionTraceView;
@@ -38,6 +74,9 @@ pub use dmn_app::types::ChatMessage;
 pub use dmn_app::version::{
     SavedVersionReviewView, VerificationReportView, VersionChangeReviewView, VersionChangeRow,
 };
+use dmn_app::version::{VersionGovernancePanel, VersionHistoryPanel};
+pub(crate) use yaml_artifacts::{ArtifactTabs, yaml_summary};
+
 pub use dmn_app::workflow::{
     ClarificationInput, DecisionBriefView, DecisionPlanView, RequirementAnalysisProgress,
     WorkflowFieldRow,
@@ -46,265 +85,39 @@ pub use dmn_app::workflow::{
 // 已提取的组件定义已移至 dmn_app 模块
 // ClarificationInput, WorkflowFieldRow, DecisionBriefView, RequirementAnalysisProgress, DecisionPlanView
 // VersionChangeReviewView, SavedVersionReviewView, VersionChangeRow, VerificationReportView
-// ExecutionTraceView
-// 请使用: use crate::components::dmn_app::workflow::*;
-// 或: use crate::components::dmn_app::version::*;
-// 或: use crate::components::dmn_app::execution::*;
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum RunStatus {
-    Idle,
-    Running,
-    Succeeded,
-    Failed,
-    Aborted,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum GenerationMode {
-    Create,
-    Modify,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum WorkspaceView {
-    Discovery,
-    Model,
-    Validation,
-    Services,
-    Analytics,
-    Versions,
-    Collaboration,
-    Resources,
-}
-
-const MAX_DMN_COMPILE_REPAIRS: i32 = 2;
-
-fn is_repairable_model_change_error(message: &str) -> bool {
-    message.starts_with("[DMN_COMPILE]")
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum ResourceView {
-    Knowledge,
-    Models,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Theme {
-    Dark,
-    Light,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum CopyStatus {
-    Idle,
-    Copied,
-    Failed,
-}
-
-impl Theme {
-    fn class(self) -> &'static str {
-        match self {
-            Self::Dark => "theme-dark",
-            Self::Light => "theme-light",
-        }
-    }
-
-    fn toggle_label(self) -> &'static str {
-        match self {
-            Self::Dark => "切换到浅色主题",
-            Self::Light => "切换到深色主题",
-        }
-    }
-}
-
-impl RunStatus {
-    fn label(self) -> &'static str {
-        match self {
-            Self::Idle => "准备就绪",
-            Self::Running => "智能体运行中",
-            Self::Succeeded => "已完成",
-            Self::Failed => "运行失败",
-            Self::Aborted => "已停止",
-        }
-    }
-
-    fn class(self) -> &'static str {
-        match self {
-            Self::Idle => "status-idle",
-            Self::Running => "status-running",
-            Self::Succeeded => "status-success",
-            Self::Failed => "status-error",
-            Self::Aborted => "status-muted",
-        }
-    }
-}
-
-fn agent_activity_for_step(step: &str) -> String {
-    if step.contains("等待首段输出") {
-        "正在等待模型返回首段内容".to_string()
-    } else if step.contains("ChangeIntent") || step.contains("变更意图") {
-        "正在生成并校验受控模型变更意图".to_string()
-    } else if step.contains("调用 LLM") {
-        "正在调用语言模型生成 DSL".to_string()
-    } else if step.contains("校验") {
-        "正在校验 DSL 与 DMN 结构".to_string()
-    } else if step.contains("编译") {
-        "正在编译 DMN XML".to_string()
-    } else if step.contains("重试") {
-        "正在修复生成结果并重新尝试".to_string()
-    } else {
-        step.trim_start_matches(['→', '✓', '⚠', '…', ' '])
-            .to_string()
-    }
-}
-
-fn timeline_item_class(step: &str, is_current: bool) -> &'static str {
-    if step.starts_with('✓') {
-        "is-complete"
-    } else if step.starts_with('⚠') {
-        "is-warning"
-    } else if step.starts_with('…') {
-        "is-waiting"
-    } else if is_current {
-        "is-active"
-    } else {
-        "is-past"
-    }
-}
-
-fn timeline_item_text(step: &str) -> String {
-    step.trim_start_matches(['→', '✓', '⚠', '…', ' '])
-        .to_string()
-}
-
-fn workflow_status_label(status: &str) -> &'static str {
-    match status {
-        "analyzed" => "已分析",
-        "clarification" => "待澄清",
-        "planned" => "待确认",
-        "confirmed" => "已确认",
-        _ => "待分析",
-    }
-}
-
-fn service_sample_value(type_ref: &str) -> serde_json::Value {
-    match type_ref
-        .strip_prefix("feel:")
-        .unwrap_or(type_ref)
-        .to_ascii_lowercase()
-        .as_str()
-    {
-        // Published service templates should be runnable out of the box;
-        // zero would make a denominator-based decision fail immediately.
-        "number" => serde_json::json!(1),
-        "boolean" => serde_json::json!(false),
-        "list" => serde_json::json!([]),
-        _ => serde_json::json!(""),
-    }
-}
-
-fn service_input_template(service: &PublishedDecisionService) -> String {
-    serde_json::to_string_pretty(
-        &service
-            .inputs
-            .iter()
-            .map(|field| (field.name.clone(), service_sample_value(&field.type_ref)))
-            .collect::<serde_json::Map<_, _>>(),
-    )
-    .unwrap_or_else(|_| "{}".into())
-}
-
-fn recent_service_runs(runs: Vec<DecisionServiceRun>) -> Vec<DecisionServiceRun> {
-    runs.into_iter().take(10).collect()
-}
-
-fn outcome_assessment_label(assessment: Option<&str>) -> &'static str {
-    match assessment {
-        Some("confirmed") => "符合决策",
-        Some("mismatch") => "存在偏差",
-        Some("inconclusive") => "无法判断",
-        _ => "待回填",
-    }
-}
-
-fn analytics_percent(rate: f64) -> String {
-    format!("{:.1}%", rate * 100.0)
-}
-
-fn analytics_finding_label(code: &str) -> &'static str {
-    match code {
-        "NO_RECENT_RUNS" => "暂无运行数据",
-        "HIGH_FAILURE_RATE" => "失败率偏高",
-        "LOW_FEEDBACK_COVERAGE" => "反馈覆盖不足",
-        "HIGH_MISMATCH_RATE" => "结果偏差偏高",
-        "LOW_RULE_COVERAGE" => "规则覆盖不足",
-        "FREQUENT_FALLBACK" => "频繁未命中规则",
-        "HIGH_P95_LATENCY" => "长尾耗时偏高",
-        "FAILURE_TREND_UP" => "失败趋势上升",
-        "FEEDBACK_TREND_DOWN" => "反馈趋势下降",
-        "LATENCY_TREND_UP" => "耗时趋势上升",
-        _ => "运行异常",
-    }
-}
-
-fn optimization_proposal_actions(proposal: &DecisionOptimizationProposal) -> Vec<String> {
-    proposal
-        .proposed_actions
-        .as_array()
-        .map(|actions| {
-            actions
-                .iter()
-                .filter_map(|action| action.as_str().map(str::to_owned))
-                .collect()
-        })
-        .unwrap_or_default()
-}
-
-fn optimization_proposal_status_label(status: &str) -> &'static str {
-    match status {
-        "open" => "待确认",
-        "confirmed" => "已建草稿",
-        "dismissed" => "已驳回",
-        _ => "未知状态",
-    }
-}
-
-fn public_service_endpoint(service: &PublishedDecisionService) -> String {
-    let origin = web_sys::window()
-        .and_then(|window| window.location().origin().ok())
-        .filter(|origin| !origin.is_empty())
-        .unwrap_or_default();
-    format!(
-        "{origin}/api/public/projects/{}/decision-services/execute",
-        service.project_id
-    )
-}
-
-fn public_service_curl(service: &PublishedDecisionService, secret: &str) -> String {
-    let inputs = service_input_template(service);
-    let mut command = format!("curl -X POST '{}'", public_service_endpoint(service));
-    command.push_str(&format!(" \\\n  -H 'X-Decision-Key: {}'", secret));
-    command.push_str(" \\\n  -H 'Content-Type: application/json'");
-    command.push_str(&format!(
-        " \\\n  -d '{{\n    \"serviceId\": \"{}\",\n    \"businessReference\": \"ORDER-20260903-001\",\n    \"inputs\": {}\n  }}'",
-        service.id, inputs
-    ));
-    command
-}
 
 fn timeline_entries(steps: Vec<String>) -> Vec<(usize, String)> {
     steps.into_iter().enumerate().collect()
 }
 
-const TOKEN_KEY: &str = "auth_token";
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TestCaseFilter {
+    All,
+    Failed,
+    PendingApproval,
+    PendingRun,
+}
 
-// Token 信号由 App 根组件创建并通过 Context 共享（见 App）：
-// 不能在子组件 owner 中创建，否则路由切换卸载组件时会连带 dispose 信号，
-// 导致后续 token.get() panic（reactive value already disposed）
-fn auth_token() -> RwSignal<Option<String>> {
-    use_context::<RwSignal<Option<String>>>().expect("auth_token 必须在 <App> 组件内使用")
+impl TestCaseFilter {
+    fn matches(self, test_case: &DecisionTestCase) -> bool {
+        match self {
+            Self::All => true,
+            Self::Failed => matches!(test_case.status.as_str(), "failed" | "error"),
+            Self::PendingApproval => {
+                test_case.status == "passed" && test_case.approved_by.is_none()
+            }
+            Self::PendingRun => !matches!(test_case.status.as_str(), "passed" | "failed" | "error"),
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::All => "全部",
+            Self::Failed => "失败 / 错误",
+            Self::PendingApproval => "待批准",
+            Self::PendingRun => "待运行",
+        }
+    }
 }
 
 // ==========================================
@@ -316,379 +129,36 @@ pub fn App() -> impl IntoView {
     // 登录后 set(Some) 会同步触发 RequireAuth/Dashboard 的响应式更新
     let token = RwSignal::new(LocalStorage::get::<String>(TOKEN_KEY).ok());
     provide_context(token);
+    // A single application state owner survives route changes and is available
+    // to every feature view (notifications, theme and responsive UI state).
+    let app_state = AppState::new();
+    let theme = app_state.ui.theme;
+    provide_context(app_state);
+
+    Effect::new(move |_| {
+        if let Some(root) = document().document_element() {
+            let classes = root
+                .class_name()
+                .split_whitespace()
+                .filter(|class| !matches!(*class, "theme-light" | "theme-dark"))
+                .map(str::to_owned)
+                .collect::<Vec<_>>()
+                .join(" ");
+            let _ = root.set_attribute("class", &format!("{} {}", classes, theme.get().class()));
+        }
+    });
 
     view! {
+        <common::ToastContainer />
         <Router>
             <AuthExpiryWatcher />
             <Routes fallback=|| view! { <p>"加载中..."</p> }>
                 <Route path=path!("/") view=move || view! { <RequireAuth><DmnApp /></RequireAuth> } />
                 <Route path=path!("/admin") view=move || view! { <RequireAuth><AdminUsersPage /></RequireAuth> } />
+                <Route path=path!("/projects") view=move || view! { <RequireAuth><ProjectManagementPage /></RequireAuth> } />
                 <Route path=path!("/login") view=LoginPage />
             </Routes>
         </Router>
-    }
-}
-
-#[component]
-fn AuthExpiryWatcher() -> impl IntoView {
-    let token = auth_token();
-    let navigate = leptos_router::hooks::use_navigate();
-    let window = web_sys::window().expect("浏览器窗口不可用");
-    let callback = Closure::<dyn FnMut(web_sys::Event)>::new(move |_| {
-        LocalStorage::delete(TOKEN_KEY);
-        token.set(None);
-        navigate("/login", Default::default());
-    });
-    let callback_ref = callback.as_ref().unchecked_ref();
-    window
-        .add_event_listener_with_callback("auth-expired", callback_ref)
-        .expect("无法注册登录过期监听器");
-    callback.forget();
-
-    view! {}
-}
-
-#[component]
-fn RequireAuth(children: ChildrenFn) -> impl IntoView {
-    let token = auth_token();
-    move || {
-        if token.get().is_some() {
-            children().into_any()
-        } else {
-            view! { <Redirect path="/login"/> }.into_any()
-        }
-    }
-}
-
-#[component]
-fn LoginPage() -> impl IntoView {
-    let token = auth_token();
-    let navigate = leptos_router::hooks::use_navigate();
-    let username = RwSignal::new(String::new());
-    let password = RwSignal::new(String::new());
-    let error_msg = RwSignal::new(None::<String>);
-    let is_loading = RwSignal::new(false);
-
-    let on_submit = move |ev: leptos::ev::SubmitEvent| {
-        ev.prevent_default(); // 阻止表单默认提交导致页面刷新
-
-        if is_loading.get() {
-            return;
-        } // 防止重复提交
-        is_loading.set(true);
-        error_msg.set(None);
-
-        let username = username.get();
-        let password = password.get();
-        let navigate = navigate.clone();
-
-        spawn_local(async move {
-            log!("开始发送登录请求...");
-            match api::login(&username, &password).await {
-                Some(t) => {
-                    LocalStorage::set(TOKEN_KEY, t.clone()).ok();
-                    token.set(Some(t));
-                    navigate("/", Default::default());
-                }
-                None => {
-                    warn!("登录失败：用户名或密码错误");
-                    error_msg.set(Some("用户名或密码错误".to_string()));
-                    is_loading.set(false);
-                }
-            }
-        });
-    };
-
-    view! {
-        <div class="auth-shell">
-            <div class="auth-card">
-                <div class="auth-brand">
-                    <div class="brand-mark">"D"</div>
-                    <div>
-                        <p class="eyebrow">"DMN DECISION WORKSPACE"</p>
-                        <h1>"伏羲智能决策"</h1>
-                    </div>
-                </div>
-                <div class="auth-heading">
-                    <h2 class="title">"欢迎登录"</h2>
-                    <p>"进入你的决策建模工作台"</p>
-                </div>
-            </div>
-            <form on:submit=on_submit>
-                <div class="form-group">
-                    <input
-                        type="text"
-                        class="input"
-                        placeholder="用户名"
-                        bind:value=username
-                        disabled=move || is_loading.get()
-                    />
-                </div>
-                <div class="form-group">
-                    <input
-                        type="password"
-                        class="input"
-                        placeholder="密码"
-                        bind:value=password
-                        disabled=move || is_loading.get()
-                    />
-                </div>
-                <button
-                    type="submit"
-                    class="btn btn-primary"
-                    style="width: 100%;"
-                    disabled=move || is_loading.get()
-                >
-                    {move || if is_loading.get() {
-                        "处理中..."
-                    } else {
-                        "登 录"
-                    }}
-                </button>
-
-                {move || error_msg.get().map(|e| view! {
-                    <div class="error-msg">{e}</div>
-                })}
-            </form>
-        </div>
-    }
-}
-
-#[component]
-fn AdminUsersPage() -> impl IntoView {
-    let token = auth_token();
-    let navigate = leptos_router::hooks::use_navigate();
-    let users = RwSignal::new(Vec::<AdminUser>::new());
-    let username = RwSignal::new(String::new());
-    let password = RwSignal::new(String::new());
-    let role = RwSignal::new("user".to_string());
-    let busy = RwSignal::new(false);
-    let error = RwSignal::new(None::<String>);
-    let status = RwSignal::new(None::<String>);
-
-    let reload = move || {
-        let Some(token_value) = token.get() else {
-            return;
-        };
-        spawn_local(async move {
-            match api::list_admin_users(&token_value).await {
-                Ok(items) => users.set(items),
-                Err(message) => error.set(Some(message)),
-            }
-        });
-    };
-    Effect::new(move |_| {
-        if token.get().is_some() {
-            reload();
-        }
-    });
-
-    let create = move |_| {
-        let Some(token_value) = token.get() else {
-            return;
-        };
-        let name = username.get().trim().to_string();
-        let secret = password.get();
-        if name.is_empty() || secret.len() < 6 || busy.get() {
-            return;
-        }
-        busy.set(true);
-        error.set(None);
-        let selected_role = role.get();
-        spawn_local(async move {
-            match api::create_admin_user(
-                &token_value,
-                CreateUser {
-                    username: name,
-                    password: secret,
-                    role: selected_role,
-                },
-            )
-            .await
-            {
-                Ok(user) => {
-                    users.update(|items| items.push(user));
-                    username.set(String::new());
-                    password.set(String::new());
-                    status.set(Some("用户已添加".into()));
-                }
-                Err(message) => error.set(Some(message)),
-            }
-            busy.set(false);
-        });
-    };
-
-    let update_role = move |user: AdminUser, new_role: String| {
-        let Some(token_value) = token.get() else {
-            return;
-        };
-        if busy.get() || user.username == "admin" && new_role != "admin" {
-            return;
-        }
-        busy.set(true);
-        error.set(None);
-        spawn_local(async move {
-            match api::update_admin_user(
-                &token_value,
-                &user.username,
-                UpdateUser {
-                    role: new_role,
-                    password: None,
-                },
-            )
-            .await
-            {
-                Ok(updated) => users.update(|items| {
-                    if let Some(item) = items
-                        .iter_mut()
-                        .find(|item| item.username == updated.username)
-                    {
-                        *item = updated;
-                    }
-                }),
-                Err(message) => error.set(Some(message)),
-            }
-            busy.set(false);
-        });
-    };
-
-    let delete_user = move |username: String| {
-        let Some(token_value) = token.get() else {
-            return;
-        };
-        if busy.get() || username == "admin" {
-            return;
-        }
-        if !web_sys::window()
-            .and_then(|win| {
-                win.confirm_with_message(&format!(
-                    "确定要删除用户 \"{}\" 吗？此操作无法撤销。",
-                    username
-                ))
-                .ok()
-            })
-            .unwrap_or(false)
-        {
-            return;
-        }
-        busy.set(true);
-        error.set(None);
-        spawn_local(async move {
-            match api::delete_admin_user(&token_value, &username).await {
-                Ok(()) => {
-                    users.update(|items| items.retain(|item| item.username != username));
-                    status.set(Some("用户已删除".into()));
-                }
-                Err(message) => error.set(Some(message)),
-            }
-            busy.set(false);
-        });
-    };
-
-    view! {
-        <main class="admin-page">
-            <header class="admin-topbar">
-                <div class="admin-brand">
-                    <div class="brand-mark">"D"</div>
-                    <div>
-                        <span class="eyebrow">"DMN DECISION WORKSPACE"</span>
-                        <strong>"系统管理"</strong>
-                    </div>
-                </div>
-                <button class="button button-quiet" on:click=move |_| navigate("/", Default::default())>
-                    <span aria-hidden="true">"←"</span> "返回工作台"
-                </button>
-            </header>
-            <div class="admin-content">
-                <section class="admin-heading">
-                    <div>
-                        <span class="yaml-kicker">"USER DIRECTORY / ACCESS CONTROL"</span>
-                        <h1>"用户与角色"</h1>
-                        <p>"集中管理工作台账号，并为每位成员分配系统级访问角色。"</p>
-                    </div>
-                    <div class="admin-summary">
-                        <span class="admin-summary-label">"当前账号"</span>
-                        <strong>"admin"</strong>
-                        <span class="admin-role-badge admin-role-badge-primary">"超级管理员"</span>
-                    </div>
-                </section>
-                <div class="admin-layout">
-                    <section class="admin-user-editor">
-                        <div class="admin-section-heading">
-                            <div><span class="yaml-kicker">"ADD ACCOUNT"</span><h2>"添加用户"</h2></div>
-                            <span class="admin-section-index">"01"</span>
-                        </div>
-                        <p class="admin-section-note">"创建后，用户可使用账号登录并参与已分配的项目。"</p>
-                        <div class="admin-form-grid">
-                            <label><span>"用户名"</span><input maxlength="255" placeholder="输入用户名" prop:value=username on:input=move |event| username.set(event_target_value(&event)) /></label>
-                            <label><span>"初始密码"</span><input type="password" placeholder="至少 6 位" prop:value=password on:input=move |event| password.set(event_target_value(&event)) /></label>
-                            <label><span>"系统角色"</span><select prop:value=role on:change=move |event| role.set(event_target_value(&event))><option value="user">"普通用户"</option><option value="admin">"超级管理员"</option></select></label>
-                        </div>
-                        <button class="button button-primary admin-submit" on:click=create disabled=move || busy.get() || username.get().trim().is_empty() || password.get().len() < 6>
-                            <span aria-hidden="true">"+"</span> {move || if busy.get() { "处理中..." } else { "创建用户" }}
-                        </button>
-                    </section>
-                    <section class="admin-users-panel">
-                        <div class="admin-section-heading">
-                            <div><span class="yaml-kicker">"ACTIVE ACCOUNTS"</span><h2>"用户列表"</h2></div>
-                            <span class="admin-user-count">{move || users.get().len()} " 个用户"</span>
-                        </div>
-                        <div class="admin-list-header"><span>"用户"</span><span>"系统角色"</span><span>"操作"</span></div>
-                        <div class="admin-user-list">
-                            <For each=move || users.get() key=|user| user.username.clone() let:user>
-                                {
-                                    let role_value = user.role.clone();
-                                    let role_label = if role_value == "admin" { "超级管理员" } else { "普通用户" };
-                                    let role_class = if role_value == "admin" { "admin-role-badge admin-role-badge-primary" } else { "admin-role-badge" };
-                                    let username_for_delete = user.username.clone();
-                                    let username_for_select = user.username.clone();
-                                    let username_for_disabled = user.username.clone();
-                                    let username_for_title = user.username.clone();
-                                    let is_admin = user.username == "admin";
-                                    view! {
-                                        <article class="admin-user-row">
-                                            <div class="admin-user-identity">
-                                                <span class="admin-avatar">{user.username.chars().next().unwrap_or('?').to_uppercase().to_string()}</span>
-                                                <div><strong>{user.username.clone()}</strong><small>{format!("加入于 {}", user.created_at.format("%Y-%m-%d"))}</small></div>
-                                            </div>
-                                            <div class="admin-user-role">
-                                                <span class=role_class>{role_label}</span>
-                                                <select aria-label="修改系统角色" prop:value=role_value on:change={let user = user.clone(); move |event| update_role(user.clone(), event_target_value(&event))} disabled=move || username_for_select == "admin" || busy.get()>
-                                                    <option value="user">"普通用户"</option>
-                                                    <option value="admin">"超级管理员"</option>
-                                                </select>
-                                            </div>
-                                            <div class="admin-user-actions">
-                                                <button
-                                                    class="button button-danger button-small"
-                                                    on:click=move |_| delete_user(username_for_delete.clone())
-                                                    disabled=move || username_for_disabled == "admin" || busy.get()
-                                                    title=move || if username_for_title == "admin" { "不能删除 admin 用户" } else { "删除用户" }
-                                                >
-                                                    "删除"
-                                                </button>
-                                            </div>
-                                        </article>
-                                    }
-                                }
-                            </For>
-                            <Show when=move || users.get().is_empty()><div class="admin-empty">"暂无用户记录"</div></Show>
-                        </div>
-                    </section>
-                </div>
-                <Show when=move || status.get().is_some()><div class="member-status">{move || status.get().unwrap_or_default()}</div></Show>
-                <Show when=move || error.get().is_some()><div class="error-msg">{move || error.get().unwrap_or_default()}</div></Show>
-            </div>
-        </main>
-    }
-}
-
-fn knowledge_type_label(value: &str) -> &'static str {
-    match value {
-        "term" => "企业术语",
-        "field" => "字段目录",
-        "policy" => "制度政策",
-        _ => "知识源",
     }
 }
 
@@ -722,352 +192,14 @@ fn audit_event_type_label(event_type: &str) -> &'static str {
     }
 }
 
-fn knowledge_effective_label(source: &KnowledgeSource) -> &'static str {
-    if source.status == "archived" {
-        "已归档"
-    } else if source.is_effective {
-        "当前有效"
-    } else {
-        "非当前有效"
-    }
-}
-
-#[component]
-fn KnowledgeLibraryPanel(
-    token: RwSignal<Option<String>>,
-    current_project: ReadSignal<Option<DecisionProject>>,
-) -> impl IntoView {
-    let sources = RwSignal::new(Vec::<KnowledgeSource>::new());
-    let attached_ids = RwSignal::new(HashSet::<i64>::new());
-    let selected_id = RwSignal::new(None::<i64>);
-    let source_type = RwSignal::new("term".to_string());
-    let name = RwSignal::new(String::new());
-    let description = RwSignal::new(String::new());
-    let content = RwSignal::new(String::new());
-    let version_label = RwSignal::new(String::new());
-    let source_uri = RwSignal::new(String::new());
-    let valid_from = RwSignal::new(String::new());
-    let valid_until = RwSignal::new(String::new());
-    let filter = RwSignal::new("all".to_string());
-    let query = RwSignal::new(String::new());
-    let busy = RwSignal::new(false);
-    let error = RwSignal::new(None::<String>);
-
-    let clear_form = move || {
-        selected_id.set(None);
-        source_type.set("term".into());
-        name.set(String::new());
-        description.set(String::new());
-        content.set(String::new());
-        version_label.set(String::new());
-        source_uri.set(String::new());
-        valid_from.set(String::new());
-        valid_until.set(String::new());
-    };
-
-    Effect::new(move |_| {
-        let Some(token_value) = token.get() else {
-            sources.set(Vec::new());
-            attached_ids.set(HashSet::new());
-            return;
-        };
-        let project_id = current_project.get().map(|project| project.id);
-        busy.set(true);
-        error.set(None);
-        spawn_local(async move {
-            match api::list_knowledge_sources(&token_value).await {
-                Ok(items) => sources.set(items),
-                Err(message) => error.set(Some(message)),
-            }
-            if let Some(project_id) = project_id {
-                match api::list_project_knowledge_sources(&token_value, project_id).await {
-                    Ok(items) => attached_ids.set(items.into_iter().map(|item| item.id).collect()),
-                    Err(message) => error.set(Some(message)),
-                }
-            } else {
-                attached_ids.set(HashSet::new());
-            }
-            busy.set(false);
-        });
-    });
-
-    let edit_source = move |source: KnowledgeSource| {
-        selected_id.set(Some(source.id));
-        source_type.set(source.source_type);
-        name.set(source.name);
-        description.set(source.description);
-        content.set(source.content);
-        version_label.set(source.version_label);
-        source_uri.set(source.source_uri);
-        valid_from.set(
-            source
-                .valid_from
-                .map(|date| date.to_string())
-                .unwrap_or_default(),
-        );
-        valid_until.set(
-            source
-                .valid_until
-                .map(|date| date.to_string())
-                .unwrap_or_default(),
-        );
-    };
-
-    let save_source = move |_| {
-        let Some(token_value) = token.get() else {
-            return;
-        };
-        let parse_date = |value: String| {
-            if value.trim().is_empty() {
-                Ok(None)
-            } else {
-                chrono::NaiveDate::parse_from_str(value.trim(), "%Y-%m-%d")
-                    .map(Some)
-                    .map_err(|_| "有效期必须使用 YYYY-MM-DD 格式".to_string())
-            }
-        };
-        let valid_from_value = match parse_date(valid_from.get()) {
-            Ok(value) => value,
-            Err(message) => {
-                error.set(Some(message));
-                return;
-            }
-        };
-        let valid_until_value = match parse_date(valid_until.get()) {
-            Ok(value) => value,
-            Err(message) => {
-                error.set(Some(message));
-                return;
-            }
-        };
-        let payload = SaveKnowledgeSource {
-            source_type: source_type.get(),
-            name: name.get(),
-            description: description.get(),
-            content: content.get(),
-            version_label: version_label.get(),
-            source_uri: source_uri.get(),
-            valid_from: valid_from_value,
-            valid_until: valid_until_value,
-            status: "active".into(),
-        };
-        if payload.name.trim().is_empty() || payload.content.trim().is_empty() {
-            error.set(Some("知识名称和内容不能为空".into()));
-            return;
-        }
-        let editing = selected_id.get();
-        busy.set(true);
-        error.set(None);
-        spawn_local(async move {
-            let result = match editing {
-                Some(id) => api::update_knowledge_source(&token_value, id, &payload).await,
-                None => api::create_knowledge_source(&token_value, &payload).await,
-            };
-            match result {
-                Ok(saved) => {
-                    sources.update(|items| {
-                        if let Some(item) = items.iter_mut().find(|item| item.id == saved.id) {
-                            *item = saved.clone();
-                        } else {
-                            items.insert(0, saved);
-                        }
-                    });
-                    clear_form();
-                }
-                Err(message) => error.set(Some(message)),
-            }
-            busy.set(false);
-        });
-    };
-
-    let archive_source = move |source_id: i64| {
-        let Some(token_value) = token.get() else {
-            return;
-        };
-        busy.set(true);
-        error.set(None);
-        spawn_local(async move {
-            match api::archive_knowledge_source(&token_value, source_id).await {
-                Ok(()) => {
-                    sources.update(|items| {
-                        if let Some(item) = items.iter_mut().find(|item| item.id == source_id) {
-                            item.status = "archived".into();
-                            item.is_effective = false;
-                        }
-                    });
-                    attached_ids.update(|ids| {
-                        ids.remove(&source_id);
-                    });
-                    if selected_id.get() == Some(source_id) {
-                        clear_form();
-                    }
-                }
-                Err(message) => error.set(Some(message)),
-            }
-            busy.set(false);
-        });
-    };
-
-    let toggle_attachment = move |source_id: i64, attached: bool| {
-        let (Some(token_value), Some(project)) = (token.get(), current_project.get()) else {
-            error.set(Some("请先选择决策项目".into()));
-            return;
-        };
-        busy.set(true);
-        error.set(None);
-        spawn_local(async move {
-            match api::set_project_knowledge_source(&token_value, project.id, source_id, attached)
-                .await
-            {
-                Ok(()) => attached_ids.update(|ids| {
-                    if attached {
-                        ids.insert(source_id);
-                    } else {
-                        ids.remove(&source_id);
-                    }
-                }),
-                Err(message) => error.set(Some(message)),
-            }
-            busy.set(false);
-        });
-    };
-
-    view! {
-        <section class="knowledge-library-panel" aria-label="企业知识库">
-            <div class="knowledge-library-heading">
-                <div>
-                    <span class="yaml-kicker">"GOVERNED KNOWLEDGE"</span>
-                    <strong>"企业知识库"</strong>
-                    <small>{move || format!("{} 个知识源 · 当前项目已绑定 {} 个", sources.get().len(), attached_ids.get().len())}</small>
-                </div>
-                <div class="knowledge-toolbar">
-                    <input
-                        class="resource-search"
-                        type="search"
-                        placeholder="搜索名称、说明或内容"
-                        prop:value=query
-                        on:input=move |event| query.set(event_target_value(&event))
-                    />
-                    <div class="knowledge-filters">
-                        <For each=move || vec![("all", "全部"), ("attached", "已绑定"), ("term", "术语"), ("field", "字段"), ("policy", "制度")] key=|item| item.0 let:item>
-                            <button class=move || if filter.get() == item.0 { "knowledge-filter is-active" } else { "knowledge-filter" } on:click=move |_| filter.set(item.0.into())>{item.1}</button>
-                        </For>
-                    </div>
-                </div>
-            </div>
-            <div class="knowledge-library-body">
-                <div class="knowledge-source-browser">
-                    <div class="resource-column-heading">
-                        <strong>"知识目录"</strong>
-                        <button class="button button-quiet" on:click=move |_| clear_form()>"新建"</button>
-                    </div>
-                    <div class="knowledge-source-list">
-                    <Show when=move || busy.get() && sources.get().is_empty()>
-                        <div class="knowledge-empty">"正在读取知识库..."</div>
-                    </Show>
-                    <For
-                        each=move || {
-                            let selected = filter.get();
-                            let search = query.get().trim().to_lowercase();
-                            sources.get().into_iter().filter(|source| {
-                                (selected == "all"
-                                    || (selected == "attached" && attached_ids.get().contains(&source.id))
-                                    || source.source_type == selected)
-                                    && (search.is_empty()
-                                        || source.name.to_lowercase().contains(&search)
-                                        || source.description.to_lowercase().contains(&search)
-                                        || source.content.to_lowercase().contains(&search))
-                            }).collect::<Vec<_>>()
-                        }
-                        key=|source| format!("{}:{}:{}", source.id, source.status, source.updated_at)
-                        let:source
-                    >
-                        {
-                            let source_for_edit = source.clone();
-                            let source_id = source.id;
-                            let archived = source.status == "archived";
-                            let validity = match (source.valid_from, source.valid_until) {
-                                (Some(from), Some(until)) => format!("{from} 至 {until}"),
-                                (Some(from), None) => format!("{from} 起"),
-                                (None, Some(until)) => format!("有效至 {until}"),
-                                (None, None) => "未设置有效期".into(),
-                            };
-                            view! {
-                                <article class=move || {
-                                    let attached = attached_ids.get().contains(&source_id);
-                                    let selected = selected_id.get() == Some(source_id);
-                                    format!("knowledge-source{}{}{}", if attached { " is-attached" } else { "" }, if selected { " is-selected" } else { "" }, if archived { " is-archived" } else { "" })
-                                }>
-                                    <div class="knowledge-source-title">
-                                        <span>{knowledge_type_label(&source.source_type)}</span>
-                                        <strong>{source.name.clone()}</strong>
-                                        <small class=if source.is_effective { "is-effective" } else { "" }>{knowledge_effective_label(&source)}</small>
-                                    </div>
-                                    <p>{source.description.clone()}</p>
-                                    <div class="knowledge-source-meta">
-                                        <code>{if source.version_label.is_empty() { "未标注版本".into() } else { format!("版本 {}", source.version_label) }}</code>
-                                        <span>{validity}</span>
-                                    </div>
-                                    <div class="knowledge-source-actions">
-                                        <label title="绑定后，当前有效内容会进入该项目的智能上下文">
-                                            <input type="checkbox" prop:checked=move || attached_ids.get().contains(&source_id) on:change=move |event| toggle_attachment(source_id, event_target_checked(&event)) disabled=archived />
-                                            <span>"绑定当前项目"</span>
-                                        </label>
-                                        <button class="button button-quiet" on:click=move |_| edit_source(source_for_edit.clone())>"编辑"</button>
-                                        <button class="button button-quiet" on:click=move |_| archive_source(source_id) disabled=move || busy.get() || archived>"归档"</button>
-                                    </div>
-                                </article>
-                            }
-                        }
-                    </For>
-                    <Show when=move || {
-                        let selected = filter.get();
-                        let search = query.get().trim().to_lowercase();
-                        !busy.get() && !sources.get().iter().any(|source| {
-                            (selected == "all"
-                                || (selected == "attached" && attached_ids.get().contains(&source.id))
-                                || source.source_type == selected)
-                                && (search.is_empty()
-                                    || source.name.to_lowercase().contains(&search)
-                                    || source.description.to_lowercase().contains(&search)
-                                    || source.content.to_lowercase().contains(&search))
-                        })
-                    }>
-                        <div class="knowledge-empty">"没有匹配的知识源"</div>
-                    </Show>
-                    </div>
-                </div>
-                <div class="knowledge-editor">
-                    <div class="knowledge-editor-heading">
-                        <div><strong>{move || if selected_id.get().is_some() { "编辑知识源" } else { "新建知识源" }}</strong><small>"保存后可按项目绑定，只有当前有效内容会进入智能上下文"</small></div>
-                        <button class="button button-quiet" on:click=move |_| clear_form()>"清空"</button>
-                    </div>
-                    <div class="knowledge-form-grid">
-                        <label><span>"类型"</span><select prop:value=source_type on:change=move |event| source_type.set(event_target_value(&event))><option value="term">"企业术语"</option><option value="field">"字段目录"</option><option value="policy">"制度政策"</option></select></label>
-                        <label><span>"名称"</span><input maxlength="160" prop:value=name on:input=move |event| name.set(event_target_value(&event)) /></label>
-                        <label><span>"版本"</span><input maxlength="80" placeholder="例如 2026.1" prop:value=version_label on:input=move |event| version_label.set(event_target_value(&event)) /></label>
-                        <label class="knowledge-form-wide"><span>"说明"</span><input maxlength="4000" prop:value=description on:input=move |event| description.set(event_target_value(&event)) /></label>
-                        <label><span>"生效日期"</span><input type="date" prop:value=valid_from on:input=move |event| valid_from.set(event_target_value(&event)) /></label>
-                        <label><span>"失效日期"</span><input type="date" prop:value=valid_until on:input=move |event| valid_until.set(event_target_value(&event)) /></label>
-                        <label class="knowledge-form-wide"><span>"来源地址"</span><input maxlength="2000" placeholder="制度页面、文档或数据字典地址" prop:value=source_uri on:input=move |event| source_uri.set(event_target_value(&event)) /></label>
-                        <label class="knowledge-form-wide"><span>"知识内容"</span><textarea maxlength="50000" rows="7" prop:value=content on:input=move |event| content.set(event_target_value(&event))></textarea></label>
-                    </div>
-                    <button class="button button-primary" on:click=save_source disabled=move || busy.get() || name.get().trim().is_empty() || content.get().trim().is_empty()>{move || if busy.get() { "处理中..." } else if selected_id.get().is_some() { "保存修改" } else { "创建知识源" }}</button>
-                    <Show when=move || error.get().is_some()><strong class="knowledge-error">{move || error.get().unwrap_or_default()}</strong></Show>
-                </div>
-            </div>
-        </section>
-    }
-}
-
 #[component]
 pub fn DmnApp() -> impl IntoView {
     let token = auth_token();
+    let (user_id, set_user_id) = signal(String::new());
     let (user_role, set_user_role) = signal(String::new());
     let (projects, set_projects) = signal(Vec::<DecisionProject>::new());
     let (current_project, set_current_project) = signal(Option::<DecisionProject>::None);
     let (current_version, set_current_version) = signal(Option::<DecisionVersion>::None);
-    let (new_project_name, set_new_project_name) = signal(String::new());
     let (model_library, set_model_library) = signal(Vec::<ModelLibraryItem>::new());
     let (resource_view, set_resource_view) = signal(ResourceView::Knowledge);
     let (version_knowledge_citations, set_version_knowledge_citations) =
@@ -1119,6 +251,7 @@ pub fn DmnApp() -> impl IntoView {
     let (test_case_busy, set_test_case_busy) = signal(false);
     let (test_case_running, set_test_case_running) = signal(false);
     let (test_case_run_summary, set_test_case_run_summary) = signal(Option::<String>::None);
+    let (test_case_filter, set_test_case_filter) = signal(TestCaseFilter::All);
     let (test_case_load_revision, set_test_case_load_revision) = signal(0_u64);
     // Keep the list tied to the project/version it was loaded for. This lets
     // us clear stale cases on navigation while ignoring a transient empty
@@ -1182,9 +315,114 @@ pub fn DmnApp() -> impl IntoView {
     // free-form model edits after a project already has a draft version.
     let (plan_generation_requested, set_plan_generation_requested) = signal(false);
     let (controller, set_controller) = signal(Option::<AbortController>::None);
-    let (theme, set_theme) = signal(Theme::Light);
+    let has_unsaved_changes = Signal::derive(move || {
+        let workflow = decision_workflow.get();
+        let saved_requirement = workflow
+            .as_ref()
+            .map(|workflow| workflow.requirement_text.as_str())
+            .unwrap_or_default();
+        prompt.get() != saved_requirement
+            || pending_review.get().is_some()
+            || workflow.as_ref().is_some_and(|workflow| {
+                clarification_answers.get()
+                    != workflow
+                        .answers
+                        .iter()
+                        .map(|answer| (answer.clarification_id.clone(), answer.answer.clone()))
+                        .collect::<BTreeMap<_, _>>()
+            })
+            || workflow
+                .as_ref()
+                .is_some_and(|workflow| workflow.status != "confirmed")
+    });
+    let app_state = expect_context::<AppState>();
+    on_cleanup(move || app_state.ui.workspace_dirty.set(false));
+    Effect::new(move |_| {
+        app_state.ui.workspace_dirty.set(has_unsaved_changes.get());
+    });
+    let theme = app_state.ui.theme.read_only();
+    provide_app_context(
+        token.into(),
+        user_role,
+        theme,
+        current_project,
+        current_version,
+    );
     // 在工作流尚未加载前展示需求分析；加载后根据是否存在方案切换到对应 Tab。
     let (workspace_view, set_workspace_view) = signal(WorkspaceView::Discovery);
+    let (mobile_model_focus, set_mobile_model_focus) = signal(MobileModelFocus::Conversation);
+    let (conversation_width, set_conversation_width) = signal(380.0_f64);
+    let (model_expanded, set_model_expanded) = signal(false);
+    let (resizing_workspace, set_resizing_workspace) = signal(false);
+    let workspace_grid = NodeRef::<leptos::html::Div>::new();
+    let viewport_width = RwSignal::new(
+        window()
+            .inner_width()
+            .ok()
+            .and_then(|width| width.as_f64())
+            .unwrap_or(1280.0),
+    );
+    let viewport_listener = window_event_listener(leptos::ev::resize, move |_| {
+        if let Some(width) = window().inner_width().ok().and_then(|width| width.as_f64()) {
+            viewport_width.set(width);
+            if width <= 1100.0 {
+                set_model_expanded.set(false);
+                set_resizing_workspace.set(false);
+            }
+        }
+    });
+    on_cleanup(move || viewport_listener.remove());
+    let resize_start = move |event: leptos::ev::MouseEvent| {
+        if viewport_width.get_untracked() <= 1100.0 || model_expanded.get_untracked() {
+            return;
+        }
+        event.prevent_default();
+        set_resizing_workspace.set(true);
+    };
+    let resize_move_listener = window_event_listener(leptos::ev::mousemove, move |event| {
+        if !resizing_workspace.get_untracked() {
+            return;
+        }
+        let Some(grid) = workspace_grid.get_untracked() else {
+            return;
+        };
+        let available_width = f64::from(grid.client_width());
+        let grid_left = f64::from(grid.offset_left());
+        let maximum_width = (available_width - 420.0).max(320.0).min(560.0);
+        let next_width = (f64::from(event.client_x()) - grid_left).clamp(320.0, maximum_width);
+        set_conversation_width.set(next_width);
+    });
+    on_cleanup(move || resize_move_listener.remove());
+    let resize_end_listener = window_event_listener(leptos::ev::mouseup, move |_| {
+        set_resizing_workspace.set(false);
+    });
+    on_cleanup(move || resize_end_listener.remove());
+    let resize_keydown = move |event: KeyboardEvent| {
+        if viewport_width.get_untracked() <= 1100.0 || model_expanded.get_untracked() {
+            return;
+        }
+        let step = if event.shift_key() { 80.0 } else { 24.0 };
+        let current = conversation_width.get_untracked();
+        let maximum = workspace_grid
+            .get_untracked()
+            .map(|grid| {
+                (f64::from(grid.client_width()) - 420.0)
+                    .max(320.0)
+                    .min(560.0)
+            })
+            .unwrap_or(560.0);
+        let next = match event.key().as_str() {
+            "ArrowLeft" => Some((current - step).max(320.0)),
+            "ArrowRight" => Some((current + step).min(maximum)),
+            "Home" => Some(320.0),
+            "End" => Some(maximum),
+            _ => None,
+        };
+        if let Some(next) = next {
+            event.prevent_default();
+            set_conversation_width.set(next);
+        }
+    };
     let (show_test, set_show_test) = signal(false);
     let (test_xml, set_test_xml) = signal(String::new());
     let (test_input, set_test_input) = signal("{}".to_string());
@@ -1196,15 +434,19 @@ pub fn DmnApp() -> impl IntoView {
     let (validation_error, set_validation_error) = signal(Option::<String>::None);
     let (validation_running, set_validation_running) = signal(false);
     let message_list = NodeRef::<leptos::html::Div>::new();
+    let follow_messages = RwSignal::new(true);
+    let unread_messages = RwSignal::new(false);
     let test_drawer_body = NodeRef::<leptos::html::Div>::new();
 
     Effect::new(move |_| {
         let Some(token_value) = token.get() else {
+            set_user_id.set(String::new());
             set_user_role.set(String::new());
             return;
         };
         spawn_local(async move {
-            if let Some((_, role)) = api::me(&token_value).await {
+            if let Some((username, role)) = api::me(&token_value).await {
+                set_user_id.set(username);
                 set_user_role.set(role);
             }
         });
@@ -1513,12 +755,32 @@ pub fn DmnApp() -> impl IntoView {
     });
 
     Effect::new(move |_| {
-        let _ = messages.get();
-        let _ = assistant_delta.get();
-        // 生成完成后直接定位到变更确认区，避免保存入口落在可滚动区域外。
-        let _ = pending_review.get();
-        if let Some(element) = message_list.get() {
-            element.set_scroll_top(element.scroll_height());
+        let has_messages = messages.with(|messages| !messages.is_empty());
+        let has_delta = assistant_delta.with(|delta| !delta.is_empty());
+        let has_review = pending_review.with(|review| review.is_some());
+        let has_content = has_messages || has_delta || has_review;
+        let width = viewport_width.get_untracked();
+        let focus = mobile_model_focus.get_untracked();
+        if message_list.get().is_some() {
+            if width <= 760.0 || (width <= 1100.0 && focus == MobileModelFocus::Inspector) {
+                if has_content {
+                    unread_messages.set(true);
+                }
+                return;
+            }
+            if follow_messages.get_untracked() {
+                request_animation_frame(move || {
+                    if follow_messages.try_get_untracked() == Some(true)
+                        && let Some(Some(element)) = message_list.try_get_untracked()
+                        && element.client_height() > 0
+                    {
+                        element.set_scroll_top(element.scroll_height());
+                        unread_messages.set(false);
+                    }
+                });
+            } else {
+                unread_messages.set(true);
+            }
         }
     });
 
@@ -1553,6 +815,7 @@ pub fn DmnApp() -> impl IntoView {
             set_test_case_context.set(Some(context));
             set_decision_test_cases.set(Vec::new());
             set_selected_test_case_ids.set(HashSet::new());
+            set_test_case_filter.set(TestCaseFilter::All);
         }
         let request_revision = test_case_load_revision.get();
         set_test_case_error.set(None);
@@ -1705,7 +968,11 @@ pub fn DmnApp() -> impl IntoView {
         } else {
             prompt_text.trim().to_string()
         };
-        if user_text.is_empty() || status.get() == RunStatus::Running {
+        if user_text.is_empty()
+            || status.get() == RunStatus::Running
+            || controller.get().is_some()
+            || project_busy.get()
+        {
             return;
         }
         let Some(token_value) = token.get() else {
@@ -2284,18 +1551,7 @@ pub fn DmnApp() -> impl IntoView {
             active.abort();
             set_status.set(RunStatus::Aborted);
             set_agent_activity.set("已停止当前生成任务".to_string());
-            set_controller.set(None);
         }
-    };
-
-    let navigate = leptos_router::hooks::use_navigate();
-    let logout = move |_| {
-        if let Some(active) = controller.get() {
-            active.abort();
-        }
-        LocalStorage::delete(TOKEN_KEY);
-        token.set(None);
-        navigate("/login", Default::default());
     };
 
     let toggle_model_library = move |_| {
@@ -2517,151 +1773,8 @@ pub fn DmnApp() -> impl IntoView {
         });
     };
 
-    let create_project = move |_| {
-        let name = new_project_name.get().trim().to_string();
-        if name.is_empty() || project_busy.get() || version_saving.get() {
-            return;
-        }
-        let Some(token_value) = token.get() else {
-            return;
-        };
-        set_project_busy.set(true);
-        set_project_error.set(None);
-        spawn_local(async move {
-            match api::create_project(
-                &token_value,
-                CreateDecisionProject {
-                    name,
-                    description: String::new(),
-                    risk_level: "medium".to_string(),
-                },
-            )
-            .await
-            {
-                Ok(project) => {
-                    set_projects.update(|items| items.insert(0, project.clone()));
-                    set_current_project.set(Some(project));
-                    set_current_version.set(None);
-                    // 新项目尚未生成需求方案，先引导用户完成需求分析。
-                    set_workspace_view.set(WorkspaceView::Discovery);
-                    set_new_project_name.set(String::new());
-                    set_dsl.set(None);
-                    set_source_dsl.set(String::new());
-                    set_xml.set(None);
-                    set_generation_mode.set(GenerationMode::Create);
-                    set_messages.set(Vec::new());
-                    set_steps.set(Vec::new());
-                    set_decision_workflow.set(None);
-                    set_prompt.set(String::new());
-                    set_pending_review.set(None);
-                    set_review_confirmed.set(false);
-                    set_versions.set(Vec::new());
-                    set_selected_version_id.set(None);
-                    set_selected_version_review.set(None);
-                    set_review_loading.set(false);
-                    set_audit_events.set(Vec::new());
-                    set_rollback_reason.set(String::new());
-                    set_rollback_confirmed.set(false);
-                    set_rollback_busy.set(false);
-                    set_verification_report.set(None);
-                    set_verification_busy.set(false);
-                    set_publish_confirmed.set(false);
-                    set_release_error.set(None);
-                    set_clarification_answers.set(BTreeMap::new());
-                    set_workflow_error.set(None);
-                    set_version_save_status.set(Some("项目已创建，尚未生成草稿".into()));
-                    set_audit_revision.update(|revision| *revision += 1);
-                }
-                Err(message) => set_project_error.set(Some(message)),
-            }
-            set_project_busy.set(false);
-        });
-    };
-
-    let delete_current_project = move |_| {
-        let Some(project) = current_project.get() else {
-            return;
-        };
-        if project_busy.get() || version_saving.get() || status.get() == RunStatus::Running {
-            return;
-        }
-        let Some(token_value) = token.get() else {
-            return;
-        };
-        let message = format!(
-            "确定删除项目“{}”吗？此操作会永久删除其版本、模型产物、验收案例、运行记录和项目成员，且无法恢复。",
-            project.name
-        );
-        let confirmed = web_sys::window()
-            .and_then(|window| window.confirm_with_message(&message).ok())
-            .unwrap_or(false);
-        if !confirmed {
-            return;
-        }
-
-        let project_id = project.id;
-        set_project_busy.set(true);
-        set_project_error.set(None);
-        spawn_local(async move {
-            match api::delete_project(&token_value, project_id).await {
-                Ok(()) => {
-                    set_projects.update(|items| items.retain(|item| item.id != project_id));
-                    set_current_project.set(None);
-                    set_current_version.set(None);
-                    set_dsl.set(None);
-                    set_source_dsl.set(String::new());
-                    set_xml.set(None);
-                    set_version_knowledge_citations.set(Vec::new());
-                    set_pending_knowledge_citations.set(Vec::new());
-                    set_generation_mode.set(GenerationMode::Create);
-                    set_workspace_view.set(WorkspaceView::Discovery);
-                    set_messages.set(Vec::new());
-                    set_steps.set(Vec::new());
-                    set_assistant_delta.set(String::new());
-                    set_error.set(None);
-                    set_status.set(RunStatus::Idle);
-                    set_decision_workflow.set(None);
-                    set_clarification_answers.set(BTreeMap::new());
-                    set_prompt.set(String::new());
-                    set_workflow_error.set(None);
-                    set_pending_review.set(None);
-                    set_review_confirmed.set(false);
-                    set_versions.set(Vec::new());
-                    set_selected_version_id.set(None);
-                    set_selected_version_review.set(None);
-                    set_review_loading.set(false);
-                    set_audit_events.set(Vec::new());
-                    set_project_members.set(Vec::new());
-                    set_member_error.set(None);
-                    set_member_status.set(None);
-                    set_rollback_reason.set(String::new());
-                    set_rollback_confirmed.set(false);
-                    set_rollback_busy.set(false);
-                    set_verification_report.set(None);
-                    set_publish_confirmed.set(false);
-                    set_release_error.set(None);
-                    set_decision_test_cases.set(Vec::new());
-                    set_test_case_run_summary.set(None);
-                    set_test_case_error.set(None);
-                    set_test_case_generation_summary.set(None);
-                    set_service_run.set(None);
-                    set_service_runs.set(Vec::new());
-                    set_selected_service_id.set(None);
-                    set_decision_analytics.set(None);
-                    set_analytics_error.set(None);
-                    set_optimization_proposals.set(Vec::new());
-                    set_proposal_error.set(None);
-                    set_service_error.set(None);
-                    set_version_save_status.set(Some("项目已删除，请选择或创建项目".into()));
-                }
-                Err(message) => set_project_error.set(Some(message)),
-            }
-            set_project_busy.set(false);
-        });
-    };
-
-    let select_project = move |event| {
-        let Ok(project_id) = event_target_value(&event).parse::<i64>() else {
+    let select_project = move |value: String| {
+        let Ok(project_id) = value.parse::<i64>() else {
             return;
         };
         let Some(project) = projects
@@ -2674,31 +1787,86 @@ pub fn DmnApp() -> impl IntoView {
         let Some(token_value) = token.get() else {
             return;
         };
-        // 项目工作流尚未加载，先停留在需求分析，避免短暂展示错误 Tab。
-        set_workspace_view.set(WorkspaceView::Discovery);
-        set_decision_workflow.set(None);
-        set_clarification_answers.set(BTreeMap::new());
-        set_prompt.set(String::new());
-        set_workflow_error.set(None);
-        set_pending_review.set(None);
-        set_review_confirmed.set(false);
-        set_versions.set(Vec::new());
-        set_selected_version_id.set(None);
-        set_selected_version_review.set(None);
-        set_review_loading.set(false);
-        set_audit_events.set(Vec::new());
-        set_rollback_reason.set(String::new());
-        set_rollback_confirmed.set(false);
-        set_rollback_busy.set(false);
-        set_verification_report.set(None);
-        set_verification_busy.set(false);
-        set_publish_confirmed.set(false);
-        set_release_error.set(None);
+        if current_project
+            .get()
+            .is_some_and(|current| current.id == project.id)
+            || project_busy.get()
+        {
+            return;
+        }
+        let generation_running = status.get() == RunStatus::Running
+            || controller.get().is_some()
+            || workflow_busy.get()
+            || test_case_busy.get()
+            || test_case_running.get()
+            || test_running.get()
+            || analysis_running.get()
+            || validation_running.get()
+            || version_saving.get()
+            || verification_busy.get()
+            || rollback_busy.get()
+            || member_busy.get()
+            || model_library_busy.get()
+            || service_key_busy.get()
+            || service_busy.get()
+            || outcome_busy.get()
+            || proposal_busy.get()
+            || review_loading.get();
+        if generation_running {
+            set_project_error.set(Some(
+                "当前项目仍有任务运行中，请等待任务完成后再切换项目。".into(),
+            ));
+            return;
+        }
+        if has_unsaved_changes.get() {
+            let message = "当前项目有未确认的需求或模型变更。切换将放弃本地未保存内容，已保存的需求方案仍会保留。确定切换吗？取消可继续编辑。";
+            let confirmed = web_sys::window()
+                .is_some_and(|window| window.confirm_with_message(message).unwrap_or(false));
+            if !confirmed {
+                return;
+            }
+        }
         set_project_busy.set(true);
         set_project_error.set(None);
         spawn_local(async move {
             match api::get_project_workspace(&token_value, project.id).await {
                 Ok(workspace) => {
+                    let workflow = match api::get_decision_workflow(&token_value, project.id).await
+                    {
+                        Ok(workflow) => workflow,
+                        Err(message) => {
+                            set_project_error.set(Some(message));
+                            set_project_busy.set(false);
+                            return;
+                        }
+                    };
+                    set_workspace_view.set(WorkspaceView::Discovery);
+                    set_workflow_error.set(None);
+                    set_pending_review.set(None);
+                    set_pending_candidate_id.set(None);
+                    set_pending_knowledge_citations.set(Vec::new());
+                    set_review_confirmed.set(false);
+                    set_versions.set(Vec::new());
+                    set_selected_version_id.set(None);
+                    set_selected_version_review.set(None);
+                    set_audit_events.set(Vec::new());
+                    set_rollback_reason.set(String::new());
+                    set_rollback_confirmed.set(false);
+                    set_verification_report.set(None);
+                    set_publish_confirmed.set(false);
+                    set_release_error.set(None);
+                    set_status.set(RunStatus::Idle);
+                    set_assistant_delta.set(String::new());
+                    set_agent_activity.set("等待新的建模任务".into());
+                    set_plan_generation_requested.set(false);
+                    set_show_test.set(false);
+                    set_test_xml.set(String::new());
+                    set_test_result.set(None);
+                    set_test_error.set(None);
+                    set_validation_result.set(None);
+                    set_validation_error.set(None);
+                    follow_messages.set(true);
+                    unread_messages.set(false);
                     let has_version = workspace.version.is_some();
                     let version = workspace.version.clone();
                     set_current_project.set(Some(workspace.project));
@@ -2736,32 +1904,29 @@ pub fn DmnApp() -> impl IntoView {
                     } else {
                         "项目尚未生成草稿".into()
                     }));
-                    match api::get_decision_workflow(&token_value, project.id).await {
-                        Ok(workflow) => {
-                            let answers = workflow
+                    {
+                        let answers = workflow
+                            .as_ref()
+                            .map(|state| {
+                                state
+                                    .answers
+                                    .iter()
+                                    .map(|answer| {
+                                        (answer.clarification_id.clone(), answer.answer.clone())
+                                    })
+                                    .collect()
+                            })
+                            .unwrap_or_default();
+                        set_clarification_answers.set(answers);
+                        set_prompt.set(
+                            workflow
                                 .as_ref()
-                                .map(|state| {
-                                    state
-                                        .answers
-                                        .iter()
-                                        .map(|answer| {
-                                            (answer.clarification_id.clone(), answer.answer.clone())
-                                        })
-                                        .collect()
-                                })
-                                .unwrap_or_default();
-                            set_clarification_answers.set(answers);
-                            set_prompt.set(
-                                workflow
-                                    .as_ref()
-                                    .map(|state| state.requirement_text.clone())
-                                    .unwrap_or_default(),
-                            );
-                            // 项目进入后统一从需求与方案开始；生成模型由确认方案入口触发。
-                            set_workspace_view.set(WorkspaceView::Discovery);
-                            set_decision_workflow.set(workflow);
-                        }
-                        Err(message) => set_workflow_error.set(Some(message)),
+                                .map(|state| state.requirement_text.clone())
+                                .unwrap_or_default(),
+                        );
+                        // 项目进入后统一从需求与方案开始；生成模型由确认方案入口触发。
+                        set_workspace_view.set(WorkspaceView::Discovery);
+                        set_decision_workflow.set(workflow);
                     }
                 }
                 Err(message) => set_project_error.set(Some(message)),
@@ -2770,8 +1935,7 @@ pub fn DmnApp() -> impl IntoView {
         });
     };
 
-    let select_version_review = move |event| {
-        let raw = event_target_value(&event);
+    let select_version_review = move |raw: String| {
         if raw.is_empty() {
             set_selected_version_id.set(None);
             set_selected_version_review.set(None);
@@ -2817,7 +1981,7 @@ pub fn DmnApp() -> impl IntoView {
         });
     };
 
-    let create_rollback_draft = move |_| {
+    let create_rollback_draft = move || {
         let (Some(project), Some(source_version_id), Some(token_value)) = (
             current_project.get(),
             selected_version_id.get(),
@@ -3369,6 +2533,20 @@ pub fn DmnApp() -> impl IntoView {
         if test_case_busy.get() || matches!(version.status.as_str(), "published" | "retired") {
             return;
         }
+        let case_name = decision_test_cases
+            .get()
+            .into_iter()
+            .find(|test_case| test_case.id == case_id)
+            .map(|test_case| test_case.name)
+            .unwrap_or_else(|| "该验收案例".into());
+        let confirmed = web_sys::window().is_some_and(|window| {
+            window
+                .confirm_with_message(&format!("确定删除“{case_name}”吗？此操作无法撤销。"))
+                .unwrap_or(false)
+        });
+        if !confirmed {
+            return;
+        }
         set_test_case_busy.set(true);
         set_test_case_error.set(None);
         set_test_case_run_summary.set(None);
@@ -3379,6 +2557,9 @@ pub fn DmnApp() -> impl IntoView {
                 Ok(()) => {
                     set_decision_test_cases
                         .update(|cases| cases.retain(|test_case| test_case.id != case_id));
+                    set_selected_test_case_ids.update(|selected| {
+                        selected.remove(&case_id);
+                    });
                     set_verification_report.set(None);
                     set_publish_confirmed.set(false);
                     mark_version_draft(version.id);
@@ -3389,7 +2570,7 @@ pub fn DmnApp() -> impl IntoView {
         });
     };
 
-    let save_member = move |_| {
+    let save_member = move || {
         let (Some(token_value), Some(project)) = (token.get(), current_project.get()) else {
             return;
         };
@@ -3667,6 +2848,21 @@ pub fn DmnApp() -> impl IntoView {
         });
     };
 
+    let copy_service_endpoint = move |(service_id, endpoint): (String, String)| {
+        spawn_local(async move {
+            let copied = if let Some(window) = web_sys::window() {
+                JsFuture::from(window.navigator().clipboard().write_text(&endpoint))
+                    .await
+                    .is_ok()
+            } else {
+                false
+            };
+            if copied {
+                set_service_endpoint_copied.set(Some(service_id));
+            }
+        });
+    };
+
     let edit_run_outcome = move |run: DecisionServiceRun| {
         set_outcome_run_id.set(Some(run.id));
         set_outcome_business_reference.set(run.business_reference);
@@ -3937,7 +3133,11 @@ pub fn DmnApp() -> impl IntoView {
     };
 
     let on_keydown = move |event: KeyboardEvent| {
-        if !(event.ctrl_key() || event.meta_key()) || event.key() != "Enter" {
+        if event.is_composing()
+            || project_busy.get()
+            || !(event.ctrl_key() || event.meta_key())
+            || event.key() != "Enter"
+        {
             return;
         }
         event.prevent_default();
@@ -4067,138 +3267,128 @@ pub fn DmnApp() -> impl IntoView {
         });
     };
 
-    view! {
-        <main class=move || format!("app-shell {}", theme.get().class())>
-            <header class="topbar">
-                <div class="brand-lockup">
-                    <div class="brand-mark">"D"</div>
-                    <div>
-                        <p class="eyebrow">"DMN DECISION WORKSPACE"</p>
-                        <h1>"智能决策建模工作台"</h1>
-                    </div>
-                </div>
-                <div class="topbar-actions">
-                    <div class="run-status-wrap">
-                        <span class="toolbar-label">"当前状态"</span>
-                        <div class=move || format!("run-status {}", status.get().class())>
-                            <span class="status-dot"></span>
-                            {move || status.get().label()}
-                        </div>
-                    </div>
-                    <button
-                        class="theme-toggle"
-                        title=move || theme.get().toggle_label()
-                        aria-label=move || theme.get().toggle_label()
-                        on:click=move |_| set_theme.update(|current| *current = match *current {
-                            Theme::Dark => Theme::Light,
-                            Theme::Light => Theme::Dark,
-                        })
-                    >
-                        <span class="theme-toggle-icon" aria-hidden="true">
-                            {move || if theme.get() == Theme::Dark { "☼" } else { "☾" }}
-                        </span>
-                        <span>{move || if theme.get() == Theme::Dark { "浅色" } else { "深色" }}</span>
-                    </button>
-                    <button
-                        class="button button-quiet"
-                        title="退出当前账号"
-                        on:click=logout
-                    >"退出登录"</button>
-                    <Show when=move || user_role.get() == "admin">
-                        <A href="/admin" class:button=true class:button-quiet=true>"用户管理"</A>
-                    </Show>
-                    <button class="button button-primary" on:click=validate_model disabled=move || xml.get().is_none() || validation_running.get()>
-                        {move || if validation_running.get() { "核验中..." } else { "人工核验 DMN" }}
-                    </button>
-                </div>
-            </header>
+    let flight_delay_resolution = include_str!("./demo/FlightDelayResolution.md");
+    let loan_approval_process = include_str!("./demo/LoanApprovalProcess.md");
+    let order_discount_calculation = include_str!("./demo/OrderDiscountCalculation.md");
 
-            <section
-                class=move || if current_project.get().is_none() { "project-bar project-bar-empty" } else { "project-bar" }
-                aria-label="决策项目"
-            >
-                <div class="project-current">
-                    <span class="toolbar-label">"当前项目"</span>
-                    <strong>{move || current_project.get().map(|project| project.name).unwrap_or_else(|| "尚未选择项目".into())}</strong>
-                    <small>{move || current_version.get().map(|version| format!("v{} · {}", version.version_number, version.status)).unwrap_or_else(|| "暂无版本".into())}</small>
-                    <Show when=move || current_project.get().is_none()>
-                        <span class="project-required-badge">"需要先选择"</span>
-                    </Show>
-                </div>
-                <div class="project-actions">
-                    <select
-                        id="decision-project-selector"
-                        class="project-select"
-                        aria-label="切换决策项目"
-                        prop:value=move || current_project.get().map(|project| project.id.to_string()).unwrap_or_default()
-                        on:change=select_project
-                        disabled=move || project_busy.get() || version_saving.get() || projects.get().is_empty()
-                    >
-                        <option value="">"选择项目"</option>
-                        <For each=move || projects.get() key=|project| project.id let:project>
-                            <option value=project.id.to_string()>{project.name}</option>
-                        </For>
-                    </select>
-                    <select
-                        class="project-select version-select"
-                        aria-label="查看版本变更"
-                        prop:value=move || selected_version_id.get().map(|id| id.to_string()).unwrap_or_default()
-                        on:change=select_version_review
-                        disabled=move || review_loading.get() || versions.get().is_empty()
-                    >
-                        <option value="">{move || if review_loading.get() { "读取审查..." } else { "版本变更" }}</option>
-                        <For each=move || versions.get() key=|version| version.id let:version>
-                            <option value=version.id.to_string()>{format!("v{} · {}", version.version_number, version.status)}</option>
-                        </For>
-                    </select>
-                    <button
-                        class=move || if workspace_view.get() == WorkspaceView::Resources && resource_view.get() == ResourceView::Models { "button button-quiet is-active" } else { "button button-quiet" }
-                        on:click=toggle_model_library
-                        disabled=move || project_busy.get() || version_saving.get()
-                    >"模型库"</button>
-                    <button
-                        class=move || if workspace_view.get() == WorkspaceView::Resources && resource_view.get() == ResourceView::Knowledge { "button button-quiet is-active" } else { "button button-quiet" }
-                        on:click=toggle_knowledge_library
-                        disabled=move || project_busy.get() || version_saving.get()
-                    >"知识库"</button>
-                    <input
-                        class="project-name-input"
-                        type="text"
-                        maxlength="120"
-                        placeholder="新项目名称"
-                        prop:value=new_project_name
-                        on:input=move |event| set_new_project_name.set(event_target_value(&event))
-                        disabled=move || project_busy.get() || version_saving.get()
-                    />
-                    <button class="button button-quiet" on:click=create_project disabled=move || project_busy.get() || version_saving.get() || new_project_name.get().trim().is_empty()>
-                        {move || if project_busy.get() { "处理中..." } else { "创建项目" }}
-                    </button>
-                    <button
-                        class="button button-danger"
-                        title="永久删除当前项目及其全部数据"
-                        on:click=delete_current_project
-                        disabled=move || current_project.get().is_none() || project_busy.get() || version_saving.get() || status.get() == RunStatus::Running
-                    >"删除当前项目"</button>
-                </div>
-                <div class="project-status">
-                    <span>{move || version_save_status.get().unwrap_or_else(|| "生成结果需确认变更后保存为草稿版本".into())}</span>
-                    <Show when=move || project_error.get().is_some()>
-                        <strong>{move || project_error.get().unwrap_or_default()}</strong>
-                    </Show>
-                </div>
-            </section>
+    let on_workspace_tab_keydown = move |event: KeyboardEvent| {
+        let key = event.key();
+        if !matches!(key.as_str(), "ArrowLeft" | "ArrowRight" | "Home" | "End") {
+            return;
+        }
+        let tabs = [
+            (WorkspaceView::Discovery, "workspace-tab-discovery", true),
+            (
+                WorkspaceView::Model,
+                "workspace-tab-model",
+                current_version.get().is_some() || dsl.get().is_some(),
+            ),
+            (
+                WorkspaceView::Validation,
+                "workspace-tab-validation",
+                current_version.get().is_some(),
+            ),
+            (
+                WorkspaceView::Services,
+                "workspace-tab-services",
+                current_project
+                    .get()
+                    .is_some_and(|project| project.published_version_id.is_some()),
+            ),
+            (
+                WorkspaceView::Analytics,
+                "workspace-tab-analytics",
+                current_project
+                    .get()
+                    .is_some_and(|project| project.published_version_id.is_some()),
+            ),
+            (
+                WorkspaceView::Versions,
+                "workspace-tab-versions",
+                !versions.get().is_empty(),
+            ),
+            (
+                WorkspaceView::Collaboration,
+                "workspace-tab-collaboration",
+                current_project.get().is_some(),
+            ),
+            (WorkspaceView::Resources, "workspace-tab-resources", true),
+        ];
+        let enabled: Vec<_> = tabs.iter().filter(|(_, _, enabled)| *enabled).collect();
+        let Some(current_index) = enabled
+            .iter()
+            .position(|(view, _, _)| *view == workspace_view.get())
+        else {
+            return;
+        };
+        let target_index = match key.as_str() {
+            "Home" => 0,
+            "End" => enabled.len().saturating_sub(1),
+            "ArrowRight" => (current_index + 1) % enabled.len(),
+            "ArrowLeft" => (current_index + enabled.len() - 1) % enabled.len(),
+            _ => return,
+        };
+        let (target, target_id, _) = *enabled[target_index];
+        event.prevent_default();
+        if target == WorkspaceView::Discovery {
+            set_generation_mode.set(GenerationMode::Create);
+        } else if target == WorkspaceView::Model {
+            set_generation_mode.set(GenerationMode::Modify);
+        }
+        set_workspace_view.set(target);
+        if let Some(element) = document().get_element_by_id(target_id)
+            && let Ok(element) = element.dyn_into::<web_sys::HtmlElement>()
+        {
+            let _ = element.focus();
+        }
+    };
+
+    view! {
+        <main class=move || format!("app-shell page-transition {}", theme.get().class()) inert=move || project_busy.get() aria-busy=move || project_busy.get()>
+            <Header
+                status=status
+                user_id=user_id
+                user_role=user_role
+                validation_running=validation_running
+                xml=xml
+                has_unsaved_changes=has_unsaved_changes
+                on_validate=Callback::new(move |_| validate_model(()))
+            />
+
+
+
+            <ProjectBar
+                projects=projects
+                versions=versions
+                selected_version_id=selected_version_id
+                project_busy=project_busy
+                version_saving=version_saving
+                review_loading=review_loading
+                version_save_status=version_save_status
+                project_error=project_error
+                on_select_project=Callback::new(move |value: String| select_project(value))
+                on_select_version_review=Callback::new(move |value: String| select_version_review(value))
+            />
 
             <nav class="workspace-view-tabs" aria-label="项目工作区" role="tablist">
+                <span class="workspace-nav-label workspace-nav-primary">"主流程"</span>
                 <button
+                    id="workspace-tab-discovery"
+                    aria-controls="workspace-panel-discovery"
+                    tabindex=move || if workspace_view.get() == WorkspaceView::Discovery { "0" } else { "-1" }
                     class=move || if workspace_view.get() == WorkspaceView::Discovery { "workspace-view-tab is-active" } else { "workspace-view-tab" }
                     on:click=move |_| {
                         set_generation_mode.set(GenerationMode::Create);
                         set_workspace_view.set(WorkspaceView::Discovery);
                     }
+                    on:keydown=on_workspace_tab_keydown
                     role="tab"
                     aria-selected=move || workspace_view.get() == WorkspaceView::Discovery
                 >"需求与方案"</button>
                 <button
+                    id="workspace-tab-model"
+                    aria-controls="workspace-panel-model"
+                    tabindex=move || if workspace_view.get() == WorkspaceView::Model { "0" } else { "-1" }
                     class=move || if workspace_view.get() == WorkspaceView::Model { "workspace-view-tab is-active" } else { "workspace-view-tab" }
                     on:click=move |_| {
                         if current_version.get().is_some() || dsl.get().is_some() {
@@ -4206,55 +3396,82 @@ pub fn DmnApp() -> impl IntoView {
                             set_workspace_view.set(WorkspaceView::Model);
                         }
                     }
+                    on:keydown=on_workspace_tab_keydown
                     role="tab"
                     aria-selected=move || workspace_view.get() == WorkspaceView::Model
                     disabled=move || current_version.get().is_none() && dsl.get().is_none()
                 >"建模"</button>
                 <button
+                    id="workspace-tab-validation"
+                    aria-controls="workspace-panel-validation"
+                    tabindex=move || if workspace_view.get() == WorkspaceView::Validation { "0" } else { "-1" }
                     class=move || if workspace_view.get() == WorkspaceView::Validation { "workspace-view-tab is-active" } else { "workspace-view-tab" }
                     on:click=move |_| set_workspace_view.set(WorkspaceView::Validation)
+                    on:keydown=on_workspace_tab_keydown
                     role="tab"
                     aria-selected=move || workspace_view.get() == WorkspaceView::Validation
                     disabled=move || current_version.get().is_none()
                 >"验收" <span>{move || decision_test_cases.get().len()}</span></button>
+                <span class="workspace-nav-divider" aria-hidden="true"></span>
+                <span class="workspace-nav-label workspace-nav-secondary">"辅助"</span>
                 <button
+                    id="workspace-tab-services"
+                    aria-controls="workspace-panel-services"
+                    tabindex=move || if workspace_view.get() == WorkspaceView::Services { "0" } else { "-1" }
                     class=move || if workspace_view.get() == WorkspaceView::Services { "workspace-view-tab is-active" } else { "workspace-view-tab" }
                     on:click=move |_| set_workspace_view.set(WorkspaceView::Services)
+                    on:keydown=on_workspace_tab_keydown
                     role="tab"
                     aria-selected=move || workspace_view.get() == WorkspaceView::Services
                     disabled=move || current_project.get().is_none_or(|project| project.published_version_id.is_none())
                 >"服务" <span>{move || published_services.get().len()}</span></button>
                 <button
+                    id="workspace-tab-analytics"
+                    aria-controls="workspace-panel-analytics"
+                    tabindex=move || if workspace_view.get() == WorkspaceView::Analytics { "0" } else { "-1" }
                     class=move || if workspace_view.get() == WorkspaceView::Analytics { "workspace-view-tab is-active" } else { "workspace-view-tab" }
                     on:click=move |_| set_workspace_view.set(WorkspaceView::Analytics)
+                    on:keydown=on_workspace_tab_keydown
                     role="tab"
                     aria-selected=move || workspace_view.get() == WorkspaceView::Analytics
                     disabled=move || current_project.get().is_none_or(|project| project.published_version_id.is_none())
                 >"分析" <span>{move || decision_analytics.get().map(|report| report.findings.len()).unwrap_or_default()}</span></button>
                 <button
+                    id="workspace-tab-versions"
+                    aria-controls="workspace-panel-versions"
+                    tabindex=move || if workspace_view.get() == WorkspaceView::Versions { "0" } else { "-1" }
                     class=move || if workspace_view.get() == WorkspaceView::Versions { "workspace-view-tab is-active" } else { "workspace-view-tab" }
                     on:click=move |_| set_workspace_view.set(WorkspaceView::Versions)
+                    on:keydown=on_workspace_tab_keydown
                     role="tab"
                     aria-selected=move || workspace_view.get() == WorkspaceView::Versions
                     disabled=move || versions.get().is_empty()
                 >"版本" <span>{move || versions.get().len()}</span></button>
                 <button
+                    id="workspace-tab-collaboration"
+                    aria-controls="workspace-panel-collaboration"
+                    tabindex=move || if workspace_view.get() == WorkspaceView::Collaboration { "0" } else { "-1" }
                     class=move || if workspace_view.get() == WorkspaceView::Collaboration { "workspace-view-tab is-active" } else { "workspace-view-tab" }
                     on:click=move |_| set_workspace_view.set(WorkspaceView::Collaboration)
+                    on:keydown=on_workspace_tab_keydown
                     role="tab"
                     aria-selected=move || workspace_view.get() == WorkspaceView::Collaboration
                     disabled=move || current_project.get().is_none()
                 >"协作" <span>{move || project_members.get().len()}</span></button>
                 <button
+                    id="workspace-tab-resources"
+                    aria-controls="workspace-panel-resources"
+                    tabindex=move || if workspace_view.get() == WorkspaceView::Resources { "0" } else { "-1" }
                     class=move || if workspace_view.get() == WorkspaceView::Resources { "workspace-view-tab is-active" } else { "workspace-view-tab" }
                     on:click=move |_| set_workspace_view.set(WorkspaceView::Resources)
+                    on:keydown=on_workspace_tab_keydown
                     role="tab"
                     aria-selected=move || workspace_view.get() == WorkspaceView::Resources
                 >"资源"</button>
             </nav>
 
             <Show when=move || workspace_view.get() == WorkspaceView::Collaboration && current_project.get().is_some()>
-                <section class="collaboration-panel" aria-label="项目协作与职责分离">
+                <section id="workspace-panel-collaboration" class="collaboration-panel" role="tabpanel" aria-labelledby="workspace-tab-collaboration" tabindex="0" inert=move || project_busy.get()>
                     <div class="collaboration-heading">
                         <div>
                             <span class="yaml-kicker">"PROJECT COLLABORATION"</span>
@@ -4273,36 +3490,18 @@ pub fn DmnApp() -> impl IntoView {
                         <span><b>审批人</b>" 在门禁通过后发布"</span>
                         <span><b>查看者</b>" 只读访问"</span>
                     </div>
-                    <div class="member-editor">
-                        <label><span>"成员用户名"</span><input maxlength="255" placeholder="管理员已添加的用户名" prop:value=member_username on:input=move |event| set_member_username.set(event_target_value(&event)) /></label>
-                        <label><span>"角色"</span><select prop:value=member_role on:change=move |event| set_member_role.set(event_target_value(&event))><option value="modeler">"建模者"</option><option value="reviewer">"复核者"</option><option value="approver">"审批人"</option><option value="viewer">"查看者"</option></select></label>
-                        <button class="button button-quiet" on:click=save_member disabled=move || member_busy.get() || member_username.get().trim().is_empty()>{move || if member_busy.get() { "处理中..." } else { "添加或更新角色" }}</button>
-                    </div>
-                    <div class="member-list">
-                        <For each=move || project_members.get() key=|member| format!("{}:{}", member.username, member.role) let:member>
-                            {
-                                let username = member.username.clone();
-                                let role = member.role.clone();
-                                view! {
-                                    <article class="member-row">
-                                        <div><strong>{member.username}</strong><small>{format!("{} 添加", member.added_by)}</small></div>
-                                        <code>{member.role}</code>
-                                        <button class="button button-quiet danger-action" on:click=move |_| remove_member(username.clone(), role.clone()) disabled=move || member_busy.get()>"移除角色"</button>
-                                    </article>
-                                }
-                            }
-                        </For>
-                        <Show when=move || project_members.get().is_empty()><div class="member-empty">"尚未添加协作成员"</div></Show>
-                    </div>
-                    <Show when=move || member_status.get().is_some()>
-                        <div class="member-status" role="status">{move || member_status.get().unwrap_or_default()}</div>
-                    </Show>
-                    <Show when=move || member_error.get().is_some()>
-                        <div class="member-error" role="alert">
-                            <strong>"成员角色保存失败"</strong>
-                            <span>{move || member_error.get().unwrap_or_default()}</span>
-                        </div>
-                    </Show>
+                    <MemberManagementPanel
+                        members=project_members
+                        member_username=member_username
+                        set_member_username=set_member_username
+                        member_role=member_role
+                        set_member_role=set_member_role
+                        member_busy=member_busy
+                        member_error=member_error
+                        member_status=member_status
+                        on_save_member=Callback::new(move |_| save_member())
+                        on_remove_member=Callback::new(move |(username, role)| remove_member(username, role))
+                    />
                 </section>
             </Show>
 
@@ -4318,7 +3517,7 @@ pub fn DmnApp() -> impl IntoView {
             </Show>
 
             <Show when=move || workspace_view.get() == WorkspaceView::Resources>
-                <div class="resource-library-page">
+                <div id="workspace-panel-resources" class="resource-library-page" role="tabpanel" aria-labelledby="workspace-tab-resources" tabindex="0" inert=move || project_busy.get()>
                     <div class="resource-library-heading">
                         <div>
                             <span class="yaml-kicker">"RESOURCE CENTER"</span>
@@ -4529,127 +3728,35 @@ pub fn DmnApp() -> impl IntoView {
             </Show>
 
             <Show when=move || workspace_view.get() == WorkspaceView::Versions && current_project.get().is_some() && !versions.get().is_empty()>
-                <section class="version-governance-panel" aria-label="版本时间线与审计">
-                    <div class="version-governance-heading">
-                        <div>
-                            <span class="yaml-kicker">"VERSION GOVERNANCE"</span>
-                            <strong>"版本时间线与审计"</strong>
-                            <small>{move || format!("{} 个版本 · {} 条审计事件", versions.get().len(), audit_events.get().len())}</small>
-                        </div>
-                        <span class="governance-policy">"历史不可变"</span>
-                    </div>
-                    <div class="version-governance-grid">
-                        <div class="version-chain" aria-label="版本链">
-                            <For each=move || versions.get() key=|version| version.id let:version>
-                                {let status = version.status.clone();
-                                let source_label = version.rollback_source_version_id.and_then(|source_id| {
-                                    versions.get().into_iter().find(|item| item.id == source_id)
-                                        .map(|item| format!("回滚自 v{}", item.version_number))
-                                });
-                                let rollback_reason = version.rollback_reason.clone();
-                                let is_current = current_version.get().is_some_and(|current| current.id == version.id);
-                                view! {
-                                    <article class=format!("version-node version-node-{status}{}", if is_current { " is-current" } else { "" })>
-                                        <span class="version-node-marker" aria-hidden="true"></span>
-                                        <div class="version-node-body">
-                                            <div class="version-node-title">
-                                                <strong>{format!("v{}", version.version_number)}</strong>
-                                                <span>{status.clone()}</span>
-                                                {is_current.then(|| view! { <em>"当前"</em> })}
-                                            </div>
-                                            <small>{format!("{} · {}", version.created_by, version.created_at.format("%m-%d %H:%M"))}</small>
-                                            {source_label.map(|label| view! { <code>{label}</code> })}
-                                            {rollback_reason.map(|reason| view! { <p>{reason}</p> })}
-                                        </div>
-                                    </article>
-                                }}
-                            </For>
-                        </div>
-                        <div class="audit-timeline" aria-label="项目审计记录">
-                            <Show
-                                when=move || !audit_events.get().is_empty()
-                                fallback=move || view! { <div class="audit-empty">"暂无审计事件"</div> }
-                            >
-                                <For each=move || audit_events.get() key=|event| event.id let:event>
-                                    {
-                                        let kind = audit_event_kind(&event.event_type);
-                                        let label = audit_event_type_label(&event.event_type);
-                                        view! {
-                                            <article class=format!("audit-event audit-type-{kind}")>
-                                                <span class="audit-event-dot" aria-hidden="true"></span>
-                                                <div>
-                                                    <strong>{event.summary}</strong>
-                                                    <small>{format!("{} · {}", event.actor_username, event.created_at.format("%m-%d %H:%M:%S"))}</small>
-                                                    <code>{label}</code>
-                                                </div>
-                                            </article>
-                                        }
-                                    }
-                                </For>
-                            </Show>
-                        </div>
-                    </div>
-                </section>
+                <div id="workspace-panel-versions" role="tabpanel" aria-labelledby="workspace-tab-versions" tabindex="0" inert=move || project_busy.get()>
+                <VersionGovernancePanel
+                    versions=versions
+                    current_version=current_version
+                    audit_events=audit_events
+                />
+            <Show when=move || selected_version_review.get().is_some()>
+                <VersionHistoryPanel
+                    selected_version_review=selected_version_review
+                    selected_version_id=selected_version_id
+                    versions=versions
+                    current_version=current_version
+                    rollback_reason=rollback_reason
+                    set_rollback_reason=set_rollback_reason
+                    rollback_confirmed=rollback_confirmed
+                    set_rollback_confirmed=set_rollback_confirmed
+                    rollback_busy=rollback_busy
+                    on_create_rollback=Callback::new(move |_| create_rollback_draft())
+                    on_close=Callback::new(move |_| {
+                        set_selected_version_id.set(None);
+                        set_selected_version_review.set(None);
+                    })
+                />
             </Show>
-
-            <Show when=move || workspace_view.get() == WorkspaceView::Versions && selected_version_review.get().is_some()>
-                <section class="version-history-panel">
-                    <div class="version-history-heading">
-                        <div><span class="yaml-kicker">"VERSION HISTORY"</span><strong>"已保存版本审查"</strong></div>
-                        <button class="button button-quiet" on:click=move |_| {
-                            set_selected_version_id.set(None);
-                            set_selected_version_review.set(None);
-                        }>"关闭"</button>
-                    </div>
-                    {move || selected_version_review.get().map(|review| view! { <SavedVersionReviewView review=review /> })}
-                    <Show when=move || {
-                        selected_version_id.get().is_some_and(|selected_id| {
-                            versions.get().iter().any(|version| {
-                                version.id == selected_id
-                                    && matches!(version.status.as_str(), "published" | "retired")
-                                    && current_version.get().is_none_or(|current| current.id != version.id)
-                            })
-                        })
-                    }>
-                        <div class="rollback-controls">
-                            <div class="rollback-copy">
-                                <strong>"创建回滚草稿"</strong>
-                                <small>"复制所选历史版本，线上版本保持不变；新草稿必须重新验收和发布。"</small>
-                            </div>
-                            <textarea
-                                rows="2"
-                                maxlength="500"
-                                placeholder="填写回滚原因"
-                                prop:value=rollback_reason
-                                on:input=move |event| {
-                                    set_rollback_reason.set(event_target_value(&event));
-                                    set_rollback_confirmed.set(false);
-                                }
-                                disabled=move || rollback_busy.get()
-                            ></textarea>
-                            <label class="rollback-confirmation">
-                                <input
-                                    type="checkbox"
-                                    prop:checked=rollback_confirmed
-                                    on:change=move |event| set_rollback_confirmed.set(event_target_checked(&event))
-                                    disabled=move || rollback_busy.get()
-                                />
-                                <span>"我已确认回滚差异，并接受重新验收后才能发布"</span>
-                            </label>
-                            <button
-                                class="button button-primary"
-                                on:click=create_rollback_draft
-                                disabled=move || rollback_busy.get() || !rollback_confirmed.get() || rollback_reason.get().trim().is_empty()
-                            >
-                                {move || if rollback_busy.get() { "创建中..." } else { "创建回滚草稿" }}
-                            </button>
-                        </div>
-                    </Show>
-                </section>
+                </div>
             </Show>
 
             <Show when=move || workspace_view.get() == WorkspaceView::Services && current_project.get().is_some_and(|project| project.published_version_id.is_some())>
-                <section class="published-services-panel" aria-label="已发布决策服务">
+                <section id="workspace-panel-services" class="published-services-panel" role="tabpanel" aria-labelledby="workspace-tab-services" tabindex="0" inert=move || project_busy.get()>
                     <div class="published-services-heading">
                         <div>
                             <span class="yaml-kicker">"PUBLISHED SERVICES"</span>
@@ -4658,162 +3765,32 @@ pub fn DmnApp() -> impl IntoView {
                         </div>
                         <span class="service-live-status">"LIVE"</span>
                     </div>
-                    <div class="service-public-access">
-                        <div class="service-public-access-heading">
-                            <div>
-                                <strong>"对外调用凭证"</strong>
-                                <small>"无需登录，凭证仅绑定当前决策服务；发布新版本后仍按线上版本执行"</small>
-                            </div>
-                            <span>"X-Decision-Key"</span>
-                        </div>
-                        <div class="service-key-create">
-                            <input
-                                type="text"
-                                maxlength="120"
-                                placeholder="凭证名称，例如 order-service"
-                                prop:value=service_key_name
-                                on:input=move |event| set_service_key_name.set(event_target_value(&event))
-                                disabled=move || service_key_busy.get() || selected_service_id.get().is_none()
-                            />
-                            <button
-                                class="button button-primary"
-                                on:click=create_service_key
-                                disabled=move || service_key_busy.get() || selected_service_id.get().is_none() || service_key_name.get().trim().is_empty()
-                            >{move || if service_key_busy.get() { "处理中..." } else { "生成调用凭证" }}</button>
-                        </div>
-                        <Show when=move || service_key_secret.get().is_some()>
-                            <div class="service-key-secret" role="alert">
-                                <div class="service-key-secret-heading">
-                                    <strong>"完整密钥，仅显示一次"</strong>
-                                    <button
-                                        type="button"
-                                        class="button button-quiet"
-                                        title="复制完整密钥"
-                                        aria-label="复制完整密钥"
-                                        on:click=copy_service_key
-                                    >
-                                        {move || match service_key_copy_status.get() {
-                                            CopyStatus::Idle => "复制完整密钥",
-                                            CopyStatus::Copied => "已复制",
-                                            CopyStatus::Failed => "复制失败",
-                                        }}
-                                    </button>
-                                </div>
-                                <input
-                                    class="service-key-secret-value"
-                                    type="text"
-                                    readonly=true
-                                    spellcheck="false"
-                                    aria-label="完整决策服务调用密钥"
-                                    prop:value=move || service_key_secret.get().unwrap_or_default()
-                                />
-                                <div class="service-key-curl-heading">
-                                    <strong>"可直接执行的 curl"</strong>
-                                    <button
-                                        type="button"
-                                        class="button button-quiet"
-                                        title="复制可执行 curl"
-                                        aria-label="复制可执行 curl"
-                                        on:click=copy_service_curl
-                                    >
-                                        {move || match service_curl_copy_status.get() {
-                                            CopyStatus::Idle => "复制 curl",
-                                            CopyStatus::Copied => "已复制",
-                                            CopyStatus::Failed => "复制失败",
-                                        }}
-                                    </button>
-                                </div>
-                                <pre class="service-key-curl"><code>{move || {
-                                    let secret = service_key_secret.get().unwrap_or_default();
-                                    let service_id = service_key_service_id.get();
-                                    published_services.get().into_iter()
-                                        .find(|service| Some(service.id.clone()) == service_id)
-                                        .map(|service| public_service_curl(&service, &secret))
-                                        .unwrap_or_default()
-                                }}</code></pre>
-                            </div>
-                        </Show>
-                        <Show when=move || service_key_error.get().is_some()>
-                            <div class="service-key-error">{move || service_key_error.get().unwrap_or_default()}</div>
-                        </Show>
-                        <Show when=move || !service_keys.get().is_empty()>
-                            <div class="service-key-list">
-                                <For each=move || service_keys.get() key=|key| key.id let:key>
-                                    <div class=format!("service-key-row{}", if key.revoked_at.is_some() { " service-key-revoked" } else { "" })>
-                                        <div>
-                                            <strong>{key.name.clone()}</strong>
-                                            <small>{format!("凭证 ID：{} · 服务：{} · 仅用于识别，不能直接调用", key.key_prefix, key.service_id)}</small>
-                                        </div>
-                                        <span>{move || if key.revoked_at.is_some() { "已撤销" } else { "有效" }}</span>
-                                        <button
-                                            type="button"
-                                            class="button button-quiet danger-action"
-                                            title="删除并立即停用凭证"
-                                            aria-label="删除并立即停用凭证"
-                                            on:click=move |_| revoke_service_key(key.id)
-                                            disabled=move || service_key_busy.get() || key.revoked_at.is_some()
-                                        >"删除"</button>
-                                    </div>
-                                </For>
-                            </div>
-                        </Show>
-                    </div>
+                    <ServiceCredentialsPanel
+                        published_services=published_services
+                        selected_service_id=selected_service_id
+                        service_keys=service_keys
+                        service_key_name=service_key_name
+                        set_service_key_name=set_service_key_name
+                        service_key_secret=service_key_secret
+                        service_key_service_id=service_key_service_id
+                        service_key_copy_status=service_key_copy_status
+                        service_curl_copy_status=service_curl_copy_status
+                        service_key_busy=service_key_busy
+                        service_key_error=service_key_error
+                        on_create_service_key=Callback::new(create_service_key)
+                        on_copy_service_key=Callback::new(copy_service_key)
+                        on_copy_service_curl=Callback::new(copy_service_curl)
+                        on_revoke_service_key=Callback::new(revoke_service_key)
+                    />
                     <Show
                         when=move || !published_services.get().is_empty()
                         fallback=move || view! { <div class="service-empty">"当前发布版本没有可调用决策服务"</div> }
                     >
-                        <div class="service-contract-list">
-                            <For each=move || published_services.get() key=|service| service.id.clone() let:service>
-                                {let endpoint = public_service_endpoint(&service);
-                                let endpoint_service_id = service.id.clone();
-                                let endpoint_for_copy = endpoint.clone();
-                                let service_id_for_copy = endpoint_service_id.clone();
-                                let service_id_for_label = endpoint_service_id.clone();
-                                let copy_endpoint = move |_| {
-                                    let endpoint = endpoint_for_copy.clone();
-                                    let service_id = service_id_for_copy.clone();
-                                    spawn_local(async move {
-                                        let copied = if let Some(window) = web_sys::window() {
-                                            JsFuture::from(window.navigator().clipboard().write_text(&endpoint))
-                                                .await
-                                                .is_ok()
-                                        } else {
-                                            false
-                                        };
-                                        if copied {
-                                            set_service_endpoint_copied.set(Some(service_id));
-                                        }
-                                    });
-                                };
-                                view! { <article class="service-contract">
-                                    <div><strong>{service.name.clone()}</strong><span>{format!("v{}", service.version_number)}</span></div>
-                                    <div class="service-endpoint">
-                                        <code>{format!("POST {endpoint}")}</code>
-                                        <button
-                                            type="button"
-                                            class="button button-quiet"
-                                            title="复制公开调用 URL"
-                                            aria-label="复制公开调用 URL"
-                                            on:click=copy_endpoint
-                                        >{move || if service_endpoint_copied.get().as_deref() == Some(service_id_for_label.as_str()) { "已复制" } else { "复制 URL" }}</button>
-                                    </div>
-                                    <div class="service-fields">
-                                        <div>
-                                            <small>"输入"</small>
-                                            <For each=move || service.inputs.clone() key=|field| format!("{}:{}", field.source, field.name) let:field>
-                                                <span><strong>{field.name}</strong><em>{field.type_ref}</em></span>
-                                            </For>
-                                        </div>
-                                        <div>
-                                            <small>"输出"</small>
-                                            <For each=move || service.outputs.clone() key=|field| field.name.clone() let:field>
-                                                <span><strong>{field.name}</strong><em>{field.type_ref}</em></span>
-                                            </For>
-                                        </div>
-                                    </div>
-                                </article> } }
-                            </For>
-                        </div>
+                        <ServiceContractList
+                            published_services=published_services
+                            service_endpoint_copied=service_endpoint_copied
+                            on_copy_endpoint=Callback::new(copy_service_endpoint)
+                        />
                         <div class="service-runner">
                             <div class="service-runner-controls">
                                 <label>
@@ -4950,7 +3927,7 @@ pub fn DmnApp() -> impl IntoView {
             </Show>
 
             <Show when=move || workspace_view.get() == WorkspaceView::Analytics && current_project.get().is_some_and(|project| project.published_version_id.is_some())>
-                <section class="decision-analytics-panel" aria-label="发布版本运行分析">
+                <section id="workspace-panel-analytics" class="decision-analytics-panel" role="tabpanel" aria-labelledby="workspace-tab-analytics" tabindex="0" inert=move || project_busy.get()>
                     <div class="analytics-heading">
                         <div>
                             <span class="yaml-kicker">"RUN ANALYTICS"</span>
@@ -5168,7 +4145,15 @@ pub fn DmnApp() -> impl IntoView {
                 </section>
             </Show>
 
-            <Show when=move || workspace_view.get() == WorkspaceView::Validation && current_version.get().is_some() && pending_review.get().is_none()>
+            <Show when=move || workspace_view.get() == WorkspaceView::Validation>
+            <div id="workspace-panel-validation" role="tabpanel" aria-labelledby="workspace-tab-validation" tabindex="0">
+            <Show when=move || pending_review.get().is_some()>
+                <div class="model-change-lock" role="status">
+                    <strong>"请先处理待确认的模型变更"</strong>
+                    <button class="button button-quiet" on:click=move |_| set_workspace_view.set(WorkspaceView::Model)>"返回建模查看变更"</button>
+                </div>
+            </Show>
+            <Show when=move || current_version.get().is_some() && pending_review.get().is_none()>
                 <section class="business-tests-panel" aria-label="业务验收测试套件">
                     <div class="business-tests-heading">
                         <div>
@@ -5176,10 +4161,8 @@ pub fn DmnApp() -> impl IntoView {
                             <strong>"业务验收测试套件"</strong>
                             <small>{move || {
                                 let cases = decision_test_cases.get();
-                                let passed = cases.iter().filter(|case| case.status == "passed").count();
-                                let approved = cases.iter().filter(|case| case.approved_by.is_some()).count();
                                 let selected = selected_test_case_ids.get().len();
-                                format!("{} 个案例，{} 个通过，{} 个已批准 · 已选 {}", cases.len(), passed, approved, selected)
+                                format!("{} 个案例 · 已选 {}", cases.len(), selected)
                             }}</small>
                         </div>
                         <div class="business-tests-heading-actions">
@@ -5187,7 +4170,12 @@ pub fn DmnApp() -> impl IntoView {
                                 class="button button-quiet"
                                 on:click=select_pending_test_cases
                                 disabled=move || test_case_busy.get() || !decision_test_cases.get().iter().any(|case| case.status == "passed" && case.approved_by.is_none())
-                            >"选中待批准"</button>
+                            >"选中全部待批准"</button>
+                            <button
+                                class="button button-quiet"
+                                on:click=move |_| set_selected_test_case_ids.set(HashSet::new())
+                                disabled=move || test_case_busy.get() || selected_test_case_ids.get().is_empty()
+                            >"清空选择"</button>
                             <button
                                 class="button button-quiet"
                                 on:click=batch_approve
@@ -5217,9 +4205,41 @@ pub fn DmnApp() -> impl IntoView {
                             </button>
                         </div>
                     </div>
+                    <div class="business-test-stats" aria-label="验收统计">
+                        <div><strong>{move || decision_test_cases.get().len()}</strong><span>总数</span></div>
+                        <div class="is-success"><strong>{move || decision_test_cases.get().iter().filter(|case| case.status == "passed").count()}</strong><span>通过</span></div>
+                        <div class="is-danger"><strong>{move || decision_test_cases.get().iter().filter(|case| matches!(case.status.as_str(), "failed" | "error")).count()}</strong><span>失败 / 错误</span></div>
+                        <div><strong>{move || decision_test_cases.get().iter().filter(|case| !matches!(case.status.as_str(), "passed" | "failed" | "error")).count()}</strong><span>待运行</span></div>
+                        <div class="is-warning"><strong>{move || decision_test_cases.get().iter().filter(|case| case.status == "passed" && case.approved_by.is_none()).count()}</strong><span>待批准</span></div>
+                    </div>
+                    <div class="business-test-filters" role="group" aria-label="筛选验收案例">
+                        {[
+                            TestCaseFilter::All,
+                            TestCaseFilter::Failed,
+                            TestCaseFilter::PendingApproval,
+                            TestCaseFilter::PendingRun,
+                        ].into_iter().map(|filter| view! {
+                            <button
+                                class=move || if test_case_filter.get() == filter { "button button-quiet is-active" } else { "button button-quiet" }
+                                aria-pressed=move || test_case_filter.get() == filter
+                                aria-controls="business-test-case-list"
+                                on:click=move |_| set_test_case_filter.set(filter)
+                            >
+                                {filter.label()}
+                                <span>{move || decision_test_cases.get().iter().filter(|case| filter.matches(case)).count()}</span>
+                            </button>
+                        }).collect_view()}
+                    </div>
                     <div class="business-test-approval-hint">
-                        <span>"仅执行通过的案例可批准；勾选案例后可批量处理。"</span>
-                        <span>"批准权限受项目复核角色和版本创建者限制。"</span>
+                        <span>"待批准仅包含已通过且未批准的案例；批准权限受项目复核角色和版本创建者限制。"</span>
+                        <span role="status">{move || {
+                            let selected = selected_test_case_ids.get();
+                            let filter = test_case_filter.get();
+                            let cases = decision_test_cases.get();
+                            let visible = cases.iter().filter(|case| filter.matches(case)).count();
+                            let hidden_selected = cases.iter().filter(|case| selected.contains(&case.id) && !filter.matches(case)).count();
+                            format!("显示 {} / {} 个 · 已选 {} 个（筛选外 {} 个）。批量操作包含筛选外已选项，运行全部不受筛选影响。", visible, cases.len(), selected.len(), hidden_selected)
+                        }}</span>
                     </div>
                     <Show when=move || test_case_running.get() || test_case_run_summary.get().is_some() || test_case_error.get().is_some()>
                         <div
@@ -5284,7 +4304,7 @@ pub fn DmnApp() -> impl IntoView {
                             >"添加案例"</button>
                         </div>
                     </Show>
-                    <div class="business-test-list">
+                    <div class="business-test-list" id="business-test-case-list">
                         <Show
                             when=move || !decision_test_cases.get().is_empty()
                             fallback=move || view! {
@@ -5293,44 +4313,64 @@ pub fn DmnApp() -> impl IntoView {
                                 </div>
                             }
                         >
-                            <For
-                                each=move || decision_test_cases.get()
-                                key=|test_case| format!(
-                                    "{}:{}:{}:{}",
-                                    test_case.id,
-                                    test_case.status,
-                                    test_case.updated_at,
-                                    serde_json::to_string(&test_case.actual_output_json).unwrap_or_default()
-                                )
-                                let:test_case
+                            <Show
+                                when=move || !decision_test_cases.get().iter().any(|case| test_case_filter.get().matches(case))
                             >
-                            {
-                                let case_id = test_case.id;
-                                let approved = test_case.approved_by.is_some();
-                                let status = test_case.status.clone();
-                                let status_for_class = status.clone();
-                                let status_for_label = status.clone();
-                                let is_generated = test_case.source == "generated";
-                                let can_approve = status == "passed";
-                                let can_select = can_approve;
-                                let input = serde_json::to_string_pretty(&test_case.input_json).unwrap_or_default();
-                                let expected = serde_json::to_string_pretty(&test_case.expected_output_json).unwrap_or_default();
-                                let actual = test_case.actual_output_json
-                                    .as_ref()
-                                    .and_then(|value| serde_json::to_string_pretty(value).ok())
-                                    .unwrap_or_else(|| "尚未运行".into());
-                                let trace = test_case.execution_trace_json
-                                    .and_then(|value| serde_json::from_value::<ExecutionTrace>(value).ok());
-                                view! {
-                                    <article
-                                        class=move || format!("business-test-case case-{status_for_class}{}", if test_case_running.get() { " is-running" } else { "" })
-                                        aria-busy=move || test_case_running.get()
+                                    <div class="business-test-list-empty is-filter-empty" role="status">
+                                        {move || format!("当前筛选“{}”没有匹配案例。", test_case_filter.get().label())}
+                                        <button class="button button-quiet" on:click=move |_| set_test_case_filter.set(TestCaseFilter::All)>"查看全部案例"</button>
+                                    </div>
+                            </Show>
+                                <For
+                                    each=move || decision_test_cases.get()
+                                    key=|test_case| format!(
+                                        "{}:{}:{}:{}:{}",
+                                        test_case.id,
+                                        test_case.status,
+                                        test_case.approved_by.is_some(),
+                                        test_case.updated_at,
+                                        serde_json::to_string(&test_case.actual_output_json).unwrap_or_default()
+                                    )
+                                    let:test_case
+                                >
+                                {
+                                    let case_id = test_case.id;
+                                    let approved = test_case.approved_by.is_some();
+                                    let status = test_case.status.clone();
+                                    let status_for_class = status.clone();
+                                    let status_for_label = status.clone();
+                                    let is_generated = test_case.source == "generated";
+                                    let can_approve = status == "passed";
+                                    let can_select = can_approve;
+                                    let input = serde_json::to_string_pretty(&test_case.input_json).unwrap_or_default();
+                                    let expected = serde_json::to_string_pretty(&test_case.expected_output_json).unwrap_or_default();
+                                    let is_failed = TestCaseFilter::Failed.matches(&test_case);
+                                    let is_pending_approval = TestCaseFilter::PendingApproval.matches(&test_case);
+                                    let is_pending_run = TestCaseFilter::PendingRun.matches(&test_case);
+                                    let selection_label = format!("选择验收案例：{}", test_case.name);
+                                    let actual = test_case.actual_output_json
+                                        .as_ref()
+                                        .and_then(|value| serde_json::to_string_pretty(value).ok())
+                                        .unwrap_or_else(|| "尚未运行".into());
+                                    let trace = test_case.execution_trace_json
+                                        .and_then(|value| serde_json::from_value::<ExecutionTrace>(value).ok());
+                                    view! {
+                                        <article
+                                            class=move || format!("business-test-case case-{status_for_class}{}", if test_case_running.get() { " is-running" } else { "" })
+                                            hidden=move || !match test_case_filter.get() {
+                                                TestCaseFilter::All => true,
+                                                TestCaseFilter::Failed => is_failed,
+                                                TestCaseFilter::PendingApproval => is_pending_approval,
+                                                TestCaseFilter::PendingRun => is_pending_run,
+                                            }
+                                            aria-busy=move || test_case_running.get()
                                     >
                                         <div class="business-test-case-heading">
                                             <div class="business-test-case-heading-title">
                                                 <label class="business-test-select" title="选择此验收案例">
                                                     <input
                                                         type="checkbox"
+                                                        aria-label=selection_label
                                                         prop:checked=move || selected_test_case_ids.get().contains(&case_id)
                                                         on:change=move |event| {
                                                             let checked = event_target_checked(&event);
@@ -5347,13 +4387,21 @@ pub fn DmnApp() -> impl IntoView {
                                                     {if is_generated { "规则生成 · 待业务核对" } else { "人工录入" }}
                                                 </small>
                                             </div>
-                                            <em>{if approved { "已批准" } else { "待批准" }}</em>
+                                            <em>{if approved { "已批准" } else if can_approve { "待批准" } else { "通过后可批准" }}</em>
                                         </div>
-                                        <div class="business-test-values">
-                                            <div class="business-test-value value-input"><small>"输入"</small><code inner_html=move || highlight_code(&input, "json")></code></div>
-                                            <div class="business-test-value value-expected"><small>"期望"</small><code inner_html=move || highlight_code(&expected, "json")></code></div>
-                                            <div class="business-test-value value-actual"><small>"实际"</small><code inner_html=move || highlight_code(&actual, "json")></code></div>
-                                        </div>
+                                        <details class="business-test-details" prop:open=matches!(status.as_str(), "failed" | "error")>
+                                            <summary>{match status.as_str() {
+                                                "passed" => "实际输出符合期望 · 查看输入与结果",
+                                                "failed" => "实际输出与期望不一致 · 查看输入与结果",
+                                                "error" => "案例执行出错 · 查看输入与结果",
+                                                _ => "尚未执行 · 查看输入与期望",
+                                            }}</summary>
+                                            <div class="business-test-values">
+                                                <div class="business-test-value value-input"><small>"输入"</small><code inner_html=move || highlight_code(&input, "json")></code></div>
+                                                <div class="business-test-value value-expected"><small>"期望"</small><code inner_html=move || highlight_code(&expected, "json")></code></div>
+                                                <div class="business-test-value value-actual"><small>"实际"</small><code inner_html=move || highlight_code(&actual, "json")></code></div>
+                                            </div>
+                                        </details>
                                         <div class="business-test-actions">
                                             <button
                                                 class="button button-quiet"
@@ -5376,10 +4424,10 @@ pub fn DmnApp() -> impl IntoView {
                                                 <ExecutionTraceView trace=trace />
                                             </details>
                                         })}
-                                    </article>
+                                        </article>
+                                    }
                                 }
-                            }
-                            </For>
+                                </For>
                         </Show>
                     </div>
                     <Show when=move || test_case_error.get().is_some()>
@@ -5427,11 +4475,13 @@ pub fn DmnApp() -> impl IntoView {
             <Show when=move || workspace_view.get() == WorkspaceView::Validation && verification_report.get().is_none() && release_error.get().is_some()>
                 <div class="release-error">{move || release_error.get().unwrap_or_default()}</div>
             </Show>
+            </div>
+            </Show>
 
             <Show when=move || workspace_view.get() == WorkspaceView::Model || workspace_view.get() == WorkspaceView::Discovery>
             <div class=move || if workspace_view.get() == WorkspaceView::Discovery { "model-workspace discovery-workspace" } else { "model-workspace" }>
                 <Show when=move || workspace_view.get() == WorkspaceView::Discovery>
-                    <section class="workflow-panel workflow-stage-panel" aria-label="需求分析与决策方案">
+                    <section id="workspace-panel-discovery" class="workflow-panel workflow-stage-panel" role="tabpanel" aria-labelledby="workspace-tab-discovery" tabindex="0" inert=move || project_busy.get()>
                         <div class="workflow-heading">
                             <div>
                                 <span class="yaml-kicker">"DECISION DISCOVERY"</span>
@@ -5469,14 +4519,33 @@ pub fn DmnApp() -> impl IntoView {
                                 <div class="requirement-analysis-examples">
                                     <div class="analysis-section-label"><span>"可从示例开始"</span><small>"点击示例会填入输入框，可继续修改"</small></div>
                                     <div class="analysis-example-list">
-                                        <button class="analysis-example" on:click=move |_| set_prompt.set("根据客户信用评分、收入和逾期次数判断贷款审批结果，并给出拒绝原因。".to_string()) disabled=move || workflow_busy.get()>
-                                            <strong>"贷款审批"</strong><small>"信用评分、收入、逾期次数 → 审批结果"</small>
+                                        <button class="analysis-example" on:click=move |_| set_prompt.set(loan_approval_process.to_string()) disabled=move || workflow_busy.get()>
+                                            <svg viewBox="0 0 1024 1024" version="1.1" xmlns="http://www.w3.org/2000/svg" p-id="6078" width="200" height="200"><path d="M891.43296 912.97792l-567.296 54.70208-191.56992-164.12672 567.296-54.70208z" fill="#F0F7F4" p-id="6079"></path><path d="M2.41664 636.06784l0.04096-46.36672c0 1.26976 0.69632 2.58048 2.19136 3.85024l-0.04096 46.36672c-1.47456-1.26976-2.19136-2.56-2.19136-3.85024" fill="#CBF7E6" p-id="6080"></path><path d="M993.21856 782.49984l0.04096-46.36672c2.6624-0.26624 5.16096-0.57344 7.49568-0.96256l-0.04096 46.36672a132.75136 132.75136 0 0 1-7.49568 0.96256" fill="#EBF7F1" p-id="6081"></path><path d="M1000.71424 781.5168l0.04096-46.36672c1.86368-0.3072 3.64544-0.65536 5.28384-1.04448l-0.04096 46.36672c-1.6384 0.38912-3.39968 0.73728-5.28384 1.04448M1005.99808 780.47232l0.04096-46.36672c1.20832-0.28672 2.3552-0.57344 3.44064-0.88064l-0.04096 46.36672c-1.08544 0.3072-2.23232 0.6144-3.44064 0.88064" fill="#EBF7F1" p-id="6082"></path><path d="M1009.43872 779.59168l0.04096-46.36672a50.9952 50.9952 0 0 0 2.47808-0.77824l-0.04096 46.36672a50.9952 50.9952 0 0 1-2.47808 0.77824" fill="#EBF7F1" p-id="6083"></path><path d="M1011.9168 778.81344l0.04096-46.36672a34.6112 34.6112 0 0 0 1.92512-0.7168l-0.04096 46.36672-1.92512 0.7168" fill="#EBF7F1" p-id="6084"></path><path d="M1013.82144 778.09664l0.04096-46.36672 1.55648-0.67584-0.04096 46.36672a39.19872 39.19872 0 0 1-1.55648 0.67584" fill="#EBF7F1" p-id="6085"></path><path d="M1015.37792 777.40032l0.04096-46.36672 1.31072-0.65536-0.04096 46.36672a15.62624 15.62624 0 0 1-1.31072 0.65536" fill="#EBF7F1" p-id="6086"></path><path d="M1016.68864 776.74496l0.04096-46.36672a14.31552 14.31552 0 0 0 1.10592-0.65536l-0.04096 46.36672a14.31552 14.31552 0 0 1-1.10592 0.65536" fill="#EBF7F1" p-id="6087"></path><path d="M1017.79456 776.0896l0.04096-46.36672a10.91584 10.91584 0 0 0 0.94208-0.65536l-0.04096 46.36672a8.45824 8.45824 0 0 1-0.94208 0.65536M1018.75712 775.43424l0.04096-46.36672 0.79872-0.65536-0.04096 46.36672a8.51968 8.51968 0 0 1-0.79872 0.65536M1019.55584 774.79936l0.04096-46.36672c0.24576-0.22528 0.47104-0.43008 0.65536-0.65536l-0.04096 46.36672-0.65536 0.65536" fill="#EBF7F1" p-id="6088"></path><path d="M1020.2112 774.12352l0.04096-46.36672a5.12 5.12 0 0 0 0.53248-0.67584l-0.04096 46.36672c-0.16384 0.22528-0.32768 0.45056-0.53248 0.67584" fill="#EBF7F1" p-id="6089"></path><path d="M1020.74368 773.44768l0.04096-46.36672c0.16384-0.22528 0.28672-0.47104 0.4096-0.69632l-0.04096 46.36672a4.77184 4.77184 0 0 1-0.4096 0.69632" fill="#EBF7F1" p-id="6090"></path><path d="M1021.15328 772.75136l0.04096-46.36672a3.56352 3.56352 0 0 0 0.26624-0.73728l-0.04096 46.36672a3.56352 3.56352 0 0 1-0.26624 0.73728M1021.41952 772.03456l0.04096-46.36672a5.12 5.12 0 0 0 0.12288-0.77824l-0.04096 46.36672a5.55008 5.55008 0 0 1-0.12288 0.77824" fill="#EBF7F1" p-id="6091"></path><path d="M1021.5424 771.23584l0.04096-46.36672v-0.12288l-0.04096 46.3872v0.1024" fill="#EBF7F1" p-id="6092"></path><path d="M4.608 639.91808l0.06144-46.36672 236.2368 202.42432-0.04096 46.36672z" fill="#CBF7E6" p-id="6093"></path><path d="M293.62176 849.96096l0.04096-46.3872 699.5968-67.46112-0.04096 46.3872z" fill="#EBF7F1" p-id="6094"></path><path d="M240.86528 842.3424l0.04096-46.36672c1.86368 1.59744 4.73088 2.99008 8.35584 4.17792l-0.04096 46.36672a24.90368 24.90368 0 0 1-8.35584-4.17792M249.22112 846.52032l0.04096-46.36672c0.94208 0.3072 1.9456 0.59392 2.9696 0.88064l-0.04096 46.36672a74.48576 74.48576 0 0 1-2.9696-0.88064M252.2112 847.40096l0.04096-46.36672c0.83968 0.22528 1.72032 0.43008 2.62144 0.63488l-0.04096 46.36672-2.62144-0.63488M254.83264 848.03584l0.04096-46.36672 2.43712 0.512-0.04096 46.36672-2.43712-0.512M257.26976 848.54784l0.04096-46.36672 2.33472 0.4096-0.04096 46.36672a68.73088 68.73088 0 0 1-2.33472-0.4096M259.60448 848.95744l0.04096-46.36672 2.29376 0.34816-0.04096 46.36672a67.97312 67.97312 0 0 1-2.29376-0.34816" fill="#EBF7F1" p-id="6095"></path><path d="M261.87776 849.3056l0.04096-46.36672 2.23232 0.3072-0.04096 46.36672-2.23232-0.3072M264.13056 849.6128l0.04096-46.36672c0.73728 0.08192 1.47456 0.18432 2.23232 0.24576l-0.04096 46.36672-2.23232-0.24576M266.36288 849.85856l0.04096-46.36672 2.2528 0.2048-0.04096 46.36672a39.99744 39.99744 0 0 1-2.2528-0.2048M268.61568 850.08384l0.04096-46.36672 2.2528 0.18432-0.04096 46.36672-2.2528-0.18432" fill="#EBF7F1" p-id="6096"></path><path d="M270.86848 850.24768l0.04096-46.36672 2.2528 0.14336-0.04096 46.36672a83.10784 83.10784 0 0 1-2.2528-0.14336M273.12128 850.39104l0.04096-46.36672 2.2528 0.1024-0.04096 46.36672-2.2528-0.1024" fill="#EBF7F1" p-id="6097"></path><path d="M275.37408 850.49344l0.04096-46.36672 2.2528 0.06144-0.04096 46.36672-2.2528-0.06144M277.62688 850.55488l0.04096-46.36672 2.23232 0.02048-0.04096 46.36672-2.23232-0.02048" fill="#EBF7F1" p-id="6098"></path><path d="M279.8592 850.57536l0.04096-46.36672h2.29376l-0.04096 46.36672h-2.29376" fill="#EBF7F1" p-id="6099"></path><path d="M282.15296 850.57536l0.04096-46.36672 2.39616-0.04096-0.04096 46.36672-2.39616 0.04096" fill="#EBF7F1" p-id="6100"></path><path d="M284.54912 850.51392l0.04096-46.36672 2.6624-0.1024-0.04096 46.36672a115.63008 115.63008 0 0 1-2.6624 0.1024" fill="#EBF7F1" p-id="6101"></path><path d="M287.21152 850.41152l0.04096-46.36672c1.3312-0.06144 2.64192-0.14336 3.95264-0.24576l-0.04096 46.36672a127.8976 127.8976 0 0 1-3.95264 0.24576M291.16416 850.16576l0.04096-46.36672 2.43712-0.2048-0.04096 46.36672-2.43712 0.2048" fill="#EBF7F1" p-id="6102"></path><path d="M993.25952 736.11264l-699.5968 67.46112c-21.79072 2.10944-45.40416-1.31072-52.75648-7.59808L4.66944 593.55136c-7.35232-6.28736 4.32128-13.1072 26.112-15.21664l699.5968-67.46112c21.77024-2.08896 45.40416 1.31072 52.75648 7.59808L1019.392 720.896c7.35232 6.30784-4.36224 13.12768-26.13248 15.21664z" fill="#DFF7EF" p-id="6103"></path><path d="M824.832 682.84416l-467.02592 40.8576-157.67552-122.5728 467.00544-40.8576z" fill="#5CE092" p-id="6104"></path><path d="M741.49888 566.74304l-50.56512-27.50464a8.76544 8.76544 0 0 0 2.39616-0.7168l50.56512 27.50464a8.54016 8.54016 0 0 1-2.39616 0.7168M743.91552 566.00576l-50.56512-27.50464a7.80288 7.80288 0 0 0 1.3312-0.77824l50.56512 27.50464a8.04864 8.04864 0 0 1-1.3312 0.77824M745.24672 565.22752l-50.56512-27.50464a12.24704 12.24704 0 0 0 1.00352-0.79872l50.56512 27.50464a7.14752 7.14752 0 0 1-1.00352 0.79872" fill="#ABFFD9" p-id="6105"></path><path d="M746.25024 564.44928l-50.56512-27.50464a11.14112 11.14112 0 0 0 0.83968-0.86016l50.56512 27.50464a11.14112 11.14112 0 0 1-0.83968 0.86016" fill="#ABFFD9" p-id="6106"></path><path d="M747.08992 563.58912l-50.56512-27.50464a10.6496 10.6496 0 0 0 0.73728-0.94208l50.56512 27.50464a8.31488 8.31488 0 0 1-0.73728 0.94208" fill="#ABFFD9" p-id="6107"></path><path d="M747.8272 562.64704l-50.56512-27.50464a11.96032 11.96032 0 0 0 0.67584-1.08544l50.56512 27.50464a9.66656 9.66656 0 0 1-0.67584 1.08544" fill="#ABFFD9" p-id="6108"></path><path d="M748.50304 561.5616l-50.56512-27.50464a9.07264 9.07264 0 0 0 0.6144-1.37216l50.56512 27.50464a8.25344 8.25344 0 0 1-0.6144 1.37216M749.11744 560.18944L698.5728 532.6848a9.95328 9.95328 0 0 0 0.63488-3.46112 7.68 7.68 0 0 0-3.80928-6.9632l50.56512 27.50464a7.65952 7.65952 0 0 1 3.80928 6.9632 10.48576 10.48576 0 0 1-0.65536 3.46112" fill="#ABFFD9" p-id="6109"></path><path d="M741.53984 548.98688l-50.56512-27.50464a7.29088 7.29088 0 0 1 2.84672 0.14336l50.56512 27.50464a7.74144 7.74144 0 0 0-2.84672-0.14336" fill="#ABFFD9" p-id="6110"></path><path d="M744.38656 549.15072l-50.56512-27.50464a7.7824 7.7824 0 0 1 1.31072 0.49152l50.56512 27.50464a5.36576 5.36576 0 0 0-1.31072-0.49152M745.6768 549.62176l-50.56512-27.50464 0.24576 0.12288 50.56512 27.50464-0.24576-0.12288" fill="#ABFFD9" p-id="6111"></path><path d="M686.77632 612.16768l-50.56512-27.50464 0.24576 0.12288 50.56512 27.50464-0.24576-0.12288" fill="#ABFFD9" p-id="6112"></path><path d="M687.02208 612.29056l-50.56512-27.50464a5.7344 5.7344 0 0 0 1.29024 0.47104l50.56512 27.50464a5.7344 5.7344 0 0 1-1.29024-0.47104" fill="#ABFFD9" p-id="6113"></path><path d="M688.31232 612.78208l-50.56512-27.50464c0.88064 0.22528 1.8432 0.28672 2.82624 0.14336a8.27392 8.27392 0 0 0 2.41664-0.73728l50.56512 27.50464a8.27392 8.27392 0 0 1-2.41664 0.73728 7.20896 7.20896 0 0 1-2.82624-0.14336M693.57568 612.18816l-50.56512-27.50464a7.80288 7.80288 0 0 0 1.3312-0.77824l50.56512 27.50464a8.04864 8.04864 0 0 1-1.3312 0.77824" fill="#ABFFD9" p-id="6114"></path><path d="M694.90688 611.4304l-50.56512-27.50464a9.1136 9.1136 0 0 0 0.98304-0.77824l50.56512 27.50464a12.63616 12.63616 0 0 1-0.98304 0.77824M695.88992 610.63168l-50.56512-27.50464a16.24064 16.24064 0 0 0 0.83968-0.83968l50.56512 27.50464a8.13056 8.13056 0 0 1-0.83968 0.83968M696.7296 609.792l-50.56512-27.50464a8.31488 8.31488 0 0 0 0.73728-0.94208l50.56512 27.50464a8.31488 8.31488 0 0 1-0.73728 0.94208" fill="#ABFFD9" p-id="6115"></path><path d="M697.46688 608.84992l-50.56512-27.50464a11.96032 11.96032 0 0 0 0.67584-1.08544l50.56512 27.50464a9.66656 9.66656 0 0 1-0.67584 1.08544" fill="#ABFFD9" p-id="6116"></path><path d="M698.14272 607.76448l-50.56512-27.50464a9.07264 9.07264 0 0 0 0.6144-1.37216l50.56512 27.50464a8.25344 8.25344 0 0 1-0.6144 1.37216" fill="#ABFFD9" p-id="6117"></path><path d="M698.75712 606.39232l-50.56512-27.50464a10.1376 10.1376 0 0 0 0.63488-3.52256l50.56512 27.50464c0 1.2288-0.22528 2.41664-0.63488 3.52256" fill="#ABFFD9" p-id="6118"></path><path d="M730.54208 533.77024l-50.56512-27.50464a9.1136 9.1136 0 0 0 2.41664-0.7168l50.56512 27.50464a8.88832 8.88832 0 0 1-2.41664 0.7168M732.95872 533.03296l-50.56512-27.50464a8.68352 8.68352 0 0 0 1.3312-0.77824l50.56512 27.50464a7.29088 7.29088 0 0 1-1.3312 0.77824" fill="#ABFFD9" p-id="6119"></path><path d="M734.28992 532.2752l-50.56512-27.50464 1.00352-0.77824 50.56512 27.50464a18.71872 18.71872 0 0 1-1.00352 0.77824M735.29344 531.47648l-50.56512-27.50464a16.24064 16.24064 0 0 0 0.83968-0.83968l50.56512 27.50464a10.83392 10.83392 0 0 1-0.83968 0.83968M736.13312 530.6368l-50.56512-27.50464a10.6496 10.6496 0 0 0 0.73728-0.94208l50.56512 27.50464a10.6496 10.6496 0 0 1-0.73728 0.94208" fill="#ABFFD9" p-id="6120"></path><path d="M736.8704 529.69472l-50.56512-27.50464a11.96032 11.96032 0 0 0 0.67584-1.08544l50.56512 27.50464a11.96032 11.96032 0 0 1-0.67584 1.08544" fill="#ABFFD9" p-id="6121"></path><path d="M737.54624 528.60928l-50.56512-27.50464a8.45824 8.45824 0 0 0 0.6144-1.39264l50.56512 27.50464a11.9808 11.9808 0 0 1-0.6144 1.39264M738.16064 527.21664L687.616 499.712a10.09664 10.09664 0 0 0 0.63488-3.50208 7.72096 7.72096 0 0 0-3.80928-6.98368l50.56512 27.50464a7.72096 7.72096 0 0 1 3.80928 6.98368 10.60864 10.60864 0 0 1-0.65536 3.50208" fill="#ABFFD9" p-id="6122"></path><path d="M686.77632 612.16768l-50.56512-27.50464a7.72096 7.72096 0 0 1-3.80928-6.98368l50.56512 27.50464c0 3.1744 1.51552 5.7344 3.80928 6.98368" fill="#ABFFD9" p-id="6123"></path><path d="M730.58304 515.9936l-50.56512-27.50464a7.43424 7.43424 0 0 1 2.8672 0.14336l50.56512 27.50464a7.43424 7.43424 0 0 0-2.8672-0.14336" fill="#ABFFD9" p-id="6124"></path><path d="M733.45024 516.13696l-50.56512-27.50464a8.78592 8.78592 0 0 1 1.29024 0.47104l50.56512 27.50464a8.78592 8.78592 0 0 0-1.29024-0.47104" fill="#ABFFD9" p-id="6125"></path><path d="M734.74048 516.62848l-50.56512-27.50464 0.24576 0.12288 50.56512 27.50464-0.24576-0.12288" fill="#ABFFD9" p-id="6126"></path><path d="M699.392 602.86976l-50.54464-27.48416 0.06144-30.24896 50.54464 27.50464z" fill="#FFFFFF" p-id="6127"></path><path d="M699.45344 572.64128l-50.54464-27.50464 42.04544-5.89824 50.54464 27.50464z" fill="#ABFFD9" p-id="6128"></path><path d="M760.9344 548.27008c4.97664-0.69632 9.0112 3.072 9.0112 8.47872 0 5.36576-4.07552 10.28096-9.05216 10.97728l-46.10048 6.47168 0.04096-19.456 46.10048-6.47168zM699.45344 572.64128l-50.54464-27.50464 0.02048-17.73568 50.56512 27.50464z" fill="#FFFFFF" p-id="6129"></path><path d="M699.4944 554.9056l-50.56512-27.50464 42.04544-5.89824 50.56512 27.48416z" fill="#ABFFD9" p-id="6130"></path><path d="M744.98048 483.14368l-50.56512-27.50464a3.9936 3.9936 0 0 0 0.49152-0.53248l50.56512 27.50464-0.49152 0.53248" fill="#ABFFD9" p-id="6131"></path><path d="M745.472 482.6112l-50.56512-27.50464a10.6496 10.6496 0 0 0 0.73728-0.94208l50.56512 27.50464a10.6496 10.6496 0 0 1-0.73728 0.94208M746.20928 481.66912l-50.56512-27.50464a11.96032 11.96032 0 0 0 0.67584-1.08544l50.56512 27.50464a11.96032 11.96032 0 0 1-0.67584 1.08544" fill="#ABFFD9" p-id="6132"></path><path d="M746.88512 480.58368L696.32 453.07904a9.29792 9.29792 0 0 0 0.6144-1.39264l50.56512 27.50464a9.29792 9.29792 0 0 1-0.6144 1.39264" fill="#ABFFD9" p-id="6133"></path><path d="M747.49952 479.19104l-50.56512-27.50464a8.97024 8.97024 0 0 0-1.1264-8.72448 6.656 6.656 0 0 0-2.06848-1.7408l50.56512 27.50464a6.9632 6.9632 0 0 1 2.06848 1.7408 8.9088 8.9088 0 0 1 1.1264 8.72448" fill="#ABFFD9" p-id="6134"></path><path d="M682.96704 605.184l-50.56512-27.50464 0.06144-30.22848 50.56512 27.50464z" fill="#FFFFFF" p-id="6135"></path><path d="M739.92192 467.98848l-50.56512-27.50464a7.4752 7.4752 0 0 1 2.8672 0.14336l50.56512 27.50464a7.10656 7.10656 0 0 0-2.8672-0.14336" fill="#ABFFD9" p-id="6136"></path><path d="M742.78912 468.13184L692.224 440.6272a6.92224 6.92224 0 0 1 1.29024 0.47104l50.56512 27.50464a6.92224 6.92224 0 0 0-1.29024-0.47104" fill="#ABFFD9" p-id="6137"></path><path d="M744.07936 468.60288l-50.56512-27.50464 0.24576 0.12288 50.56512 27.50464-0.24576-0.12288" fill="#ABFFD9" p-id="6138"></path><path d="M699.4944 554.9056l-50.56512-27.50464 0.04096-16.77312 50.54464 27.50464z" fill="#FFFFFF" p-id="6139"></path><path d="M699.51488 538.13248l-50.54464-27.50464 31.0272-4.36224 50.54464 27.50464zM708.46464 519.10656l-50.56512-27.50464 22.13888-3.11296 50.54464 27.50464z" fill="#ABFFD9" p-id="6140"></path><path d="M708.46464 519.10656l-50.56512-27.50464 36.51584-35.96288 50.56512 27.50464z" fill="#FFFFFF" p-id="6141"></path><path d="M734.84288 470.56896l-50.56512-27.50464 0.3072-0.28672 50.56512 27.50464-0.3072 0.28672" fill="#ABFFD9" p-id="6142"></path><path d="M735.15008 470.28224l-50.56512-27.50464a12.24704 12.24704 0 0 1 1.00352-0.79872l50.56512 27.50464a7.14752 7.14752 0 0 0-1.00352 0.79872" fill="#ABFFD9" p-id="6143"></path><path d="M736.1536 469.48352l-50.56512-27.50464a9.78944 9.78944 0 0 1 1.3312-0.77824l50.56512 27.50464a9.78944 9.78944 0 0 0-1.3312 0.77824" fill="#ABFFD9" p-id="6144"></path><path d="M737.4848 468.70528l-50.56512-27.50464a9.09312 9.09312 0 0 1 2.41664-0.73728l50.56512 27.50464a9.09312 9.09312 0 0 0-2.41664 0.73728" fill="#ABFFD9" p-id="6145"></path><path d="M683.02848 574.95552l-50.56512-27.50464 0.04096-17.73568 50.54464 27.50464z" fill="#ABFFD9" p-id="6146"></path><path d="M699.51488 538.13248l-50.54464-27.50464 0.02048-13.45536 50.54464 27.50464z" fill="#FFFFFF" p-id="6147"></path><path d="M698.51136 520.4992l-50.54464-27.50464 9.9328-1.39264 50.56512 27.50464z" fill="#ABFFD9" p-id="6148"></path><path d="M699.53536 524.67712l-50.56512-27.50464a8.64256 8.64256 0 0 0-1.024-4.17792l50.56512 27.50464a8.35584 8.35584 0 0 1 1.024 4.17792" fill="#FFFFFF" p-id="6149"></path><path d="M748.93312 512.08192c4.99712-0.69632 9.0112 3.072 9.0112 8.47872 0 5.36576-4.03456 10.30144-9.05216 11.01824l-34.01728 4.77184 0.02048-14.7456c0-1.72032-0.4096-3.2768-1.1264-4.56704l10.89536-1.536 24.2688-3.42016z" fill="#FFFFFF" p-id="6150"></path><path d="M698.51136 520.4992l-50.56512-27.50464a7.18848 7.18848 0 0 0-2.78528-2.80576l50.56512 27.50464a6.94272 6.94272 0 0 1 2.78528 2.80576" fill="#FFFFFF" p-id="6151"></path><path d="M683.04896 557.21984l-50.54464-27.50464 0.02048-16.77312 50.56512 27.48416z" fill="#ABFFD9" p-id="6152"></path><path d="M691.32288 516.93568l-50.56512-27.50464a7.29088 7.29088 0 0 1 2.84672 0.14336l50.56512 27.50464a7.29088 7.29088 0 0 0-2.84672-0.14336M694.1696 517.07904l-50.56512-27.50464a8.78592 8.78592 0 0 1 1.29024 0.47104l50.56512 27.50464a7.33184 7.33184 0 0 0-1.29024-0.47104" fill="#ABFFD9" p-id="6153"></path><path d="M695.48032 517.57056l-50.56512-27.50464 0.24576 0.12288 50.56512 27.50464-0.24576-0.12288" fill="#ABFFD9" p-id="6154"></path><path d="M690.688 514.06848l-50.56512-27.50464 44.17536-43.49952 50.54464 27.50464z" fill="#FFFFFF" p-id="6155"></path><path d="M690.05312 514.68288l-50.54464-27.50464 0.6144-0.6144 50.56512 27.50464z" fill="#ABFFD9" p-id="6156"></path><path d="M683.08992 540.42624l-50.56512-27.48416 0.02048-13.45536 50.56512 27.48416z" fill="#FFFFFF" p-id="6157"></path><path d="M683.1104 526.97088l-50.56512-27.50464c0-1.20832 0.22528-2.39616 0.63488-3.50208l50.56512 27.50464a10.28096 10.28096 0 0 0-0.63488 3.50208" fill="#FFFFFF" p-id="6158"></path><path d="M683.74528 523.48928l-50.56512-27.50464a13.57824 13.57824 0 0 1 0.4096-0.96256l0.22528-0.43008 50.56512 27.50464-0.22528 0.43008a13.57824 13.57824 0 0 0-0.4096 0.96256" fill="#FFFFFF" p-id="6159"></path><path d="M684.38016 522.09664l-50.56512-27.50464a11.96032 11.96032 0 0 1 0.67584-1.08544l50.56512 27.50464a8.11008 8.11008 0 0 0-0.67584 1.08544M685.03552 520.99072l-50.56512-27.50464a10.6496 10.6496 0 0 1 0.73728-0.94208l50.56512 27.50464-0.73728 0.94208M685.79328 520.04864l-50.56512-27.50464c0.26624-0.3072 0.55296-0.57344 0.83968-0.83968l50.56512 27.50464c-0.3072 0.26624-0.57344 0.55296-0.83968 0.83968M686.63296 519.20896l-50.56512-27.50464a7.31136 7.31136 0 0 1 1.00352-0.77824l50.56512 27.50464a6.2464 6.2464 0 0 0-1.00352 0.77824" fill="#FFFFFF" p-id="6160"></path><path d="M687.616 518.43072l-50.56512-27.50464a9.4208 9.4208 0 0 1 1.31072-0.75776l50.56512 27.50464a7.74144 7.74144 0 0 0-1.31072 0.75776M688.9472 517.65248l-50.56512-27.50464a8.76544 8.76544 0 0 1 2.39616-0.7168l50.56512 27.50464a8.76544 8.76544 0 0 0-2.39616 0.7168" fill="#FFFFFF" p-id="6161"></path><path d="M671.6416 524.288l-50.56512-27.50464 12.51328-1.76128 50.56512 27.50464z" fill="#FFFFFF" p-id="6162"></path><path d="M640.14336 580.97664l-50.56512-27.50464 42.88512-6.02112 50.56512 27.50464z" fill="#ABFFD9" p-id="6163"></path><path d="M635.74016 580.21888l-50.56512-27.50464 0.24576 0.12288 50.56512 27.50464-0.24576-0.12288" fill="#ABFFD9" p-id="6164"></path><path d="M635.98592 580.34176l-50.56512-27.50464c0.4096 0.2048 0.86016 0.36864 1.31072 0.49152l50.56512 27.50464a7.18848 7.18848 0 0 1-1.31072-0.49152" fill="#ABFFD9" p-id="6165"></path><path d="M637.29664 580.83328l-50.56512-27.50464c0.88064 0.22528 1.8432 0.28672 2.84672 0.14336l50.56512 27.50464a7.29088 7.29088 0 0 1-2.84672-0.14336" fill="#ABFFD9" p-id="6166"></path><path d="M640.18432 563.24096l-50.56512-27.50464 42.88512-6.02112 50.54464 27.50464z" fill="#ABFFD9" p-id="6167"></path><path d="M649.44128 545.15712l-50.54464-27.50464 33.62816-4.7104 50.56512 27.48416z" fill="#FFFFFF" p-id="6168"></path><path d="M635.74016 580.21888l-50.56512-27.50464a7.68 7.68 0 0 1-3.80928-6.94272l50.56512 27.50464c0 3.15392 1.51552 5.69344 3.80928 6.94272" fill="#ABFFD9" p-id="6169"></path><path d="M645.07904 544.41984L594.5344 516.9152l0.24576 0.12288 50.56512 27.50464a3.33824 3.33824 0 0 1-0.26624-0.12288" fill="#ABFFD9" p-id="6170"></path><path d="M645.3248 544.54272l-50.56512-27.50464a5.7344 5.7344 0 0 0 1.29024 0.47104l50.56512 27.50464a6.10304 6.10304 0 0 1-1.29024-0.47104M646.63552 545.01376l-50.56512-27.50464a7.18848 7.18848 0 0 0 2.82624 0.14336l50.56512 27.50464a7.168 7.168 0 0 1-2.82624-0.14336" fill="#ABFFD9" p-id="6171"></path><path d="M631.93088 573.27616c0-4.9152 3.72736-9.40032 8.25344-10.0352l42.88512-6.02112-0.04096 17.73568-42.88512 6.02112c-4.52608 0.63488-8.23296-2.80576-8.21248-7.70048z" fill="#FFFFFF" p-id="6172"></path><path d="M631.93088 573.27616l-50.56512-27.50464c0-1.20832 0.22528-2.39616 0.63488-3.50208l50.56512 27.50464a10.17856 10.17856 0 0 0-0.63488 3.50208" fill="#ABFFD9" p-id="6173"></path><path d="M632.56576 569.79456l-50.56512-27.50464a16.896 16.896 0 0 1 0.6144-1.39264l50.56512 27.50464a10.62912 10.62912 0 0 0-0.6144 1.39264" fill="#ABFFD9" p-id="6174"></path><path d="M633.18016 568.40192l-50.56512-27.50464a11.96032 11.96032 0 0 1 0.67584-1.08544l50.56512 27.50464a11.96032 11.96032 0 0 0-0.67584 1.08544" fill="#ABFFD9" p-id="6175"></path><path d="M633.856 567.31648l-50.56512-27.50464a10.6496 10.6496 0 0 1 0.73728-0.94208l50.56512 27.50464a10.6496 10.6496 0 0 0-0.73728 0.94208" fill="#ABFFD9" p-id="6176"></path><path d="M634.59328 566.3744l-50.56512-27.50464a8.13056 8.13056 0 0 1 0.83968-0.83968l50.56512 27.50464a10.83392 10.83392 0 0 0-0.83968 0.83968" fill="#ABFFD9" p-id="6177"></path><path d="M635.43296 565.53472l-50.56512-27.50464a9.54368 9.54368 0 0 1 1.00352-0.79872l50.56512 27.50464a12.24704 12.24704 0 0 0-1.00352 0.79872" fill="#ABFFD9" p-id="6178"></path><path d="M636.43648 564.736l-50.56512-27.50464a12.51328 12.51328 0 0 1 1.3312-0.77824l50.56512 27.50464a10.77248 10.77248 0 0 0-1.3312 0.77824" fill="#ABFFD9" p-id="6179"></path><path d="M637.76768 563.95776l-50.56512-27.50464a8.2944 8.2944 0 0 1 2.39616-0.7168l50.56512 27.50464a8.97024 8.97024 0 0 0-2.39616 0.7168" fill="#ABFFD9" p-id="6180"></path><path d="M671.6416 524.288l-50.56512-27.50464-36.39296-25.72288 50.54464 27.50464z" fill="#FFFFFF" p-id="6181"></path><path d="M649.48224 527.40096l-50.56512-27.50464 22.15936-3.11296 50.56512 27.50464z" fill="#FFFFFF" p-id="6182"></path><path d="M645.07904 544.41984L594.5344 516.9152a7.76192 7.76192 0 0 1-3.82976-6.98368c0-1.20832 0.22528-2.41664 0.63488-3.52256l50.56512 27.50464a10.1376 10.1376 0 0 0-0.63488 3.52256 7.72096 7.72096 0 0 0 3.80928 6.98368" fill="#ABFFD9" p-id="6183"></path><path d="M641.90464 533.9136l-50.56512-27.50464a16.896 16.896 0 0 1 0.6144-1.39264l50.56512 27.50464a9.29792 9.29792 0 0 0-0.6144 1.39264" fill="#ABFFD9" p-id="6184"></path><path d="M642.51904 532.52096l-50.56512-27.50464a11.96032 11.96032 0 0 1 0.67584-1.08544l50.56512 27.50464a11.96032 11.96032 0 0 0-0.67584 1.08544" fill="#ABFFD9" p-id="6185"></path><path d="M643.19488 531.43552l-50.56512-27.50464a10.6496 10.6496 0 0 1 0.73728-0.94208l50.56512 27.50464a10.6496 10.6496 0 0 0-0.73728 0.94208" fill="#ABFFD9" p-id="6186"></path><path d="M643.93216 530.51392l-50.56512-27.50464a8.13056 8.13056 0 0 1 0.83968-0.83968l50.56512 27.50464a6.51264 6.51264 0 0 0-0.83968 0.83968" fill="#ABFFD9" p-id="6187"></path><path d="M644.77184 529.67424l-50.56512-27.50464a8.6016 8.6016 0 0 1 0.98304-0.77824l50.56512 27.50464a7.12704 7.12704 0 0 0-0.98304 0.77824M645.75488 528.87552l-50.56512-27.50464a8.56064 8.56064 0 0 1 1.3312-0.75776l50.56512 27.50464a8.56064 8.56064 0 0 0-1.3312 0.75776M647.08608 528.11776l-50.56512-27.50464a8.76544 8.76544 0 0 1 2.39616-0.7168l50.56512 27.50464a7.53664 7.53664 0 0 0-2.39616 0.7168" fill="#ABFFD9" p-id="6188"></path><path d="M656.87552 527.40096l22.15936-3.11296 12.51328-1.76128a10.36288 10.36288 0 0 0-1.04448 4.46464l-0.02048 13.45536-33.64864 4.73088c-4.52608 0.63488-8.192-2.84672-8.192-7.74144 0.02048-4.93568 3.70688-9.40032 8.23296-10.0352z" fill="#FFFFFF" p-id="6189"></path><path d="M690.688 514.06848l-50.56512-27.50464-44.05248-31.10912 50.56512 27.50464z" fill="#ABFFD9" p-id="6190"></path><path d="M646.63552 482.95936l-50.56512-27.50464-0.67584-0.4096 50.56512 27.50464a11.8784 11.8784 0 0 1 0.67584 0.4096" fill="#ABFFD9" p-id="6191"></path><path d="M646.63552 482.95936l-50.56512-27.50464-0.67584-0.4096 50.56512 27.50464a11.8784 11.8784 0 0 1 0.67584 0.4096" fill="#ABFFD9" p-id="6192"></path><path d="M690.05312 514.68288l-50.54464-27.50464-44.68736-31.5392 50.56512 27.50464z" fill="#ABFFD9" p-id="6193"></path><path d="M645.38624 483.14368l-50.56512-27.50464c-0.22528-0.14336-0.43008-0.28672-0.67584-0.4096l50.56512 27.50464a4.56704 4.56704 0 0 1 0.67584 0.4096" fill="#ABFFD9" p-id="6194"></path><path d="M641.59744 481.792l-50.56512-27.50464a7.3728 7.3728 0 0 1 2.84672 0.14336l50.56512 27.50464a7.80288 7.80288 0 0 0-2.84672-0.14336" fill="#ABFFD9" p-id="6195"></path><path d="M644.44416 481.95584l-50.56512-27.50464a8.192 8.192 0 0 1 1.29024 0.47104l50.56512 27.50464a6.5536 6.5536 0 0 0-1.29024-0.47104" fill="#ABFFD9" p-id="6196"></path><path d="M645.71392 482.42688l-50.56512-27.50464 0.24576 0.12288 50.56512 27.50464-0.24576-0.12288" fill="#ABFFD9" p-id="6197"></path><path d="M641.59744 481.792l-50.56512-27.50464a7.3728 7.3728 0 0 1 2.84672 0.14336l50.56512 27.50464a7.80288 7.80288 0 0 0-2.84672-0.14336" fill="#ABFFD9" p-id="6198"></path><path d="M641.59744 481.792l-50.56512-27.50464a7.3728 7.3728 0 0 1 2.84672 0.14336l50.56512 27.50464a7.80288 7.80288 0 0 0-2.84672-0.14336" fill="#ABFFD9" p-id="6199"></path><path d="M641.59744 481.792l-50.56512-27.50464a7.3728 7.3728 0 0 1 2.84672 0.14336l50.56512 27.50464a7.80288 7.80288 0 0 0-2.84672-0.14336" fill="#ABFFD9" p-id="6200"></path><path d="M635.22816 498.56512l-50.56512-27.50464c-2.9696-2.10944-3.8912-6.26688-2.51904-10.05568l50.56512 27.50464c-1.37216 3.76832-0.45056 7.94624 2.51904 10.05568" fill="#ABFFD9" p-id="6201"></path><path d="M632.70912 488.50944l-50.56512-27.50464a9.07264 9.07264 0 0 1 0.6144-1.37216l50.56512 27.50464a16.46592 16.46592 0 0 0-0.6144 1.37216" fill="#ABFFD9" p-id="6202"></path><path d="M633.32352 487.13728l-50.56512-27.50464c0.14336-0.28672 0.32768-0.57344 0.49152-0.83968l0.16384-0.24576 50.56512 27.50464a30.5152 30.5152 0 0 0-0.65536 1.08544M633.99936 486.05184l-50.56512-27.50464a8.31488 8.31488 0 0 1 0.73728-0.94208l50.56512 27.50464a18.90304 18.90304 0 0 0-0.73728 0.94208" fill="#ABFFD9" p-id="6203"></path><path d="M634.73664 485.10976l-50.56512-27.50464c0.26624-0.3072 0.55296-0.57344 0.83968-0.83968l50.56512 27.50464a10.83392 10.83392 0 0 0-0.83968 0.83968" fill="#ABFFD9" p-id="6204"></path><path d="M635.57632 484.27008l-50.56512-27.50464a8.8064 8.8064 0 0 1 1.00352-0.77824l50.56512 27.50464a8.8064 8.8064 0 0 0-1.00352 0.77824M636.57984 483.47136l-50.56512-27.50464a9.78944 9.78944 0 0 1 1.3312-0.77824l50.56512 27.50464a12.51328 12.51328 0 0 0-1.3312 0.77824" fill="#ABFFD9" p-id="6205"></path><path d="M637.91104 482.7136l-50.56512-27.50464a9.0112 9.0112 0 0 1 2.43712-0.73728l0.63488-0.06144a7.24992 7.24992 0 0 1 2.21184 0.2048l50.56512 27.50464a7.24992 7.24992 0 0 0-2.21184-0.2048l-0.63488 0.06144a8.33536 8.33536 0 0 0-2.43712 0.73728" fill="#ABFFD9" p-id="6206"></path><path d="M643.19488 482.11968l-50.56512-27.50464a8.192 8.192 0 0 1 1.29024 0.47104l50.56512 27.50464a8.192 8.192 0 0 0-1.29024-0.47104" fill="#ABFFD9" p-id="6207"></path><path d="M644.46464 482.59072L593.92 455.08608l0.24576 0.12288 50.56512 27.50464-0.26624-0.12288" fill="#ABFFD9" p-id="6208"></path><path d="M641.59744 481.792l-50.56512-27.50464a7.3728 7.3728 0 0 1 2.84672 0.14336l50.56512 27.50464a7.80288 7.80288 0 0 0-2.84672-0.14336" fill="#ABFFD9" p-id="6209"></path><path d="M640.98304 481.91488l-50.56512-27.50464a6.41024 6.41024 0 0 1 0.6144-0.1024l50.56512 27.50464-0.6144 0.1024" fill="#ABFFD9" p-id="6210"></path><path d="M641.59744 481.792a7.02464 7.02464 0 0 1 5.03808 1.16736l44.05248 31.08864-0.6144 0.6144-44.66688-31.5392a6.94272 6.94272 0 0 0-4.4032-1.2288 7.24992 7.24992 0 0 0 0.59392-0.1024z" fill="#ABFFD9" p-id="6211"></path><path d="M759.15264 459.44832a7.5776 7.5776 0 0 1 7.10656 2.74432c3.072 3.76832 2.37568 9.99424-1.55648 13.88544l-40.0384 39.424-10.89536 1.536a7.61856 7.61856 0 0 0-7.8848-3.91168 10.6496 10.6496 0 0 0-7.86432 6.12352l-13.7216 1.92512-39.91552-28.20096c-3.91168-2.78528-4.58752-8.8064-1.536-13.45536a10.50624 10.50624 0 0 1 7.82336-4.79232 7.4752 7.4752 0 0 1 4.83328 1.35168l48.96768 34.57024 0.67584-0.67584 48.41472-47.67744a10.1376 10.1376 0 0 1 5.59104-2.84672z" fill="#FFFFFF" p-id="6212"></path><path d="M646.00064 656.09728l-55.41888-30.14656c-32.19456-17.5104-53.61664-54.00576-53.53472-99.08224 0.04096-17.46944 3.2768-34.54976 9.13408-50.46272l55.41888 30.14656a146.82112 146.82112 0 0 0-9.13408 50.46272c-0.06144 45.07648 21.34016 81.57184 53.53472 99.08224M601.62048 506.55232l-55.41888-30.14656c2.49856-6.77888 5.44768-13.35296 8.84736-19.6608l55.41888 30.14656c-3.39968 6.30784-6.3488 12.88192-8.84736 19.6608" fill="#ABFFD9" p-id="6213"></path><path d="M610.46784 486.89152l-55.41888-30.14656c2.8672-5.3248 6.0416-10.46528 9.48224-15.36l55.41888 30.14656c-3.46112 4.89472-6.61504 10.0352-9.48224 15.36" fill="#ABFFD9" p-id="6214"></path><path d="M619.9296 471.53152l-55.41888-30.14656c3.19488-4.56704 6.63552-8.92928 10.30144-13.06624l55.41888 30.14656a149.74976 149.74976 0 0 0-10.30144 13.06624M630.23104 458.4448l-55.41888-30.14656c3.64544-4.13696 7.51616-8.04864 11.5712-11.69408l55.41888 30.14656a145.03936 145.03936 0 0 0-11.5712 11.69408" fill="#ABFFD9" p-id="6215"></path><path d="M641.80224 446.7712l-55.41888-30.14656a133.3248 133.3248 0 0 1 13.59872-10.752l55.41888 30.14656a130.56 130.56 0 0 0-13.59872 10.752M655.40096 435.99872l-55.41888-30.14656c5.75488-3.97312 11.776-7.45472 18.04288-10.40384l55.41888 30.14656c-6.26688 2.94912-12.288 6.43072-18.04288 10.40384M673.44384 425.59488l-55.41888-30.14656a111.88224 111.88224 0 0 1 32.17408-9.66656l55.41888 30.14656a113.17248 113.17248 0 0 0-32.17408 9.66656" fill="#ABFFD9" p-id="6216"></path><path d="M705.61792 415.92832c62.38208-8.76544 112.82432 40.18176 112.70144 109.34272-0.12288 69.12-50.76992 132.3008-113.17248 141.06624-62.3616 8.76544-112.80384-40.20224-112.66048-109.32224 0.12288-69.16096 50.76992-132.32128 113.13152-141.08672z m55.27552 151.77728c4.97664-0.69632 9.03168-5.61152 9.05216-10.97728 0-5.38624-4.03456-9.17504-9.0112-8.47872l-46.10048 6.47168 0.04096-18.39104 34.01728-4.77184c4.99712-0.69632 9.03168-5.65248 9.05216-11.01824 0-5.38624-4.01408-9.17504-9.0112-8.47872l-24.2688 3.39968 40.0384-39.424c3.93216-3.87072 4.62848-10.11712 1.55648-13.88544a7.5776 7.5776 0 0 0-7.10656-2.74432 9.89184 9.89184 0 0 0-5.55008 2.84672l-48.41472 47.67744-48.29184-34.0992a7.5776 7.5776 0 0 0-5.5296-1.26976l-0.65536 0.12288-0.69632 0.06144a10.42432 10.42432 0 0 0-7.12704 4.73088c-3.05152 4.62848-2.39616 10.67008 1.536 13.45536l39.91552 28.20096-24.28928 3.42016c-4.97664 0.69632-8.99072 5.61152-9.0112 10.99776 0 5.36576 4.01408 9.17504 8.97024 8.47872l36.88448-5.18144-0.04096 18.39104-47.0016 6.61504c-4.97664 0.69632-9.03168 5.61152-9.05216 11.01824 0 5.36576 4.03456 9.13408 9.0112 8.43776l47.0016-6.61504-0.06144 33.13664c0 5.38624 4.01408 9.17504 8.97024 8.47872 4.99712-0.69632 9.03168-5.61152 9.05216-11.01824l0.06144-33.13664 46.05952-6.4512" fill="#2AD870" p-id="6217"></path><path d="M705.88416 513.1264a7.5776 7.5776 0 0 1 7.8848 3.91168 9.4208 9.4208 0 0 1 1.1264 4.56704l-0.02048 14.7456-0.04096 18.39104-0.04096 19.43552-0.06144 33.13664c0 5.38624-4.03456 10.30144-9.05216 11.01824-4.97664 0.69632-8.99072-3.072-8.97024-8.47872l0.06144-33.13664 0.04096-19.43552 0.04096-18.39104 0.02048-14.7456c0-1.72032 0.4096-3.3792 1.14688-4.89472a10.69056 10.69056 0 0 1 7.86432-6.12352z" fill="#FFFFFF" p-id="6218"></path><path d="M822.86592 226.44736L772.3008 198.94272l0.57344 0.26624 50.56512 27.50464-0.57344-0.26624" fill="#ABFFD9" p-id="6219"></path><path d="M823.43936 226.7136l-50.56512-27.50464a14.7456 14.7456 0 0 1 0.79872 0.4096l50.56512 27.50464-0.79872-0.4096" fill="#ABFFD9" p-id="6220"></path><path d="M705.61792 415.92832l-55.41888-30.14656a97.6896 97.6896 0 0 1 38.15424 1.96608l55.41888 30.14656a97.6896 97.6896 0 0 0-38.15424-1.96608" fill="#ABFFD9" p-id="6221"></path><path d="M743.77216 417.8944l-55.41888-30.14656c6.12352 1.57696 12.00128 3.76832 17.59232 6.51264l55.41888 30.14656a91.40224 91.40224 0 0 0-17.59232-6.51264M761.36448 424.40704L705.9456 394.24c1.14688 0.57344 2.29376 1.16736 3.42016 1.78176l55.41888 30.14656a67.23584 67.23584 0 0 0-3.42016-1.76128" fill="#ABFFD9" p-id="6222"></path><path d="M712.45824 301.99808l-50.56512-27.50464c0.67584 0.28672 1.3312 0.59392 1.98656 0.9216l50.56512 27.50464a43.02848 43.02848 0 0 0-1.98656-0.9216" fill="#ABFFD9" p-id="6223"></path><path d="M714.4448 302.91968l-50.56512-27.50464 1.57696 0.8192 50.56512 27.50464a38.11328 38.11328 0 0 0-1.57696-0.8192" fill="#ABFFD9" p-id="6224"></path><path d="M766.95552 201.19552l-50.54464-27.50464 55.88992 25.25184 50.56512 27.50464z" fill="#ABFFD9" p-id="6225"></path><path d="M715.79648 178.0736l-50.56512-27.50464 0.12288-62.01344 50.54464 27.50464z" fill="#ABFFD9" p-id="6226"></path><path d="M715.89888 116.06016l-50.56512-27.50464c0-3.97312 0.73728-7.84384 2.06848-11.44832l50.56512 27.50464c-1.31072 3.60448-2.048 7.49568-2.06848 11.44832M717.98784 104.61184l-50.56512-27.50464c0.57344-1.536 1.2288-3.03104 2.00704-4.46464l50.56512 27.50464c-0.77824 1.4336-1.45408 2.92864-2.00704 4.46464" fill="#ABFFD9" p-id="6227"></path><path d="M719.99488 100.1472l-50.56512-27.50464c0.65536-1.20832 1.37216-2.37568 2.1504-3.4816L722.1248 96.6656a31.62112 31.62112 0 0 0-2.12992 3.4816" fill="#ABFFD9" p-id="6228"></path><path d="M722.1248 96.6656l-50.56512-27.50464c0.7168-1.04448 1.51552-2.02752 2.33472-2.9696l50.56512 27.50464a37.2736 37.2736 0 0 0-2.33472 2.9696M724.45952 93.696l-50.56512-27.50464c0.8192-0.94208 1.69984-1.82272 2.62144-2.64192l50.56512 27.50464c-0.90112 0.8192-1.78176 1.69984-2.62144 2.64192M727.10144 91.0336l-50.56512-27.50464c0.98304-0.88064 2.00704-1.69984 3.09248-2.43712l50.56512 27.50464a32.3584 32.3584 0 0 0-3.09248 2.43712" fill="#ABFFD9" p-id="6229"></path><path d="M730.17344 88.59648l-50.56512-27.50464c1.31072-0.90112 2.6624-1.69984 4.096-2.3552l50.56512 27.50464a30.24896 30.24896 0 0 0-4.096 2.3552" fill="#ABFFD9" p-id="6230"></path><path d="M734.26944 86.24128l-50.56512-27.50464c2.31424-1.08544 4.77184-1.8432 7.31136-2.19136 3.03104-0.43008 5.95968-0.24576 8.66304 0.45056l50.56512 27.50464a22.20032 22.20032 0 0 0-8.66304-0.45056 25.33376 25.33376 0 0 0-7.31136 2.19136" fill="#ABFFD9" p-id="6231"></path><path d="M750.22336 84.50048l-50.56512-27.50464c1.39264 0.34816 2.72384 0.86016 3.9936 1.47456l50.56512 27.50464a19.456 19.456 0 0 0-3.9936-1.47456" fill="#ABFFD9" p-id="6232"></path><path d="M754.21696 85.97504l-50.56512-27.50464 0.77824 0.4096 50.56512 27.50464-0.77824-0.4096" fill="#ABFFD9" p-id="6233"></path><path d="M565.248 235.49952l-50.54464-27.50464 154.58304 66.49856 50.56512 27.50464z" fill="#ABFFD9" p-id="6234"></path><path d="M357.80608 673.60768l-50.56512-27.50464c-15.09376-8.21248-25.14944-25.33376-25.10848-46.46912l50.56512 27.50464c-0.04096 21.13536 9.99424 38.25664 25.10848 46.46912" fill="#ABFFD9" p-id="6235"></path><path d="M541.06112 232.38656l-50.56512-27.50464c6.06208-0.86016 12.10368-0.55296 17.87904 0.94208l50.56512 27.50464a45.58848 45.58848 0 0 0-17.87904-0.94208" fill="#ABFFD9" p-id="6236"></path><path d="M558.94016 233.32864l-50.56512-27.50464c2.1504 0.55296 4.25984 1.26976 6.30784 2.17088l50.56512 27.50464a45.8752 45.8752 0 0 0-6.30784-2.17088" fill="#ABFFD9" p-id="6237"></path><path d="M516.83328 242.31936l-50.56512-27.50464 0.69632-0.49152 50.56512 27.50464-0.69632 0.49152M517.5296 241.82784l-50.56512-27.50464c2.72384-1.88416 5.55008-3.52256 8.41728-4.87424l50.56512 27.50464c-2.8672 1.35168-5.69344 2.99008-8.41728 4.87424" fill="#ABFFD9" p-id="6238"></path><path d="M525.94688 236.9536l-50.56512-27.50464c4.93568-2.31424 10.01472-3.85024 15.11424-4.56704l50.56512 27.50464c-5.07904 0.7168-10.17856 2.2528-15.11424 4.56704" fill="#ABFFD9" p-id="6239"></path><path d="M545.97632 101.31456L495.4112 73.80992l169.82016 76.75904 50.56512 27.50464z" fill="#ABFFD9" p-id="6240"></path><path d="M533.9136 99.65568l-50.56512-27.50464c2.92864-0.4096 5.85728-0.26624 8.66304 0.47104l50.56512 27.50464a21.97504 21.97504 0 0 0-8.66304-0.47104M542.57664 100.10624l-50.56512-27.50464c1.14688 0.3072 2.29376 0.69632 3.39968 1.18784l50.56512 27.50464a24.73984 24.73984 0 0 0-3.39968-1.18784" fill="#ABFFD9" p-id="6241"></path><path d="M521.85088 104.71424L471.28576 77.2096l0.65536-0.47104 50.56512 27.50464a7.59808 7.59808 0 0 0-0.65536 0.47104" fill="#ABFFD9" p-id="6242"></path><path d="M522.50624 104.2432l-50.56512-27.50464c1.3312-0.9216 2.70336-1.69984 4.096-2.37568l50.56512 27.50464a28.672 28.672 0 0 0-4.096 2.37568" fill="#ABFFD9" p-id="6243"></path><path d="M526.60224 101.86752l-50.56512-27.50464c2.39616-1.1264 4.85376-1.86368 7.31136-2.21184l50.56512 27.50464c-2.4576 0.34816-4.93568 1.08544-7.31136 2.21184" fill="#ABFFD9" p-id="6244"></path><path d="M332.6976 627.13856l-50.54464-27.50464 0.38912-218.56256 50.56512 27.48416z" fill="#ABFFD9" p-id="6245"></path><path d="M361.92256 352.29696l-50.54464-27.50464 154.91072-109.9776 50.54464 27.50464z" fill="#ABFFD9" p-id="6246"></path><path d="M541.06112 232.38656a44.87168 44.87168 0 0 1 24.18688 3.11296l154.58304 66.49856c17.63328 7.5776 28.672 26.19392 28.63104 48.18944l-0.06144 31.1296a124.928 124.928 0 0 0-49.84832-2.7648c-80.0768 11.24352-145.12128 92.38528-145.28512 181.16608-0.06144 35.61472 10.36288 67.01056 27.9552 91.19744l-195.70688 27.50464c-29.26592 4.11648-52.89984-18.86208-52.8384-51.26144l0.4096-218.58304c0.04096-21.99552 11.1616-43.70432 28.81536-56.25856l154.91072-109.99808a55.25504 55.25504 0 0 1 24.24832-9.9328z" fill="#2AD870" p-id="6247"></path><path d="M333.1072 408.55552l-50.56512-27.50464c0.02048-8.06912 1.51552-16.09728 4.3008-23.67488l50.56512 27.50464c-2.78528 7.5776-4.28032 15.60576-4.3008 23.67488" fill="#ABFFD9" p-id="6248"></path><path d="M337.408 384.90112l-50.56512-27.50464a69.8368 69.8368 0 0 1 4.17792-9.27744l50.56512 27.50464a68.64896 68.64896 0 0 0-4.17792 9.27744" fill="#ABFFD9" p-id="6249"></path><path d="M341.56544 375.62368l-50.56512-27.50464c1.3312-2.47808 2.80576-4.87424 4.42368-7.18848l50.56512 27.50464c-1.59744 2.29376-3.072 4.68992-4.42368 7.18848M346.0096 368.4352l-50.56512-27.50464c1.49504-2.10944 3.09248-4.15744 4.79232-6.08256l50.56512 27.50464a62.5664 62.5664 0 0 0-4.79232 6.08256" fill="#ABFFD9" p-id="6250"></path><path d="M350.80192 362.35264L300.2368 334.848a67.584 67.584 0 0 1 5.38624-5.44768l50.56512 27.50464a61.46048 61.46048 0 0 0-5.38624 5.44768M356.18816 356.90496l-50.56512-27.50464c1.82272-1.6384 3.74784-3.1744 5.75488-4.608l50.56512 27.50464c-2.02752 1.4336-3.93216 2.9696-5.75488 4.608" fill="#ABFFD9" p-id="6251"></path><path d="M244.34688 307.75296l-50.56512-27.50464 277.504-203.03872 50.56512 27.50464z" fill="#ABFFD9" p-id="6252"></path><path d="M242.85184 357.19168L192.3072 329.68704a22.30272 22.30272 0 0 1-9.13408-9.50272c-3.7888-7.35232-3.85024-16.32256-0.9216-24.3712l50.56512 27.50464c-2.94912 8.04864-2.8672 17.01888 0.9216 24.3712 2.19136 4.28032 5.38624 7.4752 9.1136 9.50272M232.81664 323.29728l-50.56512-27.50464a38.7072 38.7072 0 0 1 2.02752-4.52608l50.56512 27.50464a38.7072 38.7072 0 0 0-2.02752 4.52608" fill="#ABFFD9" p-id="6253"></path><path d="M234.84416 318.79168l-50.56512-27.50464c0.63488-1.18784 1.35168-2.3552 2.12992-3.4816l50.56512 27.50464a33.66912 33.66912 0 0 0-2.12992 3.4816" fill="#ABFFD9" p-id="6254"></path><path d="M236.97408 315.31008l-50.56512-27.50464c0.7168-1.024 1.49504-2.00704 2.31424-2.94912l50.56512 27.50464c-0.8192 0.94208-1.59744 1.92512-2.31424 2.94912M239.3088 312.36096l-50.56512-27.50464a35.4304 35.4304 0 0 1 2.62144-2.64192l50.56512 27.50464a31.88736 31.88736 0 0 0-2.62144 2.64192M241.93024 309.71904L191.36512 282.2144c0.77824-0.69632 1.57696-1.35168 2.41664-1.96608l50.56512 27.50464c-0.83968 0.6144-1.65888 1.26976-2.41664 1.96608" fill="#ABFFD9" p-id="6255"></path><path d="M533.9136 99.65568a21.9136 21.9136 0 0 1 12.06272 1.65888l169.82016 76.75904 0.12288-62.01344c0.02048-15.68768 11.50976-30.02368 25.66144-32.01024 14.15168-1.98656 25.6 9.1136 25.55904 24.82176l-0.16384 92.34432 55.9104 25.25184c12.45184 5.67296 17.16224 22.20032 10.46528 36.9664-4.62848 10.24-13.49632 16.93696-22.65088 18.2272-4.096 0.57344-8.192 0.06144-12.04224-1.65888l-69.50912-31.41632-195.33824-88.2688-265.4208 194.19136a26.76736 26.76736 0 0 1-12.02176 5.03808 21.58592 21.58592 0 0 1-22.6304-11.85792c-6.63552-12.9024-1.86368-30.76096 10.60864-39.936l277.504-203.03872c3.76832-2.78528 7.92576-4.48512 12.06272-5.05856z" fill="#2AD870" p-id="6256"></path><path d="M451.33824 403.57888c10.28096-1.4336 18.65728 6.4512 18.6368 17.53088l-0.06144 37.10976c-0.02048 11.07968-8.43776 21.34016-18.71872 22.77376l-34.38592 4.83328c-10.28096 1.4336-18.65728-6.4512-18.6368-17.53088l0.06144-37.10976c0.02048-11.07968 8.43776-21.34016 18.71872-22.77376l34.38592-4.83328z" fill="#FFFFFF" p-id="6257"></path></svg>
+                                            <div class="analysis-example-desc">
+                                                <strong>"贷款审批"</strong><small>"信用评分、收入、逾期次数 → 审批结果"</small>
+                                            </div>
                                         </button>
-                                        <button class="analysis-example" on:click=move |_| set_prompt.set("根据订单金额、客户等级和商品类型计算折扣，并确保折扣不超过业务上限。".to_string()) disabled=move || workflow_busy.get()>
-                                            <strong>"订单折扣"</strong><small>"订单金额、客户等级 → 折扣和规则说明"</small>
+                                        <button class="analysis-example" on:click=move |_| set_prompt.set(order_discount_calculation.to_string()) disabled=move || workflow_busy.get()>
+                                            <svg viewBox="0 0 1186 1024" version="1.1" xmlns="http://www.w3.org/2000/svg" p-id="7697" width="200" height="200"><path d="M882.756758 42.739907l0.050688 0.648814-1.601759 42.101941a54.804501 54.804501 0 0 0 36.191652 53.5677 54.814639 54.814639 0 0 1 36.222064 51.195473l-0.081101 4.744452a54.804501 54.804501 0 0 0 34.001904 50.32363l2.230298 0.861706 5.362853 1.936304a54.814639 54.814639 0 0 1 36.222064 51.195473l-0.04055 2.372226-0.212893 5.677122a54.774088 54.774088 0 0 0 33.961354 52.695856l2.230298 0.861706 5.119547 1.855202a54.794363 54.794363 0 0 1 36.222065 51.195474l-0.040551 2.362088-0.202754 5.423679a54.784226 54.784226 0 0 0 33.961354 52.705993l2.230297 0.861706 39.800679 14.415834c1.885615 0.689365 2.280986 3.000764 0.973221 4.420045l-0.57785 0.486611-0.557574 0.375095a2.970351 2.970351 0 0 1-0.598125 0.790742l-0.415647 0.334545-75.951779 50.627761-144.330685 96.206939-396.546959 265.172278 1.338179 1.946442-157.682058 103.232377a3.071728 3.071728 0 0 1-2.331675 0.466335l0.141928 0.030413a2.889249 2.889249 0 0 1-1.115149-0.050688l-2.463466 1.632172c-1.763963 1.175975-4.004398 0.253443-4.379494-1.581484a2.838561 2.838561 0 0 1-1.926166-1.956579l-0.070964-0.760329 1.622035-42.162767c0.881981-23.012619-12.895177-44.028107-34.336449-52.76682l-2.250574-0.861706-5.180373-1.86534c-21.958296-7.877007-36.505921-28.385609-36.627574-51.246162l0.040551-2.372226 0.212892-5.433817 0.010138-0.628538a42.091803 42.091803 0 0 0-35.482011-24.431899l-2.098508-0.081102-4.17674-0.050689c-17.568664-0.202754-33.079372-11.455621-39.060625-28.081477l-0.66909-2.027544-1.226663-4.034811c-5.190511-17.041503-20.234884-28.943184-37.631208-30.027919l-2.098507-0.070965-4.359219-0.050688c-17.568664-0.202754-33.08951-11.455621-39.060626-28.081478l-0.669089-2.027543-1.28749-4.217291c-5.403403-17.741006-21.45141-29.906267-39.719577-30.109021-18.278305-0.202754-34.336449-12.368015-39.739853-30.098883-5.180374-17.041503-20.224746-28.943184-37.62107-30.027919l-2.098507-0.070964-32.369732-0.375096c-1.388867-0.020275-2.230298-1.317903-1.946442-2.595256a2.372226 2.372226 0 0 1 0.13179-1.449693l0.293994-0.506886 44.930364-60.147078 15.784426-21.461548c0.912395-1.236802 1.875478-2.402639 2.88925-3.50765L436.63636 51.732063a2.230298 2.230298 0 0 1 3.061591-0.567712 2.098508 2.098508 0 0 1 2.939938 0.517023l0.263581 0.547437 9.701796 31.528302a42.720342 42.720342 0 0 0 38.148231 30.149571l2.12892 0.081102a42.689929 42.689929 0 0 1 40.277152 30.210398 42.720342 42.720342 0 0 0 38.158369 30.15971l2.12892 0.070964 4.420045 0.050689a42.679791 42.679791 0 0 1 39.597925 28.192992l0.679227 2.027544 1.317903 4.257841c0.44606 1.469969 0.973221 2.909525 1.571346 4.298392L801.878047 92.323484a2.939938 2.939938 0 0 0-1.723412 0.162203l-0.567712 0.304132 75.95178-50.627761a3.010902 3.010902 0 0 1 2.098508-0.506886l0.770466-0.496748c1.753825-1.165838 3.984123-0.253443 4.359219 1.581483z" fill="#DEDEDE" p-id="7698"></path><path d="M2.052685 598.327379l33.04896 0.375095a42.983922 42.983922 0 0 1 40.581283 30.220536 42.963647 42.963647 0 0 0 40.571145 30.230674 42.963647 42.963647 0 0 1 40.561008 30.220536l1.317904 4.247704a42.963647 42.963647 0 0 0 40.581283 30.220535l4.460595 0.060827a42.983922 42.983922 0 0 1 40.561008 30.210398l1.257077 4.065225a42.963647 42.963647 0 0 0 40.571146 30.220536l4.257841 0.050688a42.963647 42.963647 0 0 1 40.571146 30.230674l9.772759 31.528301c0.527161 1.682861 2.727046 1.966717 3.82192 0.506886l436.144883-583.648673c1.094873-1.469969 0.192617-3.487375-1.571346-3.50765l-33.048959-0.375096a42.973785 42.973785 0 0 1-40.581283-30.220536l-1.257077-4.065225a42.983922 42.983922 0 0 0-40.571146-30.220536l-4.257841-0.050688a42.963647 42.963647 0 0 1-40.571146-30.230674l-1.317903-4.237566a42.973785 42.973785 0 0 0-40.571145-30.230673l-4.450458-0.040551a42.983922 42.983922 0 0 1-40.571146-30.230674 42.963647 42.963647 0 0 0-40.571146-30.230674 42.953509 42.953509 0 0 1-40.571145-30.220536l-9.77276-31.528301c-0.527161-1.682861-2.727046-1.966717-3.821919-0.506886L0.481339 594.819729c-1.094873 1.480107-0.202754 3.497513 1.571346 3.517787" fill="#FF9517" p-id="7699"></path><path d="M659.726972 198.62759a42.700066 42.700066 0 0 1-40.277151-30.220536l-1.317904-4.257841a42.689929 42.689929 0 0 0-40.267014-30.210399l-4.430182-0.060826a42.710204 42.710204 0 0 1-40.277152-30.220536 42.689929 42.689929 0 0 0-40.277152-30.220536 42.700066 42.700066 0 0 1-40.287289-30.230674l-9.691658-31.528301c-0.527161-1.682861-2.706771-1.966717-3.801644-0.506886L396.896508 68.084201c1.084736-1.469969 3.274483-1.186113 3.791506 0.506886l9.701796 31.528302a42.689929 42.689929 0 0 0 40.277151 30.220536 42.700066 42.700066 0 0 1 40.277152 30.210398 42.710204 42.710204 0 0 0 40.28729 30.240811l4.420044 0.050689a42.700066 42.700066 0 0 1 40.277152 30.210398l1.317903 4.257841a42.700066 42.700066 0 0 0 40.267015 30.220536l33.829563 0.385234a2.037681 2.037681 0 0 1 1.926166 1.449693l10.948735 34.366863c5.555469 17.436874 2.392501 36.495783-8.505545 51.175198L324.411827 789.453767c0.202754 0.22303 0.385233 0.476473 0.486611 0.790742l18.450646 59.964599c0.506886 1.682861 2.696633 1.966717 3.791506 0.506886l390.76846-526.735527 42.223593-56.903008c1.084736-1.480107 0.202754-3.497513-1.561208-3.517788l-62.407789-0.709641a2.402639 2.402639 0 0 1-0.881982-0.243305 2.007268 2.007268 0 0 1-1.054322-1.216526l-9.99579-32.491385a42.710204 42.710204 0 0 0-40.277151-30.220536l-4.227429-0.050688z" fill="#FE6E10" p-id="7700"></path><path d="M0.471202 595.853776c-1.074598 1.469969-0.192617 3.487375 1.530795 3.50765l32.369732 0.375096c18.278305 0.202754 34.336449 12.368015 39.739853 30.098883 5.393266 17.730868 21.441273 29.896129 39.719577 30.109021 18.268167 0.202754 34.326312 12.368015 39.729715 30.098883l1.28749 4.217291c5.403403 17.741006 21.45141 29.906267 39.729715 30.109021l4.359219 0.050688c18.278305 0.202754 34.326312 12.368015 39.719577 30.109021l1.236801 4.034812c5.403403 17.730868 21.45141 29.885991 39.729715 30.098883l4.166602 0.050689c18.268167 0.202754 34.326312 12.368015 39.719578 30.109021l9.570005 31.396511c0.506886 1.672723 2.676357 1.956579 3.750955 0.496748l60.724928-82.662948c13.229721-18.014724 9.580143-43.500946-8.150725-56.94356L117.277983 504.918449a39.658751 39.658751 0 0 0-56.071716 8.282516l-60.724928 82.652811z" fill="#4393F2" p-id="7701"></path><path d="M324.411827 788.399445a2.331675 2.331675 0 0 1 0.486611 0.811017l18.957532 60.968233a2.078232 2.078232 0 0 0 2.301261 1.459832 2.331675 2.331675 0 0 0 1.581484-0.942808L435.92672 732.996818 390.955805 699.593039 324.411827 788.399445z" fill="#2E7DCC" p-id="7702"></path><path d="M518.478154 280.347731c8.556234-11.354244 19.129873-14.43611 31.193757-5.535194l43.561772 32.177115c12.063884 8.900916 12.104435 19.8091 3.527926 31.163344-8.556234 11.364381-18.906843 14.152254-30.970727 5.2412l-43.561773-32.166978c-12.074022-8.911054-12.317327-19.525244-3.750955-30.879487m97.119334 71.724351c16.696821-22.150913 19.94089-46.50171-6.548966-66.067505l-43.561772-32.15684c-26.479718-19.565795-49.157792-9.54973-65.854613 12.591045-16.899575 22.424631-19.920615 46.50171 6.559103 66.057368l43.561773 32.166978c26.499994 19.565795 48.9449 9.833586 65.844475-12.591046m-208.836981-156.952142c-6.315798-4.845829-14.932858-1.794376-19.018358 3.86247-2.463465 3.385998-3.548201 7.826318-1.206389 12.266638l126.488302 258.63345c0.760329 1.916029 1.926166 3.24407 3.294758 4.298392 4.937068 3.801644 13.422338 3.28462 18.136377-3.223794 2.858836-3.95371 3.801644-9.377389 1.743687-13.604817l-125.667146-258.004911a14.65914 14.65914 0 0 0-3.771231-4.227428m7.532324 193.731782c-8.566371 11.354244-18.916981 14.142116-30.980865 5.231062l-43.561772-32.166978c-12.063884-8.911054-12.317327-19.525244-3.750955-30.889625 8.556234-11.354244 19.129873-14.425972 31.193756-5.525056l43.561773 32.166977c12.063884 8.921191 12.094297 19.819238 3.538063 31.173482m-97.119334-71.714214c-16.929988 22.424631-19.951028 46.491573 6.548966 66.057367l43.551634 32.166978c26.489856 19.555657 48.9449 9.833586 65.854613-12.591045 16.686683-22.140775 19.930753-46.50171-6.559103-66.067505l-43.561772-32.15684c-26.489856-19.565795-49.157792-9.54973-65.844476 12.591045m-38.259746 50.252666a12.722835 12.722835 0 0 0-17.254395 2.402639l-76.712108 98.11283a11.425208 11.425208 0 0 0 2.504016 16.473791c2.737184 1.926166 6.031942 2.635807 9.154359 2.210022 3.122417-0.435922 6.082631-2.007268 8.110174-4.612661l76.701971-98.11283a11.41507 11.41507 0 0 0-2.504017-16.473791m-11.344106 180.025588c3.122417-0.435922 6.072493-2.007268 8.110175-4.612662l76.712108-98.11283a11.425208 11.425208 0 0 0-2.514154-16.473791 12.732973 12.732973 0 0 0-17.264533 2.402639l-76.712108 98.102693a11.435345 11.435345 0 0 0 2.514154 16.483928c2.737184 1.936304 6.021804 2.635807 9.154358 2.210023m141.928046 91.239457c3.122417-0.435922 6.072493-2.007268 8.110174-4.612661l76.712108-98.11283a11.425208 11.425208 0 0 0-2.514154-16.473791 12.722835 12.722835 0 0 0-17.264532 2.402639l-76.712109 98.102692a11.435345 11.435345 0 0 0 2.514154 16.483929c2.737184 1.936304 6.031942 2.635807 9.154359 2.210022m-70.964023-40.55087c3.122417-0.435922 6.062355-2.007268 8.110174-4.612661l76.712109-98.11283a11.425208 11.425208 0 0 0-2.514154-16.473791 12.732973 12.732973 0 0 0-17.264533 2.402639l-76.712109 98.102692a11.425208 11.425208 0 0 0 2.514154 16.483929c2.727046 1.936304 6.021804 2.635807 9.154359 2.210022" fill="#FFFFFF" p-id="7703"></path><path d="M103.125729 524.210526l39.800679 14.415834a54.814639 54.814639 0 0 1 36.191652 53.557562 54.794363 54.794363 0 0 0 36.191651 53.567699 54.814639 54.814639 0 0 1 36.181514 53.557562l-0.22303 5.677122a54.794363 54.794363 0 0 0 36.191652 53.557562l5.362853 1.946441a54.794363 54.794363 0 0 1 36.191651 53.5677l-0.212892 5.423679a54.784226 54.784226 0 0 0 36.191652 53.557561l5.119547 1.855203a54.804501 54.804501 0 0 1 36.191652 53.557561l-1.622035 42.122217c-0.070964 2.240436 2.463465 3.517788 4.420045 2.210022l775.677318-518.686179c1.956579-1.307766 1.723412-4.126051-0.405508-4.906656l-39.800679-14.415834a54.804501 54.804501 0 0 1-36.191652-53.567699l0.212892-5.423679a54.784226 54.784226 0 0 0-36.191651-53.557562l-5.119548-1.855202a54.794363 54.794363 0 0 1-36.191651-53.557562l0.22303-5.677122a54.804501 54.804501 0 0 0-36.191652-53.567699l-5.362853-1.926167a54.814639 54.814639 0 0 1-36.191651-53.567699 54.794363 54.794363 0 0 0-36.181514-53.567699 54.804501 54.804501 0 0 1-36.191652-53.5677l1.611897-42.101941c0.081102-2.250573-2.453328-3.527926-4.409907-2.230298L102.720221 519.303871c-1.956579 1.317903-1.723412 4.136189 0.405508 4.896517" fill="#FFB125" p-id="7704"></path><path d="M1065.20526 321.719756a54.845052 54.845052 0 0 1-36.333579-53.618388l0.223029-5.677122a54.875465 54.875465 0 0 0-36.343717-53.628525l-5.383128-1.946442a54.845052 54.845052 0 0 1-36.343717-53.618388 54.865327 54.865327 0 0 0-36.33358-53.628526 54.845052 54.845052 0 0 1-36.343717-53.618388l1.622035-42.152629c0.081102-2.250573-2.473603-3.527926-4.430183-2.230298l-75.95178 50.637899c1.956579-1.307766 4.511284-0.030413 4.420045 2.230298l-1.611897 42.162767a54.85519 54.85519 0 0 0 36.343717 53.60825 54.85519 54.85519 0 0 1 36.33358 53.628526 54.85519 54.85519 0 0 0 36.343717 53.618388l5.383128 1.936304a54.865327 54.865327 0 0 1 36.343718 53.628526l-0.22303 5.677121a54.85519 54.85519 0 0 0 36.343717 53.628526l41.189547 14.882169c1.094873 0.385233 1.794376 1.41928 1.743687 2.574981l-1.297628 46.096201a72.281926 72.281926 0 0 1-32.268355 58.089122L402.654731 891.297278a2.605393 2.605393 0 0 1 0.253443 1.155699l-3.071728 80.189346c-0.081102 2.250573 2.463465 3.527926 4.430182 2.230298l702.979747-468.646406 75.951779-50.627761c1.966717-1.317903 1.723412-4.136189-0.405508-4.906656l-76.012606-27.473214c-0.212892-0.070964-0.405509-0.182479-0.57785-0.304132a3.750955 3.750955 0 0 1-0.405509-0.344682 2.595256 2.595256 0 0 1-0.760329-1.916029l1.662586-43.450257a54.875465 54.875465 0 0 0-36.33358-53.628526l-5.160098-1.855202z" fill="#FF901D" p-id="7705"></path><path d="M92.592641 518.756434c-1.966717 1.307766-1.73355 4.126051 0.405508 4.906655l40.246739 14.43611c22.708487 8.150725 37.489279 29.815027 36.587023 53.628526-0.912395 23.803361 13.868398 45.467663 36.587022 53.628525 22.708487 8.150725 37.489279 29.815027 36.576885 53.628526l-0.212892 5.677122c-0.922532 23.803361 13.85826 45.467663 36.576885 53.628526l5.423679 1.936304c22.708487 8.160863 37.509555 29.825165 36.587022 53.628525l-0.212892 5.433817c-0.912395 23.803361 13.868398 45.467663 36.587023 53.628526l5.180373 1.855202c22.718625 8.160863 37.499417 29.825165 36.587023 53.628526l-1.622035 42.172905c-0.091239 2.240436 2.473603 3.517788 4.450458 2.210022l111.514893-73.853272c24.300109-16.088558 30.757835-48.539392 14.425972-72.48468L277.687087 459.126379c-16.342001-23.945289-49.269307-30.311775-73.569416-14.21308l-111.514893 73.853273z" fill="#61AFF6" p-id="7706"></path><path d="M408.392679 889.016291a2.331675 2.331675 0 0 1 0.172342 0.506886c0.050689 0.202754 0.091239 0.425784 0.081101 0.648814L405.513568 970.564091a2.564843 2.564843 0 0 0 0.395371 1.480107 2.676357 2.676357 0 0 0 1.794376 1.216526 3.071728 3.071728 0 0 0 2.331675-0.476473L567.717048 869.551873 527.389208 811.107932l-118.996529 77.908359z" fill="#55A2F0" p-id="7707"></path><path d="M858.466787 361.713052c14.69969-9.630832 28.314645-8.951605 38.695667 6.123181l37.509555 54.419268c10.39116 15.074786 5.900152 27.62528-8.799538 37.266249-14.69969 9.630832-27.93955 8.708299-38.33071-6.376624l-37.509555-54.40913c-10.39116-15.074786-6.275247-27.381975 8.424443-37.022944m83.63617 121.348479c28.64919-18.795328 42.537863-45.518352 19.727998-78.597724l-37.509555-54.419268c-22.809864-33.08951-53.415634-30.64632-82.064823-11.86113-29.034423 19.028496-42.537863 45.498076-19.727999 78.587587l37.509555 54.419267c22.809864 33.099648 53.0304 30.889625 82.064824 11.86113M761.752961 209.839905c-5.72781-8.546096-17.609215-8.61706-25.009749-3.629302-4.44032 2.990627-7.653977 7.836456-6.630067 14.162391l47.039009 364.268466c0.13179 2.605393 1.013772 4.714039 2.260711 6.569241 4.470733 6.680756 15.125475 9.732209 23.641158 3.994261 5.190511-3.487375 8.61706-9.580143 7.866868-15.520846l-46.298955-363.163455a18.592574 18.592574 0 0 0-2.868975-6.690893m-79.175573 239.554265c-14.709828 9.640969-27.93955 8.718437-38.320573-6.366487l-37.509555-54.419267c-10.401298-15.064648-6.285385-27.371837 8.414306-37.012807 14.69969-9.640969 28.314645-8.951605 38.695668 6.123181l37.509555 54.419268c10.39116 15.074786 5.910289 27.62528-8.799539 37.26625m-83.626032-121.348479c-29.034423 19.038634-42.537863 45.508214-19.727998 78.597724l37.509555 54.419267c22.809864 33.08951 53.0304 30.899763 82.064823 11.86113 28.64919-18.775053 42.537863-45.498076 19.727998-78.587586l-37.509555-54.419268c-22.809864-33.08951-53.415634-30.64632-82.064823-11.861129m-64.232578 54.034034a15.064648 15.064648 0 0 0-21.18783-4.237566l-131.678813 90.458853a15.814839 15.814839 0 0 0-4.146326 21.644027c2.35195 3.568477 5.900152 5.829188 9.732209 6.599655 3.82192 0.770467 7.947971 0.040551 11.435345-2.351951l131.688951-90.468991a15.814839 15.814839 0 0 0 4.156464-21.644027M448.254185 577.636297c3.832057 0.770467 7.947971 0.040551 11.435345-2.362088l131.688951-90.458853a15.814839 15.814839 0 0 0 4.156464-21.644027 15.064648 15.064648 0 0 0-21.177692-4.237566l-131.688951 90.468991a15.804702 15.804702 0 0 0-4.146326 21.633889c2.35195 3.568477 5.890014 5.829188 9.732209 6.599654m121.65261 182.478916c3.82192 0.770467 7.947971 0.040551 11.435345-2.351951l131.688951-90.468991a15.814839 15.814839 0 0 0 4.156464-21.644027 15.064648 15.064648 0 0 0-21.177692-4.237566l-131.68895 90.458854a15.794564 15.794564 0 0 0-4.146327 21.633889c2.35195 3.578614 5.890014 5.849463 9.732209 6.609792m-60.826305-91.239458c3.82192 0.770467 7.947971 0.040551 11.435345-2.35195l131.688951-90.468992a15.814839 15.814839 0 0 0 4.156464-21.644027 15.054511 15.054511 0 0 0-21.177692-4.237565l-131.688951 90.458853a15.814839 15.814839 0 0 0-4.146326 21.644027c2.35195 3.578614 5.900152 5.839325 9.732209 6.599654" fill="#FFFFFF" p-id="7708"></path></svg>
+                                            <div class="analysis-example-desc">
+                                                <strong>"订单折扣"</strong><small>"订单金额、客户等级 → 折扣和规则说明"</small>
+                                            </div>
                                         </button>
-                                        <button class="analysis-example" on:click=move |_| set_prompt.set("根据航班延误时长、旅客舱位和是否联程，决定改签、退款或提供补偿。".to_string()) disabled=move || workflow_busy.get()>
-                                            <strong>"航班服务"</strong><small>"延误时长、舱位、联程 → 服务方案"</small>
+                                        <button class="analysis-example" on:click=move |_| set_prompt.set(flight_delay_resolution.to_string()) disabled=move || workflow_busy.get()>
+                                            <svg viewBox="0 0 1024 1024" version="1.1" xmlns="http://www.w3.org/2000/svg" p-id="9950" width="200" height="200">
+                                                <path d="M525.088 83.712a48.08 48.08 0 0 0-46.368 35.584L288.224 830.208a48.064 48.064 0 0 0 33.936 58.8l370.944 99.392a48.128 48.128 0 0 0 58.752-33.952L942.336 243.52a48.048 48.048 0 0 0-33.904-58.784L537.472 85.344a47.904 47.904 0 0 0-12.384-1.632z" fill="#F5F9EC" p-id="9951"></path>
+                                                <path d="M871.136 509.248L625.488 263.6h-185.44l-151.824 566.608a48.064 48.064 0 0 0 33.936 58.8l370.944 99.392a48.128 48.128 0 0 0 58.752-33.952l119.28-445.2z" fill="#E4E8DB" p-id="9952"></path>
+                                                <path d="M395.888 428.384l463.632 124.224 82.832-309.104a48.048 48.048 0 0 0-33.904-58.784L537.472 85.344a48.08 48.08 0 0 0-58.736 33.952l-82.848 309.088z" fill="#DCC69F" p-id="9953"></path>
+                                                <path d="M395.888 428.384l463.632 124.224 11.616-43.36-245.648-245.648h-185.44z" fill="#CDB994" p-id="9954"></path>
+                                                <path d="M353.072 897.28L568.4 93.632l-30.944-8.288a48.08 48.08 0 0 0-58.736 33.952L288.224 830.208a48.064 48.064 0 0 0 33.936 58.8l30.912 8.272z" fill="#EA672C" p-id="9955"></path>
+                                                <path d="M96 928c-8.816 0-16-7.168-16-16V272c0-8.832 7.184-16 16-16h480c26.464 0 48 21.536 48 48v576c0 26.464-21.536 48-48 48H96z" fill="#125D9D" p-id="9956"></path>
+                                                <path d="M352 336c-106.032 0-192 85.968-192 192s85.968 192 192 192 192-85.968 192-192-85.952-192-192-192z m142.096 120h-69.2c-6.624-33.168-16.96-59.968-27.504-80.64a159.744 159.744 0 0 1 96.704 80.64zM400 528c0 14.288-1.072 27.408-2.544 40h-90.912A339.616 339.616 0 0 1 304 528c0-14.288 1.056-27.408 2.512-40h90.976c1.456 12.592 2.512 25.712 2.512 40z m-88.144-72c8.88-40.096 23.536-69.232 35.488-87.536 1.584-0.048 3.056-0.464 4.656-0.464 1.616 0 3.104 0.432 4.704 0.48 12 18.416 26.608 47.568 35.456 87.52h-80.304z m-5.248-80.64c-10.512 20.64-20.864 47.472-27.488 80.64h-69.216a159.744 159.744 0 0 1 96.704-80.64z m-108.928 112.64h76.592A375.408 375.408 0 0 0 272 528c0 14.16 0.96 27.328 2.32 40h-76.64C194.336 555.136 192 541.888 192 528c0-13.888 2.336-27.136 5.68-40z m12.224 112h69.296c6.688 33.232 17.04 60.272 27.36 80.624a159.728 159.728 0 0 1-96.656-80.624z m137.44 87.536c-11.472-17.648-26.4-46.848-35.456-87.536h80.224c-9.04 40.656-23.952 69.856-35.456 87.536-1.584 0.048-3.056 0.464-4.656 0.464s-3.072-0.416-4.656-0.464z m50.112-6.912c10.336-20.384 20.672-47.392 27.344-80.624h69.296a159.68 159.68 0 0 1-96.64 80.624z m108.864-112.624h-76.624c1.344-12.672 2.304-25.84 2.304-40 0-14.144-0.928-27.328-2.256-40h76.576c3.344 12.864 5.68 26.112 5.68 40 0 13.888-2.336 27.136-5.68 40z" fill="#E7BE29" p-id="9957"></path><path d="M192 816h320v32H192z" fill="#FFFFFF" p-id="9958"></path>
+                                                <path d="M718.24 647.296l16.56-61.824 30.912 8.288-16.576 61.824zM643.616 925.472l57.984-216.368 30.896 8.288-57.968 216.352z" fill="#010101" p-id="9959"></path>
+                                                <path d="M912.544 169.28L541.632 69.888a64.032 64.032 0 0 0-78.384 45.264L429.792 240H96a32 32 0 0 0-32 32v640a32 32 0 0 0 32 32h369.6l223.328 59.84a64.032 64.032 0 0 0 78.384-45.264l190.496-710.928a64 64 0 0 0-45.264-78.368zM96 272h480c17.648 0 32 14.352 32 32v576c0 17.648-14.352 32-32 32H96V272z m830.896-32.624L736.4 950.304a32.032 32.032 0 0 1-39.2 22.64l-111.584-29.904C616.368 938.352 640 912.048 640 880V626.32l16.384 4.4 16.576-61.824-30.912-8.288-2.048 7.648V313.952l32.656 8.752 37.84 123.728 26.496 7.104-2.512-114.256 46.8 12.544 20.576 36.272 17.664 4.736-3.04-50.512 27.888-42.224-17.664-4.736-35.952 21.136-46.816-12.544 59.296-97.696-26.496-7.104-94.64 88.224-49.92-13.376C621.424 253.872 600.432 240 576 240h-113.072l31.232-116.576a32.08 32.08 0 0 1 39.2-22.64l370.912 99.392c8.256 2.208 15.152 7.504 19.424 14.912a31.84 31.84 0 0 1 3.2 24.288z" fill="#010101" p-id="9960"></path><path d="M718.256 531.84l8.192-30.928 30.4 8.048-8.176 30.928zM779.072 547.92l8.192-30.928 30.4 8.032-8.176 30.944zM657.44 515.76l8.192-30.928 30.4 8.048-8.176 30.928z" fill="#010101" p-id="9961"></path>
+                                            </svg>
+                                            <div class="analysis-example-desc">
+                                                <strong>"航班服务"</strong><small>"延误时长、舱位、联程 → 服务方案"</small>
+                                            </div>
                                         </button>
                                     </div>
                                 </div>
@@ -5584,8 +4653,43 @@ pub fn DmnApp() -> impl IntoView {
                     </section>
                 </Show>
             <Show when=move || workspace_view.get() == WorkspaceView::Model>
-            <section class="workspace-grid">
-                <section class="conversation-panel panel">
+            <section id="workspace-panel-model" class="model-pane-shell" role="tabpanel" aria-labelledby="workspace-tab-model" tabindex="0" inert=move || project_busy.get()>
+                <div class="model-pane-tabs" role="group" aria-label="建模工作区面板">
+                    <button
+                        id="model-pane-tab-conversation"
+                        class=move || if mobile_model_focus.get() == MobileModelFocus::Conversation { "model-pane-tab is-active" } else { "model-pane-tab" }
+                        type="button"
+                        aria-controls="workspace-pane-conversation"
+                        aria-pressed=move || mobile_model_focus.get() == MobileModelFocus::Conversation
+                        on:click=move |_| set_mobile_model_focus.set(MobileModelFocus::Conversation)
+                    >"建模对话"<span class="model-pane-status">{move || if pending_review.get().is_some() { "待确认" } else if unread_messages.get() { "有更新" } else { "" }}</span></button>
+                    <button
+                        id="model-pane-tab-inspector"
+                        class=move || if mobile_model_focus.get() == MobileModelFocus::Inspector { "model-pane-tab is-active" } else { "model-pane-tab" }
+                        type="button"
+                        aria-controls="workspace-pane-inspector"
+                        aria-pressed=move || mobile_model_focus.get() == MobileModelFocus::Inspector
+                        on:click=move |_| set_mobile_model_focus.set(MobileModelFocus::Inspector)
+                    >"模型产物"</button>
+                </div>
+                <div
+                    class=move || format!(
+                        "workspace-grid model-focus-{}{}{}",
+                        mobile_model_focus.get().class(),
+                        if model_expanded.get() { " model-grid-expanded" } else { "" },
+                        if resizing_workspace.get() { " is-resizing" } else { "" },
+                    )
+                    node_ref=workspace_grid
+                    style=move || if viewport_width.get() <= 1100.0 || model_expanded.get() {
+                        String::new()
+                    } else {
+                        format!(
+                            "grid-template-columns: {}px 8px minmax(0, 1fr);",
+                            conversation_width.get()
+                        )
+                    }
+                >
+                <section id="workspace-pane-conversation" class="conversation-panel panel" aria-label="建模对话">
                     <div class="panel-heading conversation-heading">
                         <div class="heading-copy">
                             <p class="eyebrow">"AGENT CONVERSATION"</p>
@@ -5594,7 +4698,23 @@ pub fn DmnApp() -> impl IntoView {
                         </div>
                     </div>
                     <div class="conversation-content">
-                    <div class="conversation-scroll" node_ref=message_list>
+                    <div id="conversation-history" class="conversation-scroll" node_ref=message_list tabindex="0" aria-label="建模对话与变更确认"
+                        on:scroll=move |_| {
+                            if viewport_width.get_untracked() <= 760.0 {
+                                return;
+                            }
+                            if let Some(element) = message_list.get_untracked() {
+                                if element.client_height() == 0 {
+                                    return;
+                                }
+                                let near_bottom = element.scroll_height() - element.scroll_top() - element.client_height() <= 64;
+                                follow_messages.set(near_bottom);
+                                if near_bottom {
+                                    unread_messages.set(false);
+                                }
+                            }
+                        }
+                    >
                     <div class="message-list" aria-live="polite">
                         <For each=move || messages.get() key=|message| message.content.clone() let:message>
                             <article class=format!("message message-{}", message.role)>
@@ -5628,6 +4748,23 @@ pub fn DmnApp() -> impl IntoView {
                         })}
                     </Show>
                     </div>
+                    <Show when=move || unread_messages.get()>
+                        <button type="button" class="button button-quiet conversation-jump" aria-controls="conversation-history"
+                            on:click=move |_| {
+                                follow_messages.set(true);
+                                unread_messages.set(false);
+                                if let Some(element) = message_list.get_untracked() {
+                                    if viewport_width.get_untracked() <= 760.0 {
+                                        let _ = element.focus();
+                                        element.scroll_into_view_with_bool(false);
+                                    } else {
+                                        element.set_scroll_top(element.scroll_height());
+                                        let _ = element.focus();
+                                    }
+                                }
+                            }
+                        >{move || if pending_review.get().is_some() { "有新变更，查看并确认 ↓" } else { "有新内容，回到底部 ↓" }}</button>
+                    </Show>
                     <div class="composer-wrap">
                         <Show when=move || pending_review.get().is_some()>
                             <div class="model-change-lock" role="status">
@@ -5639,17 +4776,21 @@ pub fn DmnApp() -> impl IntoView {
                             <div class="model-plan-guidance">"新增模型请返回“需求与方案”，确认方案后点击“使用方案生成模型”。"</div>
                         </Show>
                         <Show when=move || generation_mode.get() == GenerationMode::Modify>
-                            <label class="known-nl_dsl-label" for="known-nl_dsl">"当前版本 DSL · 受控补丁基线"</label>
-                            <textarea
-                                id="known-nl_dsl"
-                                class="known-nl_dsl-editor"
-                                prop:value=source_dsl
-                                readonly=true
-                            ></textarea>
+                            <details class="known-dsl-panel">
+                                <summary>"当前版本 DSL · 受控补丁基线"<span>"只读"</span></summary>
+                                <label class="sr-only" for="known-nl_dsl">"当前版本 DSL · 受控补丁基线"</label>
+                                <textarea
+                                    id="known-nl_dsl"
+                                    class="known-nl_dsl-editor"
+                                    prop:value=source_dsl
+                                    readonly=true
+                                ></textarea>
+                            </details>
                         </Show>
                         <Show when=move || generation_mode.get() == GenerationMode::Modify>
                             <textarea
                                 class="composer"
+                                aria-label="模型修改需求"
                                 placeholder="描述要应用到 DSL 的修改..."
                                 prop:value=prompt
                                 on:input=move |event| set_prompt.set(event_target_value(&event))
@@ -5695,7 +4836,26 @@ pub fn DmnApp() -> impl IntoView {
                     </div>
                 </section>
 
-                <aside class="inspector-column">
+                <div
+                    class="model-workspace-divider"
+                    role="separator"
+                    tabindex="0"
+                    aria-label="调整建模对话与模型产物宽度"
+                    aria-valuemin="320"
+                    aria-valuemax=move || workspace_grid
+                        .get()
+                        .map(|grid| {
+                            ((f64::from(grid.client_width()) - 420.0).max(320.0).min(560.0))
+                                .round()
+                                .to_string()
+                        })
+                        .unwrap_or_else(|| "560".into())
+                    aria-valuenow=move || conversation_width.get().round().to_string()
+                    on:mousedown=resize_start
+                    on:keydown=resize_keydown
+                ></div>
+
+                <aside id="workspace-pane-inspector" class="inspector-column" aria-label="模型产物与执行过程">
                     <section class="panel timeline-panel">
                         <div class="panel-heading compact-heading">
                             <div>
@@ -5735,6 +4895,14 @@ pub fn DmnApp() -> impl IntoView {
                                 <p class="eyebrow">"ARTIFACTS"</p>
                                 <h2>"模型产物"</h2>
                             </div>
+                            <button
+                                type="button"
+                                class="button button-quiet model-expand-button"
+                                aria-controls="workspace-pane-conversation"
+                                aria-expanded=move || model_expanded.get()
+                                title=move || if model_expanded.get() { "恢复建模对话" } else { "展开模型产物" }
+                                on:click=move |_| set_model_expanded.update(|expanded| *expanded = !*expanded)
+                            >{move || if model_expanded.get() { "恢复双栏" } else { "展开" }}</button>
                             <Show when=move || dsl.get().is_some()>
                                 <span class="artifact-ready">"READY"</span>
                             </Show>
@@ -5748,6 +4916,7 @@ pub fn DmnApp() -> impl IntoView {
                         />
                     </section>
                 </aside>
+                </div>
             </section>
             </Show>
             </div>
@@ -5845,1787 +5014,6 @@ pub fn DmnApp() -> impl IntoView {
             </Show>
             <footer class="footer-note">"同源安全连接 · API 密钥仅保留在服务端"</footer>
         </main>
-    }
-}
-
-fn apply_result(
-    result: RunResult,
-    set_dsl: WriteSignal<Option<String>>,
-    set_xml: WriteSignal<Option<String>>,
-    set_test_xml: WriteSignal<String>,
-    set_test_result: WriteSignal<Option<EvaluateResult>>,
-    set_test_error: WriteSignal<Option<String>>,
-    set_validation_result: WriteSignal<Option<api::ValidateDmnResult>>,
-    set_validation_error: WriteSignal<Option<String>>,
-    set_error: WriteSignal<Option<String>>,
-    set_messages: WriteSignal<Vec<ChatMessage>>,
-    set_status: WriteSignal<RunStatus>,
-    set_generation_mode: WriteSignal<GenerationMode>,
-    set_source_dsl: WriteSignal<String>,
-    set_workspace_view: WriteSignal<WorkspaceView>,
-) {
-    if result.ok {
-        let (Some(dsl), Some(xml)) = (result.dsl.clone(), result.xml.clone()) else {
-            set_error.set(Some(
-                "生成结果不完整，未返回 DSL 或 DMN XML，模型产物未更新".into(),
-            ));
-            set_status.set(RunStatus::Failed);
-            return;
-        };
-
-        // Keep every consumer on the generated model snapshot. Previously the
-        // test drawer retained its old XML until the user pressed refresh.
-        set_dsl.set(Some(dsl.clone()));
-        set_xml.set(Some(xml.clone()));
-        set_source_dsl.set(dsl.clone());
-        set_test_xml.set(xml);
-        set_test_result.set(None);
-        set_test_error.set(None);
-        set_validation_result.set(None);
-        set_validation_error.set(None);
-        set_workspace_view.set(WorkspaceView::Model);
-
-        let message = result
-            .change_summary
-            .as_ref()
-            .map(|summary| incremental_result_message(summary, dsl.len()))
-            .unwrap_or_else(|| format!("模型已生成并通过校验。DSL 共 {} 个字符。", dsl.len()));
-        set_messages.update(|items| {
-            items.push(ChatMessage {
-                role: "assistant",
-                content: message,
-            })
-        });
-        set_status.set(RunStatus::Succeeded);
-        set_generation_mode.set(GenerationMode::Modify);
-    } else {
-        set_error.set(
-            result
-                .error
-                .or_else(|| Some("智能体未返回有效结果".to_string())),
-        );
-        set_status.set(RunStatus::Failed);
-    }
-}
-
-fn incremental_result_message(summary: &ChangeSummary, dsl_length: usize) -> String {
-    let mut changes = Vec::new();
-    if !summary.added.is_empty() {
-        changes.push(format!("新增 {}", summary_names(&summary.added)));
-    }
-    if !summary.updated.is_empty() {
-        changes.push(format!("更新 {}", summary_names(&summary.updated)));
-    }
-    if !summary.removed.is_empty() {
-        changes.push(format!("删除 {}", summary_names(&summary.removed)));
-    }
-
-    if changes.is_empty() {
-        format!(
-            "增量修改已完成，未检测到命名 DMN 元素变更。DSL 共 {} 个字符。",
-            dsl_length
-        )
-    } else {
-        format!(
-            "增量修改已完成：{}。DSL 共 {} 个字符。",
-            changes.join("；"),
-            dsl_length
-        )
-    }
-}
-
-fn summary_names(names: &[String]) -> String {
-    const MAX_VISIBLE_NAMES: usize = 8;
-    let visible = names
-        .iter()
-        .take(MAX_VISIBLE_NAMES)
-        .map(String::as_str)
-        .collect::<Vec<_>>()
-        .join("、");
-    if names.len() > MAX_VISIBLE_NAMES {
-        format!("{visible} 等 {} 项", names.len())
-    } else {
-        visible
-    }
-}
-
-#[component]
-fn Artifact(
-    label: &'static str,
-    language: &'static str,
-    value: ReadSignal<Option<String>>,
-    set_value: Option<WriteSignal<Option<String>>>,
-    set_xml: Option<WriteSignal<Option<String>>>,
-    set_source: Option<WriteSignal<String>>,
-) -> impl IntoView {
-    if language == "yaml" {
-        return view! { <YamlArtifact value=value set_value=set_value set_xml=set_xml set_source=set_source /> }
-            .into_any();
-    }
-
-    let copy_status = RwSignal::new(CopyStatus::Idle);
-    Effect::new(move |_| {
-        let _ = value.get();
-        copy_status.set(CopyStatus::Idle);
-    });
-    let copy = move |_| {
-        let Some(content) = value.get() else {
-            return;
-        };
-        copy_status.set(CopyStatus::Idle);
-        spawn_local(async move {
-            let result = if let Some(window) = web_sys::window() {
-                JsFuture::from(window.navigator().clipboard().write_text(&content))
-                    .await
-                    .map_err(|_| ())
-            } else {
-                Err(())
-            };
-            copy_status.set(if result.is_ok() {
-                CopyStatus::Copied
-            } else {
-                CopyStatus::Failed
-            });
-        });
-    };
-
-    view! {
-        <div class="artifact-block">
-            <div class="artifact-heading">
-                <span>{label}</span>
-                <div class="artifact-heading-actions">
-                    <span class="artifact-type">{language.to_uppercase()}</span>
-                    <button
-                        class="button button-quiet artifact-copy"
-                        title=format!("复制 {label} 内容")
-                        on:click=copy
-                        disabled=move || value.get().is_none()
-                    >
-                        {move || match copy_status.get() {
-                            CopyStatus::Idle => "复制",
-                            CopyStatus::Copied => "已复制",
-                            CopyStatus::Failed => "复制失败",
-                        }}
-                    </button>
-                </div>
-            </div>
-            <pre class=format!("code-view code-view-{}", language)>
-                <code inner_html=move || highlight_code(
-                    &value.get().unwrap_or_else(|| "等待生成...".to_string()),
-                    language,
-                )></code>
-            </pre>
-        </div>
-    }
-    .into_any()
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum ArtifactTab {
-    Yaml,
-    Xml,
-}
-
-#[component]
-fn ArtifactTabs(
-    dsl: ReadSignal<Option<String>>,
-    set_dsl: WriteSignal<Option<String>>,
-    xml: ReadSignal<Option<String>>,
-    set_xml: WriteSignal<Option<String>>,
-    set_source: WriteSignal<String>,
-) -> impl IntoView {
-    let active = RwSignal::new(ArtifactTab::Yaml);
-    view! {
-        <div class="artifact-workbench">
-            <div class="artifact-tabs" role="tablist" aria-label="模型产物">
-                <button
-                    class=move || if active.get() == ArtifactTab::Yaml { "artifact-tab is-active" } else { "artifact-tab" }
-                    on:click=move |_| active.set(ArtifactTab::Yaml)
-                    role="tab"
-                    aria-selected=move || active.get() == ArtifactTab::Yaml
-                >"DSL YAML"</button>
-                <button
-                    class=move || if active.get() == ArtifactTab::Xml { "artifact-tab is-active" } else { "artifact-tab" }
-                    on:click=move |_| active.set(ArtifactTab::Xml)
-                    role="tab"
-                    aria-selected=move || active.get() == ArtifactTab::Xml
-                >"DMN XML"</button>
-            </div>
-            <div class="artifact-tab-content">
-                <Show when=move || active.get() == ArtifactTab::Yaml>
-                    <YamlArtifact value=dsl set_value=Some(set_dsl) set_xml=Some(set_xml) set_source=Some(set_source) />
-                </Show>
-                <Show when=move || active.get() == ArtifactTab::Xml>
-                    <Artifact label="DMN XML" language="xml" value=xml set_value=None set_xml=None set_source=None />
-                </Show>
-            </div>
-        </div>
-    }
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum YamlView {
-    Model,
-    Dependency,
-    Structure,
-    Source,
-}
-
-#[derive(Clone, PartialEq, Eq, Default)]
-struct YamlSummary {
-    name: String,
-    namespace: String,
-    description: String,
-    item_definitions: usize,
-    inputs: usize,
-    input_details: Vec<YamlField>,
-    type_details: Vec<YamlField>,
-    decisions: Vec<YamlDecision>,
-    graph_nodes: Vec<YamlGraphNode>,
-    graph_edges: Vec<YamlGraphEdge>,
-    bkms: Vec<YamlKnowledgeModel>,
-    decision_services: Vec<YamlDecisionService>,
-    knowledge_sources: usize,
-    text_annotations: usize,
-    raw: Option<YamlValue>,
-    error: Option<String>,
-}
-
-#[derive(Clone, PartialEq, Eq, Default)]
-struct YamlDecision {
-    name: String,
-    element_type: String,
-    description: String,
-    type_ref: String,
-    hit_policy: String,
-    inputs: Vec<String>,
-    outputs: Vec<String>,
-    rules: Vec<YamlRule>,
-    required_inputs: Vec<String>,
-    required_decisions: Vec<String>,
-    required_knowledge: Vec<String>,
-    expression_type: String,
-    expression_summary: String,
-}
-
-#[derive(Clone, PartialEq, Eq, Default)]
-struct YamlKnowledgeModel {
-    name: String,
-    element_type: String,
-    description: String,
-    type_ref: String,
-    parameters: Vec<String>,
-    expression_type: String,
-    expression_summary: String,
-}
-
-#[derive(Clone, PartialEq, Eq, Default)]
-struct YamlDecisionService {
-    name: String,
-    element_type: String,
-    description: String,
-    input_data: Vec<String>,
-    encapsulated_decisions: Vec<String>,
-    output_decisions: Vec<String>,
-    expression_summary: String,
-}
-
-#[derive(Clone, PartialEq, Eq, Default)]
-struct YamlGraphNode {
-    name: String,
-    kind: String,
-    x: i32,
-    y: i32,
-}
-
-#[derive(Clone, PartialEq, Eq, Default)]
-struct YamlGraphEdge {
-    source: String,
-    target: String,
-    kind: String,
-    x1: i32,
-    y1: i32,
-    x2: i32,
-    y2: i32,
-}
-
-const YAML_GRAPH_WIDTH: i32 = 800;
-const YAML_GRAPH_NODE_WIDTH: i32 = 156;
-const YAML_GRAPH_NODE_HEIGHT: i32 = 50;
-
-fn yaml_graph_height(nodes: &[YamlGraphNode]) -> i32 {
-    nodes
-        .iter()
-        .map(|node| node.y + YAML_GRAPH_NODE_HEIGHT + 34)
-        .max()
-        .unwrap_or(260)
-        .max(260)
-}
-
-fn yaml_graph_edge_anchors(source: &YamlGraphNode, target: &YamlGraphNode) -> (i32, i32, i32, i32) {
-    if source.x < target.x {
-        (
-            source.x + YAML_GRAPH_NODE_WIDTH,
-            source.y + YAML_GRAPH_NODE_HEIGHT / 2,
-            target.x,
-            target.y + YAML_GRAPH_NODE_HEIGHT / 2,
-        )
-    } else if source.x > target.x {
-        (
-            source.x,
-            source.y + YAML_GRAPH_NODE_HEIGHT / 2,
-            target.x + YAML_GRAPH_NODE_WIDTH,
-            target.y + YAML_GRAPH_NODE_HEIGHT / 2,
-        )
-    } else if source.y <= target.y {
-        (
-            source.x + YAML_GRAPH_NODE_WIDTH / 2,
-            source.y + YAML_GRAPH_NODE_HEIGHT,
-            target.x + YAML_GRAPH_NODE_WIDTH / 2,
-            target.y,
-        )
-    } else {
-        (
-            source.x + YAML_GRAPH_NODE_WIDTH / 2,
-            source.y,
-            target.x + YAML_GRAPH_NODE_WIDTH / 2,
-            target.y + YAML_GRAPH_NODE_HEIGHT,
-        )
-    }
-}
-
-fn yaml_graph_edge_path(edge: &YamlGraphEdge) -> String {
-    if edge.x1 == edge.x2 {
-        let control = (edge.y2 - edge.y1) as f32 * 0.45;
-        format!(
-            "M {} {} C {} {:.1}, {} {:.1}, {} {}",
-            edge.x1,
-            edge.y1,
-            edge.x1,
-            edge.y1 as f32 + control,
-            edge.x2,
-            edge.y2 as f32 - control,
-            edge.x2,
-            edge.y2
-        )
-    } else {
-        let control = (edge.x2 - edge.x1) as f32 * 0.45;
-        format!(
-            "M {} {} C {:.1} {}, {:.1} {}, {} {}",
-            edge.x1,
-            edge.y1,
-            edge.x1 as f32 + control,
-            edge.y1,
-            edge.x2 as f32 - control,
-            edge.y2,
-            edge.x2,
-            edge.y2
-        )
-    }
-}
-
-fn yaml_graph_label(name: &str) -> String {
-    const MAX_CHARS: usize = 18;
-    let mut chars = name.chars();
-    let label = chars.by_ref().take(MAX_CHARS).collect::<String>();
-    if chars.next().is_some() {
-        format!("{label}...")
-    } else {
-        label
-    }
-}
-
-fn yaml_graph_knowledge_points(node: &YamlGraphNode) -> String {
-    let x = node.x;
-    let y = node.y;
-    let right = x + YAML_GRAPH_NODE_WIDTH;
-    let bottom = y + YAML_GRAPH_NODE_HEIGHT;
-    format!(
-        "{},{} {},{} {},{} {},{} {},{} {},{}",
-        x + 16,
-        y,
-        x,
-        y + 16,
-        x,
-        bottom,
-        right - 16,
-        bottom,
-        right,
-        bottom - 16,
-        right,
-        y
-    )
-}
-
-#[derive(Clone, PartialEq, Eq, Default)]
-struct YamlRule {
-    inputs: Vec<String>,
-    outputs: Vec<String>,
-    annotation: String,
-}
-
-#[derive(Clone, PartialEq, Eq, Default)]
-struct YamlField {
-    name: String,
-    element_type: String,
-    type_ref: String,
-    description: String,
-}
-
-fn yaml_map(value: &YamlValue) -> Option<&serde_yaml::Mapping> {
-    match value {
-        YamlValue::Mapping(map) => Some(map),
-        _ => None,
-    }
-}
-
-fn yaml_get<'a>(map: &'a serde_yaml::Mapping, key: &str) -> Option<&'a YamlValue> {
-    map.get(YamlValue::String(key.to_string()))
-}
-
-fn yaml_text(value: Option<&YamlValue>) -> String {
-    let Some(value) = value else {
-        return String::new();
-    };
-    match value {
-        YamlValue::Null => String::new(),
-        YamlValue::String(text) => text.clone(),
-        _ => serde_yaml::to_string(value)
-            .unwrap_or_default()
-            .trim()
-            .to_string(),
-    }
-}
-
-fn yaml_list(value: Option<&YamlValue>) -> Vec<YamlValue> {
-    match value {
-        Some(YamlValue::Sequence(items)) => items.clone(),
-        _ => Vec::new(),
-    }
-}
-
-fn yaml_joined_list(value: Option<&YamlValue>) -> String {
-    yaml_list(value)
-        .iter()
-        .map(|item| yaml_text(Some(item)))
-        .filter(|item| !item.is_empty())
-        .collect::<Vec<_>>()
-        .join(", ")
-}
-
-/// Builds a compact, readable preview for every boxed-expression variant.
-/// Invocation and function expressions do not have a top-level `expression`
-/// field, so falling back to a generic placeholder made those definitions
-/// appear empty in the model panel.
-fn yaml_expression_preview(logic: &serde_yaml::Mapping) -> String {
-    let expression_type = yaml_text(yaml_get(logic, "type"));
-    match expression_type.as_str() {
-        "literalExpression" => ["expression", "text", "value", "body", "literal"]
-            .iter()
-            .find_map(|key| yaml_get(logic, key).map(|value| yaml_text(Some(value))))
-            .unwrap_or_default(),
-        "invocation" => {
-            let bkm = yaml_text(yaml_get(logic, "bkm"));
-            let bindings = yaml_list(yaml_get(logic, "bindings"))
-                .iter()
-                .filter_map(|value| {
-                    let binding = yaml_map(value)?;
-                    let parameter = yaml_text(yaml_get(binding, "parameter"));
-                    let expression = yaml_text(yaml_get(binding, "expression"));
-                    Some(if parameter.is_empty() {
-                        expression
-                    } else if expression.is_empty() {
-                        parameter
-                    } else {
-                        format!("{parameter} = {expression}")
-                    })
-                })
-                .filter(|binding| !binding.is_empty())
-                .collect::<Vec<_>>();
-            if bindings.is_empty() {
-                format!("{bkm}()")
-            } else {
-                format!("{bkm}({})", bindings.join(", "))
-            }
-        }
-        "functionDefinition" => {
-            let parameters = yaml_list(yaml_get(logic, "parameters"))
-                .iter()
-                .filter_map(|value| {
-                    let parameter = yaml_map(value)?;
-                    let name = yaml_text(yaml_get(parameter, "name"));
-                    let type_ref = yaml_text(yaml_get(parameter, "typeRef"));
-                    Some(if type_ref.is_empty() {
-                        name
-                    } else {
-                        format!("{name}: {type_ref}")
-                    })
-                })
-                .filter(|parameter| !parameter.is_empty())
-                .collect::<Vec<_>>();
-            let body = yaml_get(logic, "body")
-                .and_then(yaml_map)
-                .map(yaml_expression_preview)
-                .unwrap_or_default();
-            format!(
-                "function ({}){}",
-                parameters.join(", "),
-                if body.is_empty() {
-                    String::new()
-                } else {
-                    format!(" {{ {body} }}")
-                }
-            )
-        }
-        "context" => {
-            let entries = yaml_list(yaml_get(logic, "entries"))
-                .iter()
-                .filter_map(|value| {
-                    let entry = yaml_map(value)?;
-                    let key = yaml_text(yaml_get(entry, "key"));
-                    let value = yaml_get(entry, "value")
-                        .and_then(yaml_map)
-                        .map(yaml_expression_preview)
-                        .unwrap_or_else(|| yaml_text(yaml_get(entry, "value")));
-                    Some(if value.is_empty() {
-                        key
-                    } else {
-                        format!("{key}: {value}")
-                    })
-                })
-                .filter(|entry| !entry.is_empty())
-                .collect::<Vec<_>>();
-            format!("{{ {} }}", entries.join(", "))
-        }
-        "list" => format!("[{}]", yaml_joined_list(yaml_get(logic, "items"))),
-        "relation" => {
-            let columns = yaml_joined_list(yaml_get(logic, "columns"));
-            let rows = yaml_list(yaml_get(logic, "rows")).len();
-            format!("relation ({columns}) · {rows} 行")
-        }
-        "conditional" => {
-            let condition = yaml_text(yaml_get(logic, "condition"));
-            let then = yaml_get(logic, "then")
-                .and_then(yaml_map)
-                .map(yaml_expression_preview)
-                .unwrap_or_default();
-            let else_ = yaml_get(logic, "else")
-                .and_then(yaml_map)
-                .map(yaml_expression_preview)
-                .unwrap_or_default();
-            format!("if {condition} then {then} else {else_}")
-        }
-        "filter" => format!(
-            "{}[{}]",
-            yaml_text(yaml_get(logic, "source")),
-            yaml_text(yaml_get(logic, "filter"))
-        ),
-        "for" => format!(
-            "for {} in {} return {}",
-            yaml_text(yaml_get(logic, "variable")),
-            yaml_text(yaml_get(logic, "in")),
-            yaml_text(yaml_get(logic, "return"))
-        ),
-        "quantified" => format!(
-            "{} {} in {} satisfies {}",
-            yaml_text(yaml_get(logic, "kind")),
-            yaml_text(yaml_get(logic, "variable")),
-            yaml_text(yaml_get(logic, "in")),
-            yaml_text(yaml_get(logic, "satisfies"))
-        ),
-        "decisionTable" => {
-            let inputs = yaml_list(yaml_get(logic, "inputs")).len();
-            let outputs = yaml_list(yaml_get(logic, "outputs")).len();
-            let rules = yaml_list(yaml_get(logic, "rules")).len();
-            format!("决策表 · {inputs} 个输入 · {outputs} 个输出 · {rules} 条规则")
-        }
-        _ => serde_yaml::to_string(logic)
-            .unwrap_or_default()
-            .trim()
-            .to_string(),
-    }
-}
-
-fn yaml_summary(source: &str) -> YamlSummary {
-    let raw = match serde_yaml::from_str::<YamlValue>(source) {
-        Ok(value) => value,
-        Err(error) => {
-            return YamlSummary {
-                error: Some(format!("YAML 解析失败：{error}")),
-                ..Default::default()
-            };
-        }
-    };
-    let Some(root) = yaml_map(&raw) else {
-        return YamlSummary {
-            raw: Some(raw),
-            error: Some("YAML 根节点必须是对象".into()),
-            ..Default::default()
-        };
-    };
-    let decisions = yaml_list(yaml_get(root, "decisions"))
-        .iter()
-        .filter_map(|value| {
-            let map = yaml_map(value)?;
-            let logic = yaml_get(map, "logic").and_then(yaml_map);
-            let table = logic.filter(|logic| yaml_text(yaml_get(logic, "type")) == "decisionTable");
-            let expression_type = logic
-                .map(|logic| yaml_text(yaml_get(logic, "type")))
-                .unwrap_or_else(|| "literalExpression".into());
-            let expression_summary = logic.map(yaml_expression_preview).unwrap_or_default();
-            let inputs = table
-                .and_then(|table| yaml_get(table, "inputs"))
-                .map(|value| yaml_list(Some(value)))
-                .unwrap_or_default()
-                .iter()
-                .map(|value| {
-                    yaml_map(value)
-                        .map(|input| yaml_text(yaml_get(input, "name")))
-                        .unwrap_or_default()
-                })
-                .collect::<Vec<_>>();
-            let outputs = table
-                .and_then(|table| yaml_get(table, "outputs"))
-                .map(|value| yaml_list(Some(value)))
-                .unwrap_or_default()
-                .iter()
-                .map(|value| {
-                    yaml_map(value)
-                        .map(|output| yaml_text(yaml_get(output, "name")))
-                        .unwrap_or_default()
-                })
-                .collect::<Vec<_>>();
-            let rules = table
-                .and_then(|table| yaml_get(table, "rules"))
-                .map(|value| yaml_list(Some(value)))
-                .unwrap_or_default()
-                .iter()
-                .filter_map(|value| {
-                    let rule = yaml_map(value)?;
-                    Some(YamlRule {
-                        inputs: yaml_list(yaml_get(rule, "inputEntries"))
-                            .iter()
-                            .map(|v| yaml_text(Some(v)))
-                            .collect(),
-                        outputs: yaml_list(yaml_get(rule, "outputEntries"))
-                            .iter()
-                            .map(|v| yaml_text(Some(v)))
-                            .collect(),
-                        annotation: yaml_text(yaml_get(rule, "annotation")),
-                    })
-                })
-                .collect();
-            Some(YamlDecision {
-                name: yaml_text(yaml_get(map, "name")),
-                element_type: "决策".into(),
-                description: yaml_text(yaml_get(map, "description")),
-                type_ref: yaml_text(yaml_get(map, "typeRef")),
-                hit_policy: table
-                    .map(|table| yaml_text(yaml_get(table, "hitPolicy")))
-                    .unwrap_or_default(),
-                inputs,
-                outputs,
-                rules,
-                required_inputs: yaml_list(yaml_get(map, "requiredInputs"))
-                    .iter()
-                    .map(|value| yaml_text(Some(value)))
-                    .collect(),
-                required_decisions: yaml_list(yaml_get(map, "requiredDecisions"))
-                    .iter()
-                    .map(|value| yaml_text(Some(value)))
-                    .collect(),
-                required_knowledge: yaml_list(yaml_get(map, "requiredKnowledge"))
-                    .iter()
-                    .map(|value| yaml_text(Some(value)))
-                    .collect(),
-                expression_type,
-                expression_summary,
-            })
-        })
-        .collect::<Vec<_>>();
-    let bkms = yaml_list(yaml_get(root, "bkms"))
-        .iter()
-        .filter_map(|value| {
-            let map = yaml_map(value)?;
-            let logic = yaml_get(map, "logic").and_then(yaml_map);
-            Some(YamlKnowledgeModel {
-                name: yaml_text(yaml_get(map, "name")),
-                element_type: "业务知识模型".into(),
-                description: yaml_text(yaml_get(map, "description")),
-                type_ref: yaml_text(yaml_get(map, "typeRef")),
-                parameters: yaml_list(yaml_get(map, "parameters"))
-                    .iter()
-                    .filter_map(|value| {
-                        let parameter = yaml_map(value)?;
-                        let name = yaml_text(yaml_get(parameter, "name"));
-                        let type_ref = yaml_text(yaml_get(parameter, "typeRef"));
-                        Some(if type_ref.is_empty() {
-                            name
-                        } else {
-                            format!("{name}: {type_ref}")
-                        })
-                    })
-                    .filter(|parameter| !parameter.is_empty())
-                    .collect(),
-                expression_type: logic
-                    .map(|logic| yaml_text(yaml_get(logic, "type")))
-                    .unwrap_or_else(|| "literalExpression".into()),
-                expression_summary: logic.map(yaml_expression_preview).unwrap_or_default(),
-            })
-        })
-        .filter(|bkm| !bkm.name.is_empty())
-        .collect::<Vec<_>>();
-    let decision_services = yaml_list(yaml_get(root, "decisionServices"))
-        .iter()
-        .filter_map(|value| {
-            let map = yaml_map(value)?;
-            let input_data = yaml_joined_list(yaml_get(map, "inputData"));
-            let encapsulated_decisions = yaml_joined_list(yaml_get(map, "encapsulatedDecisions"));
-            let output_decisions = yaml_joined_list(yaml_get(map, "outputDecisions"));
-            let groups = [
-                (!input_data.is_empty(), format!("输入: {input_data}")),
-                (
-                    !encapsulated_decisions.is_empty(),
-                    format!("封装: {encapsulated_decisions}"),
-                ),
-                (
-                    !output_decisions.is_empty(),
-                    format!("输出: {output_decisions}"),
-                ),
-            ];
-            Some(YamlDecisionService {
-                name: yaml_text(yaml_get(map, "name")),
-                element_type: "决策服务".into(),
-                description: yaml_text(yaml_get(map, "description")),
-                input_data: yaml_list(yaml_get(map, "inputData"))
-                    .iter()
-                    .map(|value| yaml_text(Some(value)))
-                    .filter(|value| !value.is_empty())
-                    .collect(),
-                encapsulated_decisions: yaml_list(yaml_get(map, "encapsulatedDecisions"))
-                    .iter()
-                    .map(|value| yaml_text(Some(value)))
-                    .filter(|value| !value.is_empty())
-                    .collect(),
-                output_decisions: yaml_list(yaml_get(map, "outputDecisions"))
-                    .iter()
-                    .map(|value| yaml_text(Some(value)))
-                    .filter(|value| !value.is_empty())
-                    .collect(),
-                expression_summary: groups
-                    .into_iter()
-                    .filter_map(|(present, text)| present.then_some(text))
-                    .collect::<Vec<_>>()
-                    .join(" · "),
-            })
-        })
-        .filter(|service| !service.name.is_empty())
-        .collect::<Vec<_>>();
-    let count = |key| yaml_list(yaml_get(root, key)).len();
-    let input_names = yaml_list(yaml_get(root, "inputs"))
-        .iter()
-        .filter_map(|value| yaml_map(value).map(|map| yaml_text(yaml_get(map, "name"))))
-        .filter(|name| !name.is_empty())
-        .collect::<Vec<_>>();
-    let input_details = yaml_list(yaml_get(root, "inputs"))
-        .iter()
-        .filter_map(|value| {
-            let map = yaml_map(value)?;
-            Some(YamlField {
-                name: yaml_text(yaml_get(map, "name")),
-                element_type: "输入数据".into(),
-                type_ref: yaml_text(yaml_get(map, "typeRef")),
-                description: yaml_text(yaml_get(map, "description")),
-            })
-        })
-        .filter(|field| !field.name.is_empty())
-        .collect::<Vec<_>>();
-    let type_details = yaml_list(yaml_get(root, "itemDefinitions"))
-        .iter()
-        .filter_map(|value| {
-            let map = yaml_map(value)?;
-            Some(YamlField {
-                name: yaml_text(yaml_get(map, "name")),
-                element_type: "数据类型".into(),
-                type_ref: yaml_text(yaml_get(map, "type")),
-                description: yaml_text(yaml_get(map, "description")),
-            })
-        })
-        .filter(|field| !field.name.is_empty())
-        .collect::<Vec<_>>();
-    let bkm_names = yaml_list(yaml_get(root, "bkms"))
-        .iter()
-        .filter_map(|value| yaml_map(value).map(|map| yaml_text(yaml_get(map, "name"))))
-        .filter(|name| !name.is_empty())
-        .collect::<Vec<_>>();
-    let mut graph_nodes = Vec::new();
-    for (index, name) in input_names.iter().enumerate() {
-        graph_nodes.push(YamlGraphNode {
-            name: name.clone(),
-            kind: "input".into(),
-            x: 34,
-            y: 34 + index as i32 * 58,
-        });
-    }
-    for (index, decision) in decisions.iter().enumerate() {
-        graph_nodes.push(YamlGraphNode {
-            name: decision.name.clone(),
-            kind: "decision".into(),
-            x: 322,
-            y: 34 + index as i32 * 72,
-        });
-    }
-    for (index, name) in bkm_names.iter().enumerate() {
-        graph_nodes.push(YamlGraphNode {
-            name: name.clone(),
-            kind: "knowledge".into(),
-            x: 610,
-            y: 34 + index as i32 * 58,
-        });
-    }
-    let position = |name: &str| graph_nodes.iter().find(|node| node.name == name).cloned();
-    let mut graph_edges = Vec::new();
-    for decision in &decisions {
-        for source in decision
-            .required_inputs
-            .iter()
-            .chain(decision.required_decisions.iter())
-            .chain(decision.required_knowledge.iter())
-        {
-            if let (Some(source_node), Some(target_node)) =
-                (position(source), position(&decision.name))
-            {
-                let (x1, y1, x2, y2) = yaml_graph_edge_anchors(&source_node, &target_node);
-                graph_edges.push(YamlGraphEdge {
-                    source: source.to_string(),
-                    target: decision.name.clone(),
-                    kind: source_node.kind,
-                    x1,
-                    y1,
-                    x2,
-                    y2,
-                });
-            }
-        }
-    }
-    YamlSummary {
-        name: yaml_text(yaml_get(root, "name")),
-        namespace: yaml_text(yaml_get(root, "namespace")),
-        description: yaml_text(yaml_get(root, "description")),
-        item_definitions: count("itemDefinitions"),
-        inputs: count("inputs"),
-        input_details,
-        type_details,
-        decisions,
-        graph_nodes,
-        graph_edges,
-        bkms,
-        decision_services,
-        knowledge_sources: count("knowledgeSources"),
-        text_annotations: count("textAnnotations"),
-        raw: Some(raw),
-        error: None,
-    }
-}
-
-#[component]
-fn YamlArtifact(
-    value: ReadSignal<Option<String>>,
-    set_value: Option<WriteSignal<Option<String>>>,
-    set_xml: Option<WriteSignal<Option<String>>>,
-    set_source: Option<WriteSignal<String>>,
-) -> impl IntoView {
-    let view = RwSignal::new(YamlView::Model);
-    let copy_status = RwSignal::new(CopyStatus::Idle);
-    let source_text = RwSignal::new(value.get_untracked().unwrap_or_default());
-    let source_error = RwSignal::new(None::<String>);
-    let compile_state = RwSignal::new(None::<String>);
-    let editing_source = RwSignal::new(false);
-    Effect::new(move |_| {
-        let next_value = value.get();
-        source_text.set(next_value.clone().unwrap_or_default());
-        if next_value.is_none() {
-            source_error.set(None);
-            compile_state.set(None);
-            editing_source.set(false);
-        }
-    });
-    let summary = Memo::new(move |_| {
-        value
-            .get()
-            .map(|source| yaml_summary(&source))
-            .unwrap_or_default()
-    });
-    let copy = move |_| {
-        let Some(content) = value.get() else {
-            return;
-        };
-        spawn_local(async move {
-            let copied = if let Some(window) = web_sys::window() {
-                JsFuture::from(window.navigator().clipboard().write_text(&content))
-                    .await
-                    .is_ok()
-            } else {
-                false
-            };
-            copy_status.set(if copied {
-                CopyStatus::Copied
-            } else {
-                CopyStatus::Failed
-            });
-        });
-    };
-    view! {
-        <div class="artifact-block yaml-artifact">
-            <div class="artifact-heading">
-                <span>"DSL YAML"</span>
-                <div class="artifact-heading-actions">
-                    <span class="artifact-type">"YAML"</span>
-                    <button class="button button-quiet artifact-copy" on:click=copy title="复制 YAML">
-                        {move || match copy_status.get() { CopyStatus::Idle => "复制", CopyStatus::Copied => "已复制", CopyStatus::Failed => "复制失败" }}
-                    </button>
-                </div>
-            </div>
-            <div class="yaml-view-tabs" role="tablist" aria-label="YAML 展示方式">
-                <button class=move || if view.get() == YamlView::Model { "yaml-view-tab is-active" } else { "yaml-view-tab" } on:click=move |_| view.set(YamlView::Model)>"模型"</button>
-                <button class=move || if view.get() == YamlView::Dependency { "yaml-view-tab is-active" } else { "yaml-view-tab" } on:click=move |_| view.set(YamlView::Dependency)>"决策依赖图"</button>
-                <button class=move || if view.get() == YamlView::Structure { "yaml-view-tab is-active" } else { "yaml-view-tab" } on:click=move |_| view.set(YamlView::Structure)>"结构"</button>
-                <button class=move || if view.get() == YamlView::Source { "yaml-view-tab is-active" } else { "yaml-view-tab" } on:click=move |_| view.set(YamlView::Source)>"源码"</button>
-            </div>
-            <Show when=move || compile_state.get().is_some()>
-                <div class=move || if compile_state.get().as_deref() == Some("DMN XML 已同步") { "yaml-sync-status is-success" } else if compile_state.get().as_deref() == Some("YAML 已应用，XML 编译失败") { "yaml-sync-status is-error" } else { "yaml-sync-status" }>{move || compile_state.get().unwrap_or_default()}</div>
-            </Show>
-            <Show when=move || view.get() == YamlView::Model>
-                <YamlModelView summary=summary />
-            </Show>
-            <Show when=move || view.get() == YamlView::Dependency>
-                <YamlDependencyGraphView summary=summary />
-            </Show>
-            <Show when=move || view.get() == YamlView::Structure>
-                <YamlStructureView summary=summary />
-            </Show>
-            <Show when=move || view.get() == YamlView::Source>
-                <div class="yaml-view-content">
-                    <Show
-                        when=move || editing_source.get()
-                        fallback=move || view! {
-                            <div class="yaml-source-preview">
-                                <pre class="code-view code-view-yaml yaml-source-view"><code inner_html=move || highlight_code(&value.get().unwrap_or_else(|| "等待生成...".into()), "yaml")></code></pre>
-                                <div class="yaml-source-actions"><button class="button button-quiet" on:click=move |_| editing_source.set(true) disabled=move || set_value.is_none()>"编辑 YAML"</button></div>
-                            </div>
-                        }
-                    >
-                        <div class="yaml-source-editor">
-                            <textarea class="yaml-source-input" prop:value=source_text on:input=move |event| { source_text.set(event_target_value(&event)); source_error.set(None); } placeholder="编辑 DSL YAML..."></textarea>
-                            <div class="yaml-source-actions">
-                                <Show when=move || source_error.get().is_some()><span class="yaml-source-error">{move || source_error.get().unwrap_or_default()}</span></Show>
-                                <button class="button button-quiet" on:click=move |_| { source_text.set(value.get_untracked().unwrap_or_default()); source_error.set(None); editing_source.set(false); } >"取消"</button>
-                                <button class="button button-primary" on:click=move |_| {
-                                    let text = source_text.get();
-                                    match serde_yaml::from_str::<YamlValue>(&text) {
-                                        Ok(parsed) if yaml_map(&parsed).is_some() => {
-                                            if let Some(set_value) = set_value { set_value.set(Some(text.clone())); }
-                                            if let Some(set_source) = set_source { set_source.set(text.clone()); }
-                                            compile_state.set(Some("正在编译 DMN XML...".into()));
-                                            source_error.set(None);
-                                            editing_source.set(false);
-                                            if let (Some(set_xml), Some(token)) = (set_xml, auth_token().get_untracked()) {
-                                                let dsl_text = source_text.get();
-                                                spawn_local(async move {
-                                                    match api::compile_dsl(&token, dsl_text).await {
-                                                        Ok(xml) => { set_xml.set(Some(xml)); compile_state.set(Some("DMN XML 已同步".into())); }
-                                                        Err(error) => { compile_state.set(Some("YAML 已应用，XML 编译失败".into())); source_error.set(Some(error)); }
-                                                    }
-                                                });
-                                            } else {
-                                                compile_state.set(Some("YAML 已应用".into()));
-                                            }
-                                            view.set(YamlView::Model);
-                                        }
-                                        Ok(_) => source_error.set(Some("YAML 根节点必须是对象".into())),
-                                        Err(error) => source_error.set(Some(format!("YAML 解析失败：{error}"))),
-                                    }
-                                } disabled=move || set_value.is_none()>"应用 YAML"</button>
-                            </div>
-                        </div>
-                    </Show>
-                </div>
-            </Show>
-        </div>
-    }
-}
-
-fn yaml_kind(value: &YamlValue) -> &'static str {
-    match value {
-        YamlValue::Mapping(_) => "对象",
-        YamlValue::Sequence(_) => "数组",
-        YamlValue::String(_) => "字符串",
-        YamlValue::Number(_) => "数字",
-        YamlValue::Bool(_) => "布尔值",
-        YamlValue::Null => "空值",
-        YamlValue::Tagged(_) => "值",
-    }
-}
-
-fn yaml_preview(value: &YamlValue) -> String {
-    match value {
-        YamlValue::Mapping(map) => format!("{} 个字段", map.len()),
-        YamlValue::Sequence(items) => format!("{} 项", items.len()),
-        _ => yaml_text(Some(value)),
-    }
-}
-
-fn indexed(values: &[String]) -> Vec<(usize, String)> {
-    values.iter().cloned().enumerate().collect()
-}
-
-#[derive(Clone, PartialEq, Eq)]
-struct YamlPathEntry {
-    path: String,
-    kind: String,
-    preview: String,
-    depth: usize,
-}
-
-fn collect_yaml_paths(
-    value: &YamlValue,
-    path: &str,
-    depth: usize,
-    output: &mut Vec<YamlPathEntry>,
-) {
-    if depth > 3 {
-        return;
-    }
-    match value {
-        YamlValue::Mapping(map) => {
-            for (key, child) in map {
-                let key = yaml_text(Some(key));
-                let child_path = if path.is_empty() {
-                    key
-                } else {
-                    format!("{path}.{key}")
-                };
-                output.push(YamlPathEntry {
-                    path: child_path.clone(),
-                    kind: yaml_kind(child).into(),
-                    preview: yaml_preview(child),
-                    depth: depth + 1,
-                });
-                collect_yaml_paths(child, &child_path, depth + 1, output);
-            }
-        }
-        YamlValue::Sequence(items) => {
-            for (index, child) in items.iter().enumerate() {
-                let child_path = format!("{path}[{index}]");
-                output.push(YamlPathEntry {
-                    path: child_path.clone(),
-                    kind: yaml_kind(child).into(),
-                    preview: yaml_preview(child),
-                    depth: depth + 1,
-                });
-                collect_yaml_paths(child, &child_path, depth + 1, output);
-            }
-        }
-        _ => {}
-    }
-}
-
-#[component]
-fn YamlModelView(summary: Memo<YamlSummary>) -> impl IntoView {
-    let selected = RwSignal::new(None::<String>);
-    view! {
-        <Show
-            when=move || summary.get().error.is_some()
-            fallback=move || view! {
-                <div class="yaml-model-view yaml-view-content">
-                    <div class="yaml-overview">
-                        <div class="yaml-overview-title">
-                            <span class="yaml-kicker">"DMN DEFINITIONS"</span>
-                            <h3>{move || summary.get().name}</h3>
-                            <p>{move || summary.get().description}</p>
-                            <code>{move || summary.get().namespace}</code>
-                        </div>
-                        <div class="yaml-stat-grid">
-                            <div><strong>{move || summary.get().inputs}</strong><span>"输入"</span></div>
-                            <div><strong>{move || summary.get().decisions.len()}</strong><span>"决策"</span></div>
-                            <div><strong>{move || summary.get().item_definitions}</strong><span>"数据类型"</span></div>
-                            <div><strong>{move || summary.get().decision_services.len()}</strong><span>"决策服务"</span></div>
-                        </div>
-                    </div>
-                    <YamlElementNavigator summary=summary selected=selected />
-                    <YamlDataCatalog summary=summary />
-                    <div class="yaml-section-heading"><span>"决策定义"</span><span>{move || format!("{} 个", summary.get().decisions.len())}</span></div>
-                    <div class="yaml-decision-list">
-                        <For
-                            each=move || summary.get().decisions
-                            key=|decision| decision.name.clone()
-                            let:decision
-                        >
-                            <YamlDecisionView decision=decision selected=selected />
-                        </For>
-                    </div>
-                    <div class="yaml-section-heading"><span>"业务知识模型"</span><span>{move || format!("{} 个", summary.get().bkms.len())}</span></div>
-                    <div class="yaml-decision-list">
-                        <For
-                            each=move || summary.get().bkms
-                            key=|bkm| bkm.name.clone()
-                            let:bkm
-                        >
-                            <YamlKnowledgeModelView model=bkm selected=selected />
-                        </For>
-                        <Show when=move || summary.get().bkms.is_empty()>
-                            <p class="yaml-empty-copy">"未定义业务知识模型"</p>
-                        </Show>
-                    </div>
-                    <div class="yaml-section-heading"><span>"决策服务"</span><span>{move || format!("{} 个", summary.get().decision_services.len())}</span></div>
-                    <div class="yaml-decision-list">
-                        <For
-                            each=move || summary.get().decision_services
-                            key=|service| service.name.clone()
-                            let:service
-                        >
-                            <YamlDecisionServiceView service=service selected=selected />
-                        </For>
-                        <Show when=move || summary.get().decision_services.is_empty()>
-                            <p class="yaml-empty-copy">"未定义决策服务"</p>
-                        </Show>
-                    </div>
-                </div>
-            }
-        >
-            <div class="yaml-parse-error yaml-view-content">{move || summary.get().error.unwrap_or_else(|| "YAML 无法解析".into())}</div>
-        </Show>
-    }
-}
-
-#[component]
-fn YamlDecisionView(decision: YamlDecision, selected: RwSignal<Option<String>>) -> impl IntoView {
-    let has_table = !decision.rules.is_empty();
-    let decision_name = decision.name.clone();
-    let headers = RwSignal::new(decision.inputs.clone());
-    let output_headers = RwSignal::new(decision.outputs.clone());
-    let rows = RwSignal::new(
-        decision
-            .rules
-            .clone()
-            .into_iter()
-            .enumerate()
-            .collect::<Vec<_>>(),
-    );
-    view! {
-        <article class=move || if selected.get().as_deref() == Some(decision_name.as_str()) { "yaml-decision-card is-selected" } else { "yaml-decision-card" }>
-            <div class="yaml-decision-heading">
-                <div><span class="yaml-node-badge">"D"</span><div><h4>{decision.name.clone()}</h4><p>{decision.description.clone()}</p></div></div>
-                <div class="yaml-decision-meta"><span>{decision.element_type.clone()}</span><span>{decision.type_ref.clone()}</span><span>{if decision.hit_policy.is_empty() { "LITERAL".into() } else { decision.hit_policy.clone() }}</span></div>
-            </div>
-            <Show when=move || has_table fallback=move || view! {
-                <div class="yaml-expression-card">
-                    <div class="yaml-expression-type"><span>"表达式类型"</span><strong>{decision.expression_type.clone()}</strong></div>
-                    <pre class="yaml-expression">{if decision.expression_summary.is_empty() { "该表达式未提供可直接预览的文本。".into() } else { decision.expression_summary.clone() }}</pre>
-                </div>
-            }>
-                <div class="yaml-table-wrap">
-                    <table class="yaml-decision-table">
-                        <thead><tr><For each=move || headers.get() key=|header| header.clone() let:header><th>{header}</th></For><For each=move || output_headers.get() key=|header| format!("out-{header}") let:header><th class="yaml-output-header">{header}</th></For></tr></thead>
-                        <tbody>
-                            <For each=move || rows.get() key=|(index, _)| *index let:row>
-                                <tr><For each=move || indexed(&row.1.inputs) key=|(index, _)| *index let:cell><td>{cell.1}</td></For><For each=move || indexed(&row.1.outputs) key=|(index, _)| format!("out-{index}") let:cell><td class="yaml-output-cell">{cell.1}</td></For></tr>
-                            </For>
-                        </tbody>
-                    </table>
-                </div>
-            </Show>
-        </article>
-    }
-}
-
-#[component]
-fn YamlKnowledgeModelView(
-    model: YamlKnowledgeModel,
-    selected: RwSignal<Option<String>>,
-) -> impl IntoView {
-    let model_name = model.name.clone();
-    let parameters = model.parameters.clone();
-    let has_parameters = !parameters.is_empty();
-    let parameter_text = parameters.join(", ");
-    view! {
-        <article class=move || if selected.get().as_deref() == Some(model_name.as_str()) { "yaml-decision-card is-selected" } else { "yaml-decision-card" }>
-            <div class="yaml-decision-heading">
-                <div><span class="yaml-node-badge yaml-node-badge-knowledge">"K"</span><div><h4>{model.name.clone()}</h4><p>{model.description.clone()}</p></div></div>
-                <div class="yaml-decision-meta"><span>{model.element_type.clone()}</span><span>{model.type_ref.clone()}</span><span>{model.expression_type.clone()}</span></div>
-            </div>
-            <Show when=move || has_parameters>
-                <div class="yaml-definition-line"><strong>"参数"</strong><span>{parameter_text.clone()}</span></div>
-            </Show>
-            <div class="yaml-expression-card">
-                <div class="yaml-expression-type"><span>"表达式预览"</span><strong>{model.expression_type.clone()}</strong></div>
-                <pre class="yaml-expression">{if model.expression_summary.is_empty() { "该表达式未提供可直接预览的文本。".into() } else { model.expression_summary.clone() }}</pre>
-            </div>
-        </article>
-    }
-}
-
-#[component]
-fn YamlDecisionServiceView(
-    service: YamlDecisionService,
-    selected: RwSignal<Option<String>>,
-) -> impl IntoView {
-    let service_name = service.name.clone();
-    view! {
-        <article class=move || if selected.get().as_deref() == Some(service_name.as_str()) { "yaml-decision-card is-selected" } else { "yaml-decision-card" }>
-            <div class="yaml-decision-heading">
-                <div><span class="yaml-node-badge yaml-node-badge-service">"S"</span><div><h4>{service.name.clone()}</h4><p>{service.description.clone()}</p></div></div>
-                <div class="yaml-decision-meta"><span>{service.element_type.clone()}</span></div>
-            </div>
-            <div class="yaml-expression-card">
-                <div class="yaml-expression-type"><span>"服务范围"</span><strong>"decisionService"</strong></div>
-                <pre class="yaml-expression">{if service.expression_summary.is_empty() { "未配置输入、封装决策或输出决策。".into() } else { service.expression_summary.clone() }}</pre>
-            </div>
-        </article>
-    }
-}
-
-#[component]
-fn YamlElementNavigator(
-    summary: Memo<YamlSummary>,
-    selected: RwSignal<Option<String>>,
-) -> impl IntoView {
-    view! {
-        <div class="yaml-navigator">
-            <div class="yaml-section-heading"><span>"元素导航"</span><span>"全部定义元素"</span></div>
-            <div class="yaml-navigator-list">
-                <For each=move || summary.get().graph_nodes key=|node| node.name.clone() children=move |node| {
-                    let node_name = node.name.clone();
-                    let node_kind = node.kind.clone();
-                    let class_name = node_name.clone();
-                    let click_name = node_name.clone();
-                    view! {
-                        <button class=move || format!("yaml-nav-item yaml-nav-{} {}", node_kind, if selected.get().as_deref() == Some(class_name.as_str()) { "is-selected" } else { "" }) on:click=move |_| selected.set(Some(click_name.clone()))>
-                            <span class="yaml-nav-dot"></span><span>{node_name.clone()}</span>
-                        </button>
-                    }
-                } />
-                <For each=move || {
-                    summary.get().bkms.iter().map(|bkm| YamlGraphNode { name: bkm.name.clone(), kind: "knowledge".into(), ..Default::default() }).collect::<Vec<_>>()
-                } key=|node| node.name.clone() children=move |node| {
-                    let node_name = node.name.clone();
-                    let class_name = node_name.clone();
-                    let click_name = node_name.clone();
-                    view! {
-                        <button class=move || format!("yaml-nav-item yaml-nav-knowledge {}", if selected.get().as_deref() == Some(class_name.as_str()) { "is-selected" } else { "" }) on:click=move |_| selected.set(Some(click_name.clone()))>
-                            <span class="yaml-nav-dot"></span><span>{node_name.clone()}</span>
-                        </button>
-                    }
-                } />
-                <For each=move || {
-                    summary.get().decision_services.iter().map(|service| YamlGraphNode { name: service.name.clone(), kind: "service".into(), ..Default::default() }).collect::<Vec<_>>()
-                } key=|node| node.name.clone() children=move |node| {
-                    let node_name = node.name.clone();
-                    let class_name = node_name.clone();
-                    let click_name = node_name.clone();
-                    view! {
-                        <button class=move || format!("yaml-nav-item yaml-nav-service {}", if selected.get().as_deref() == Some(class_name.as_str()) { "is-selected" } else { "" }) on:click=move |_| selected.set(Some(click_name.clone()))>
-                            <span class="yaml-nav-dot"></span><span>{node_name.clone()}</span>
-                        </button>
-                    }
-                } />
-            </div>
-        </div>
-    }
-}
-
-#[component]
-fn YamlDependencyGraphView(summary: Memo<YamlSummary>) -> impl IntoView {
-    let selected = RwSignal::new(None::<String>);
-    view! {
-        <div class="yaml-view-content">
-            <Show
-                when=move || summary.get().error.is_some()
-                fallback=move || view! {
-                    <YamlDependencyGraph summary=summary selected=selected />
-                }
-            >
-                <div class="yaml-parse-error">{move || summary.get().error.unwrap_or_else(|| "YAML 无法解析".into())}</div>
-            </Show>
-        </div>
-    }
-}
-
-#[component]
-fn YamlDependencyGraph(
-    summary: Memo<YamlSummary>,
-    selected: RwSignal<Option<String>>,
-) -> impl IntoView {
-    view! {
-        <div class="yaml-graph-panel">
-            <div class="yaml-section-heading"><span>"决策依赖图"</span><span>{move || format!("{} 条依赖", summary.get().graph_edges.len())}</span></div>
-            <svg
-                class="yaml-dependency-graph"
-                viewBox=move || format!("0 0 {YAML_GRAPH_WIDTH} {}", yaml_graph_height(&summary.get().graph_nodes))
-                preserveAspectRatio="xMinYMin meet"
-                role="img"
-                aria-label="DMN 决策依赖图"
-            >
-                    <defs>
-                        <marker id="yaml-graph-arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto">
-                            <path d="M 0 0 L 10 5 L 0 10 z" fill="context-stroke" />
-                        </marker>
-                    </defs>
-                    <For each=move || summary.get().graph_edges key=|edge| format!("{}->{}", edge.source, edge.target) let:edge>
-                        <path
-                            class=format!("yaml-graph-edge yaml-graph-edge-{}", edge.kind)
-                            d=yaml_graph_edge_path(&edge)
-                            marker-end="url(#yaml-graph-arrow)"
-                        />
-                    </For>
-                    <For each=move || summary.get().graph_nodes key=|node| node.name.clone() children=move |node| {
-                        let node_name = node.name.clone();
-                        let node_kind = node.kind.clone();
-                        let class_name = node_name.clone();
-                        let click_name = node_name.clone();
-                        let label = yaml_graph_label(&node_name);
-                        let knowledge_points = RwSignal::new(yaml_graph_knowledge_points(&node));
-                        let is_input = node_kind == "input";
-                        let is_decision = node_kind == "decision";
-                        let is_knowledge = node_kind == "knowledge";
-                        view! {
-                            <g class=move || format!("yaml-graph-node yaml-graph-node-{} {}", node_kind, if selected.get().as_deref() == Some(class_name.as_str()) { "is-selected" } else { "" }) on:click=move |_| selected.set(Some(click_name.clone()))>
-                                <title>{node_name.clone()}</title>
-                                <Show when=move || is_input>
-                                    <rect x=node.x.to_string() y=node.y.to_string() width=YAML_GRAPH_NODE_WIDTH.to_string() height=YAML_GRAPH_NODE_HEIGHT.to_string() rx="25" ry="25" />
-                                </Show>
-                                <Show when=move || is_decision>
-                                    <rect x=node.x.to_string() y=node.y.to_string() width=YAML_GRAPH_NODE_WIDTH.to_string() height=YAML_GRAPH_NODE_HEIGHT.to_string() rx="2" />
-                                </Show>
-                                <Show when=move || is_knowledge>
-                                    <polygon points=move || knowledge_points.get() />
-                                </Show>
-                                <text x={(node.x + YAML_GRAPH_NODE_WIDTH / 2).to_string()} y={(node.y + 30).to_string()}>{label}</text>
-                            </g>
-                        }
-                    } />
-            </svg>
-        </div>
-    }
-}
-
-#[component]
-fn YamlDataCatalog(summary: Memo<YamlSummary>) -> impl IntoView {
-    view! {
-        <div class=move || if summary.get().type_details.is_empty() { "yaml-catalog-grid is-single" } else { "yaml-catalog-grid" }>
-            <section class="yaml-catalog-section">
-                <div class="yaml-section-heading"><span>"输入数据"</span><span>{move || format!("{} 个", summary.get().input_details.len())}</span></div>
-                <div class="yaml-field-list">
-                    <For each=move || summary.get().input_details key=|field| field.name.clone() let:field>
-                        <div class="yaml-field-row"><span class="yaml-field-dot yaml-field-input"></span><div><strong>{field.name}</strong><small>{field.element_type}{if field.description.is_empty() { String::new() } else { format!(" · {}", field.description) }}</small></div><code>{field.type_ref}</code></div>
-                    </For>
-                    <Show when=move || summary.get().input_details.is_empty()><p class="yaml-empty-copy">"未定义输入数据"</p></Show>
-                </div>
-            </section>
-            <Show when=move || !summary.get().type_details.is_empty() fallback=move || view! {
-                <div class="yaml-catalog-empty"><span class="yaml-field-dot yaml-field-type"></span><span>"数据类型"</span><small>"未定义自定义数据类型"</small></div>
-            }>
-                <section class="yaml-catalog-section">
-                    <div class="yaml-section-heading"><span>"数据类型"</span><span>{move || format!("{} 个", summary.get().type_details.len())}</span></div>
-                    <div class="yaml-field-list">
-                        <For each=move || summary.get().type_details key=|field| field.name.clone() let:field>
-                            <div class="yaml-field-row"><span class="yaml-field-dot yaml-field-type"></span><div><strong>{field.name}</strong><small>{field.element_type}{if field.description.is_empty() { String::new() } else { format!(" · {}", field.description) }}</small></div><code>{field.type_ref}</code></div>
-                        </For>
-                    </div>
-                </section>
-            </Show>
-        </div>
-    }
-}
-
-#[component]
-fn YamlStructureView(summary: Memo<YamlSummary>) -> impl IntoView {
-    let query = RwSignal::new(String::new());
-    let entries = move || {
-        let query_value = query.get().to_lowercase();
-        let mut all = Vec::new();
-        if let Some(raw) = summary.get().raw.as_ref() {
-            collect_yaml_paths(raw, "", 0, &mut all);
-        }
-        if query_value.trim().is_empty() {
-            all
-        } else {
-            all.into_iter()
-                .filter(|entry| {
-                    entry.path.to_lowercase().contains(&query_value)
-                        || entry.preview.to_lowercase().contains(&query_value)
-                })
-                .collect()
-        }
-    };
-    let copy_path = move |path: String| {
-        spawn_local(async move {
-            if let Some(window) = web_sys::window() {
-                let _ = JsFuture::from(window.navigator().clipboard().write_text(&path)).await;
-            }
-        });
-    };
-    view! {
-        <div class="yaml-structure-view yaml-view-content">
-            <div class="yaml-structure-toolbar">
-                <span>"结构树"</span>
-                <input class="yaml-tree-search" type="search" placeholder="搜索字段或值" prop:value=query on:input=move |event| query.set(event_target_value(&event)) />
-            </div>
-            <div class="yaml-tree-list">
-                <For each=entries key=|entry| entry.path.clone() children=move |entry| {
-                    let path = entry.path.clone();
-                    let copy_value = entry.path.clone();
-                    view! {
-                        <div class="yaml-tree-row" style=format!("padding-left:{}px", 10 + entry.depth * 14)>
-                            <span class="yaml-tree-caret">"•"</span>
-                            <code>{path}</code>
-                            <span class="yaml-tree-kind">{entry.kind}</span>
-                            <span class="yaml-tree-preview">{entry.preview}</span>
-                            <button class="yaml-tree-copy" title="复制路径" on:click=move |_| copy_path(copy_value.clone())>"复制路径"</button>
-                        </div>
-                    }
-                } />
-            </div>
-            <Show when=move || entries().is_empty()>
-                <p class="yaml-empty-copy">"没有匹配的字段"</p>
-            </Show>
-        </div>
-    }
-}
-
-fn escape_html(value: &str) -> String {
-    value
-        .replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
-        .replace('\'', "&#39;")
-}
-
-fn token_span(class: &str, value: &str) -> String {
-    format!(
-        "<span class=\"syntax-{class}\">{}</span>",
-        escape_html(value)
-    )
-}
-
-fn highlight_value(value: &str, comment_marker: Option<char>) -> String {
-    let mut output = String::new();
-    let mut rest = value;
-    while !rest.is_empty() {
-        let quote = rest.find(|character| character == '\'' || character == '"');
-        let comment = comment_marker.and_then(|marker| rest.find(marker));
-        let next = match (quote, comment) {
-            (Some(q), Some(c)) => Some((q.min(c), q <= c)),
-            (Some(q), None) => Some((q, true)),
-            (None, Some(c)) => Some((c, false)),
-            (None, None) => None,
-        };
-        let Some((index, is_quote)) = next else {
-            output.push_str(&escape_html(rest));
-            break;
-        };
-        output.push_str(&escape_html(&rest[..index]));
-        if is_quote {
-            let quote = rest.as_bytes()[index] as char;
-            let end = rest[index + 1..]
-                .find(quote)
-                .map(|offset| index + 1 + offset + 1)
-                .unwrap_or(rest.len());
-            output.push_str(&token_span("string", &rest[index..end]));
-            rest = &rest[end..];
-        } else {
-            output.push_str(&token_span("comment", rest[index..].trim_end_matches('\n')));
-            break;
-        }
-    }
-    output
-}
-
-fn highlight_yaml_line(line: &str) -> String {
-    let trimmed = line.trim_start();
-    let indent = &line[..line.len() - trimmed.len()];
-    let key_end = trimmed.find(':');
-    if let Some(key_end) = key_end {
-        let key = &trimmed[..key_end];
-        if !key.is_empty() && !key.chars().any(char::is_whitespace) {
-            return format!(
-                "{}{}:<span class=\"syntax-value\">{}</span>",
-                escape_html(indent),
-                token_span("key", key),
-                highlight_value(&trimmed[key_end + 1..], Some('#'))
-            );
-        }
-    }
-    highlight_value(line, Some('#'))
-}
-
-fn highlight_xml_text(value: &str) -> String {
-    let mut output = String::new();
-    let mut rest = value;
-    while let Some(start) = rest.find('&') {
-        output.push_str(&escape_html(&rest[..start]));
-        let entity = &rest[start..];
-        let Some(end) = entity.find(';') else {
-            output.push_str(&escape_html(entity));
-            return output;
-        };
-        let candidate = &entity[..=end];
-        if candidate[1..candidate.len() - 1]
-            .chars()
-            .all(|character| character.is_alphanumeric() || character == '#' || character == 'x')
-        {
-            output.push_str(&token_span("entity", candidate));
-        } else {
-            output.push_str(&escape_html(candidate));
-        };
-        rest = &entity[end + 1..];
-    }
-    output.push_str(&escape_html(rest));
-    output
-}
-
-fn xml_token_end(value: &str) -> usize {
-    value
-        .find(|character: char| {
-            character.is_whitespace() || matches!(character, '=' | '/' | '?' | '>')
-        })
-        .unwrap_or(value.len())
-}
-
-fn highlight_xml_tag(tag: &str) -> String {
-    let mut output = String::new();
-    let mut rest = &tag[1..tag.len() - 1];
-    output.push_str(&token_span("punctuation", "<"));
-
-    if let Some(stripped) = rest.strip_prefix('/') {
-        output.push_str(&token_span("punctuation", "/"));
-        rest = stripped;
-    } else if let Some(stripped) = rest.strip_prefix('?') {
-        output.push_str(&token_span("punctuation", "?"));
-        rest = stripped;
-    }
-
-    let name_end = xml_token_end(rest);
-    if name_end == 0 {
-        return format!("{}{}", output, escape_html(rest));
-    }
-    output.push_str(&token_span("tag-name", &rest[..name_end]));
-    rest = &rest[name_end..];
-
-    while !rest.is_empty() {
-        let whitespace_len = rest.len() - rest.trim_start().len();
-        output.push_str(&escape_html(&rest[..whitespace_len]));
-        rest = &rest[whitespace_len..];
-        if rest.is_empty() {
-            break;
-        }
-        if let Some(stripped) = rest.strip_prefix('/') {
-            output.push_str(&token_span("punctuation", "/"));
-            rest = stripped;
-            continue;
-        }
-        if let Some(stripped) = rest.strip_prefix('?') {
-            output.push_str(&token_span("punctuation", "?"));
-            rest = stripped;
-            continue;
-        }
-
-        let attribute_end = xml_token_end(rest);
-        if attribute_end == 0 {
-            output.push_str(&escape_html(&rest[..1]));
-            rest = &rest[1..];
-            continue;
-        }
-        output.push_str(&token_span("attribute", &rest[..attribute_end]));
-        rest = &rest[attribute_end..];
-
-        let before_equals = rest.len() - rest.trim_start().len();
-        output.push_str(&escape_html(&rest[..before_equals]));
-        rest = &rest[before_equals..];
-        let Some(stripped) = rest.strip_prefix('=') else {
-            continue;
-        };
-        output.push_str(&token_span("punctuation", "="));
-        rest = stripped;
-
-        let before_value = rest.len() - rest.trim_start().len();
-        output.push_str(&escape_html(&rest[..before_value]));
-        rest = &rest[before_value..];
-        if let Some(quote) = rest
-            .chars()
-            .next()
-            .filter(|quote| *quote == '\'' || *quote == '"')
-        {
-            let value_end = rest[quote.len_utf8()..]
-                .find(quote)
-                .map(|offset| quote.len_utf8() + offset + quote.len_utf8())
-                .unwrap_or(rest.len());
-            output.push_str(&token_span("attribute-value", &rest[..value_end]));
-            rest = &rest[value_end..];
-        } else {
-            let value_end = xml_token_end(rest);
-            output.push_str(&token_span("attribute-value", &rest[..value_end]));
-            rest = &rest[value_end..];
-        }
-    }
-
-    output.push_str(&token_span("punctuation", ">"));
-    output
-}
-
-fn highlight_xml(source: &str) -> String {
-    let mut output = String::new();
-    let mut rest = source;
-    while let Some(start) = rest.find('<') {
-        output.push_str(&highlight_xml_text(&rest[..start]));
-        rest = &rest[start..];
-
-        let (prefix, terminator, class) = if rest.starts_with("<!--") {
-            ("<!--", "-->", "comment")
-        } else if rest.starts_with("<![CDATA[") {
-            ("<![CDATA[", "]]>", "cdata")
-        } else if rest.starts_with("<!") {
-            ("<!", ">", "meta")
-        } else {
-            let Some(end) = rest.find('>') else {
-                output.push_str(&escape_html(rest));
-                return output;
-            };
-            output.push_str(&highlight_xml_tag(&rest[..=end]));
-            rest = &rest[end + 1..];
-            continue;
-        };
-
-        let content_start = prefix.len();
-        let end = rest[content_start..]
-            .find(terminator)
-            .map(|offset| content_start + offset + terminator.len())
-            .unwrap_or(rest.len());
-        output.push_str(&token_span(class, &rest[..end]));
-        rest = &rest[end..];
-    }
-    output.push_str(&highlight_xml_text(rest));
-    output
-}
-
-fn highlight_json(source: &str) -> String {
-    let mut output = String::new();
-    let bytes = source.as_bytes();
-    let mut index = 0;
-
-    while index < bytes.len() {
-        let character = source[index..]
-            .chars()
-            .next()
-            .expect("JSON highlighter index must remain on a character boundary");
-        if character == '"' {
-            let start = index;
-            index += 1;
-            let mut escaped = false;
-            while index < bytes.len() {
-                let current = bytes[index] as char;
-                index += 1;
-                if escaped {
-                    escaped = false;
-                } else if current == '\\' {
-                    escaped = true;
-                } else if current == '"' {
-                    break;
-                }
-            }
-            let end = index;
-            let mut lookahead = end;
-            while lookahead < bytes.len() && (bytes[lookahead] as char).is_ascii_whitespace() {
-                lookahead += 1;
-            }
-            let class = if lookahead < bytes.len() && bytes[lookahead] as char == ':' {
-                "key"
-            } else {
-                "string"
-            };
-            output.push_str(&token_span(class, &source[start..end]));
-            continue;
-        }
-
-        if matches!(character, '{' | '}' | '[' | ']' | ',' | ':') {
-            output.push_str(&token_span("punctuation", &source[index..index + 1]));
-            index += 1;
-            continue;
-        }
-
-        if character == '-' || character.is_ascii_digit() {
-            let start = index;
-            index += 1;
-            while index < bytes.len()
-                && matches!(
-                    bytes[index] as char,
-                    '0'..='9' | '.' | 'e' | 'E' | '+' | '-'
-                )
-            {
-                index += 1;
-            }
-            output.push_str(&token_span("number", &source[start..index]));
-            continue;
-        }
-
-        let remaining = &source[index..];
-        let keyword = ["true", "false", "null"].into_iter().find(|keyword| {
-            remaining.starts_with(keyword) && {
-                remaining
-                    .as_bytes()
-                    .get(keyword.len())
-                    .map_or(true, |next| {
-                        !(next.is_ascii_alphanumeric() || *next == b'_')
-                    })
-            }
-        });
-        if let Some(keyword) = keyword {
-            let class = if keyword == "null" { "null" } else { "boolean" };
-            output.push_str(&token_span(class, keyword));
-            index += keyword.len();
-            continue;
-        }
-
-        let start = index;
-        index += character.len_utf8();
-        while index < bytes.len() {
-            let current = source[index..]
-                .chars()
-                .next()
-                .expect("JSON highlighter index must remain on a character boundary");
-            if current == '"'
-                || matches!(current, '{' | '}' | '[' | ']' | ',' | ':')
-                || current == '-'
-                || current.is_ascii_digit()
-            {
-                break;
-            }
-            if ["true", "false", "null"]
-                .iter()
-                .any(|keyword| source[index..].starts_with(keyword))
-            {
-                break;
-            }
-            index += current.len_utf8();
-        }
-        output.push_str(&escape_html(&source[start..index]));
-    }
-
-    output
-}
-
-fn highlight_code(source: &str, language: &str) -> String {
-    if language == "json" {
-        highlight_json(source)
-    } else if language == "xml" {
-        highlight_xml(source)
-    } else {
-        source
-            .lines()
-            .map(highlight_yaml_line)
-            .collect::<Vec<_>>()
-            .join("\n")
     }
 }
 

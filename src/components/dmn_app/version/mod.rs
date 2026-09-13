@@ -1,3 +1,9 @@
+mod governance;
+mod history;
+
+pub use governance::VersionGovernancePanel;
+pub use history::VersionHistoryPanel;
+
 use leptos::prelude::*;
 
 use crate::models::{VersionChangeReview, VersionDiffEntry, VersionVerificationReport};

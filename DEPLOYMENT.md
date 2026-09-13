@@ -421,13 +421,13 @@ systemctl enable postgresql
 # 创建数据库用户和数据库
 sudo -u postgres psql << EOF
 CREATE USER fuxi WITH PASSWORD 'your_password';
-CREATE DATABASE fuxi_office OWNER fuxi;
-GRANT ALL PRIVILEGES ON DATABASE fuxi_office TO fuxi;
+CREATE DATABASE fuxi_dmn OWNER fuxi;
+GRANT ALL PRIVILEGES ON DATABASE fuxi_dmn TO fuxi;
 \q
 EOF
 
 # 初始化数据库
-sudo -u postgres psql -U fuxi -d fuxi_office < /opt/fuxi-dmn/script/init.sql
+sudo -u postgres psql -U fuxi -d fuxi_dmn < /opt/fuxi-dmn/script/init.sql
 ```
 
 ### 步骤 5: 构建二进制
@@ -459,7 +459,7 @@ tar -xzf ../fuxi-dmn-binary.tar.gz
 
 # 创建配置文件
 cat > .env << 'EOF'
-DATABASE_URL=postgres://fuxi:your_password@localhost:5432/fuxi_office
+DATABASE_URL=postgres://fuxi:your_password@localhost:5432/fuxi_dmn
 BIND_ADDR=0.0.0.0:3000
 JWT_SECRET=your_jwt_secret
 ADMIN_PASSWORD=your_admin_password
@@ -579,10 +579,10 @@ docker compose build
 docker compose up -d
 
 # 备份数据库
-docker exec fuxi-postgres pg_dump -U fuxi fuxi_office > backup_$(date +%Y%m%d).sql
+docker exec fuxi-postgres pg_dump -U fuxi fuxi_dmn > backup_$(date +%Y%m%d).sql
 
 # 恢复数据库
-docker exec -i fuxi-postgres psql -U fuxi fuxi_office < backup.sql
+docker exec -i fuxi-postgres psql -U fuxi fuxi_dmn < backup.sql
 
 # 清理未使用的镜像和容器
 docker system prune -a
@@ -601,7 +601,7 @@ journalctl -u fuxi-dmn -f
 systemctl restart fuxi-dmn
 
 # 备份数据库
-pg_dump -U fuxi fuxi_office > backup_$(date +%Y%m%d).sql
+pg_dump -U fuxi fuxi_dmn > backup_$(date +%Y%m%d).sql
 ```
 
 ---
@@ -630,7 +630,7 @@ pg_dump -U fuxi fuxi_office > backup_$(date +%Y%m%d).sql
    cat > /opt/backup.sh << 'EOF'
    #!/bin/bash
    DATE=$(date +%Y%m%d_%H%M%S)
-   docker exec fuxi-postgres pg_dump -U fuxi fuxi_office > /opt/backups/fuxi_${DATE}.sql
+   docker exec fuxi-postgres pg_dump -U fuxi fuxi_dmn > /opt/backups/fuxi_${DATE}.sql
    find /opt/backups -name "fuxi_*.sql" -mtime +7 -delete
    EOF
    
@@ -688,7 +688,7 @@ docker compose ps postgres
 docker compose logs postgres
 
 # 3. 测试数据库连接
-docker exec -it fuxi-postgres psql -U fuxi -d fuxi_office
+docker exec -it fuxi-postgres psql -U fuxi -d fuxi_dmn
 
 # 4. 检查连接字符串
 cat .env | grep DATABASE_URL

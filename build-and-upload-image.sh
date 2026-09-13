@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # 本地构建 Docker 镜像并上传到服务器
 # 使用方法: ./build-and-upload-image.sh root@your_server_ip
-# 可选：RUST_IMAGE=your-registry/rust:1.88-bookworm ./build-and-upload-image.sh root@your_server_ip
+# 可选：RUST_IMAGE=your-registry/rust:1.90-bookworm ./build-and-upload-image.sh root@your_server_ip
 
 set -euo pipefail
 
@@ -49,7 +49,7 @@ fi
 
 echo_step "开始本地构建 Docker 镜像..."
 echo_warn "这将需要 10-15 分钟（首次构建，后续更快）..."
-RUST_IMAGE=${RUST_IMAGE:-rust:1.88-bookworm}
+RUST_IMAGE=${RUST_IMAGE:-rust:1.90-bookworm}
 echo_info "Rust 基础镜像: ${RUST_IMAGE}（可通过 RUST_IMAGE 环境变量覆盖）"
 echo ""
 
@@ -57,7 +57,7 @@ echo ""
 if ! docker build --build-arg "RUST_IMAGE=${RUST_IMAGE}" -t "${IMAGE_NAME}" .; then
     echo_error "Docker 构建失败！"
     echo "如果当前网络无法访问 Docker Hub，请使用可访问的 Rust 镜像重试："
-    echo "RUST_IMAGE=your-registry/rust:1.88-bookworm ./build-and-upload-image.sh ${SERVER}"
+    echo "RUST_IMAGE=your-registry/rust:1.90-bookworm ./build-and-upload-image.sh ${SERVER}"
     exit 1
 fi
 
@@ -111,14 +111,14 @@ services:
     container_name: fuxi-postgres
     restart: unless-stopped
     environment:
-      POSTGRES_DB: fuxi_office
+      POSTGRES_DB: fuxi_dmn
       POSTGRES_USER: fuxi
       POSTGRES_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD must be set}
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./init.sql:/docker-entrypoint-initdb.d/001-init.sql:ro
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U fuxi -d fuxi_office"]
+      test: ["CMD-SHELL", "pg_isready -U fuxi -d fuxi_dmn"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -131,7 +131,7 @@ services:
       postgres:
         condition: service_healthy
     environment:
-      DATABASE_URL: postgres://fuxi:${DB_PASSWORD:?DB_PASSWORD must be set}@postgres:5432/fuxi_office
+      DATABASE_URL: postgres://fuxi:${DB_PASSWORD:?DB_PASSWORD must be set}@postgres:5432/fuxi_dmn
       BIND_ADDR: 0.0.0.0:3000
       JWT_SECRET: ${JWT_SECRET:?JWT_SECRET must be set}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:?ADMIN_PASSWORD must be set}

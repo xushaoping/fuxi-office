@@ -36,7 +36,6 @@ pub fn audit_event_type_label(event_type: &str) -> &'static str {
 
 #[component]
 pub fn MemberManagementPanel(
-    _project_id: ReadSignal<Option<i64>>,
     members: ReadSignal<Vec<ProjectMember>>,
     member_username: ReadSignal<String>,
     set_member_username: WriteSignal<String>,
@@ -87,6 +86,7 @@ pub fn MemberManagementPanel(
                     <option value="modeler">"建模者"</option>
                     <option value="reviewer">"复核者"</option>
                     <option value="approver">"审批者"</option>
+                    <option value="viewer">"查看者"</option>
                 </select>
                 <button
                     class="button button-primary"
@@ -109,32 +109,28 @@ pub fn MemberManagementPanel(
 #[component]
 pub fn AuditLogPanel(events: ReadSignal<Vec<AuditEvent>>) -> impl IntoView {
     view! {
-        <section class="audit-log-panel" aria-label="审计日志">
-            <div class="panel-heading">
-                <strong>"审计日志"</strong>
-                <small>{move || format!("{} 条记录", events.get().len())}</small>
-            </div>
-            <div class="audit-event-list">
+        <div class="audit-timeline" aria-label="项目审计记录">
+            <Show
+                when=move || !events.get().is_empty()
+                fallback=move || view! { <div class="audit-empty">"暂无审计事件"</div> }
+            >
                 <For each=move || events.get() key=|event| event.id let:event>
-                    <div class=format!("audit-event audit-event-{}", audit_event_kind(&event.event_type))>
-                        <div class="audit-event-header">
-                            <strong>{audit_event_type_label(&event.event_type)}</strong>
-                            <span>{event.actor_username.clone()}</span>
-                            <small>{event.created_at.format("%m-%d %H:%M:%S").to_string()}</small>
+                    <article class=format!("audit-event audit-type-{}", audit_event_kind(&event.event_type))>
+                        <span class="audit-event-dot" aria-hidden="true"></span>
+                        <div>
+                            <strong>{event.summary}</strong>
+                            <small>{format!("{} · {}", event.actor_username, event.created_at.format("%m-%d %H:%M:%S"))}</small>
+                            <code>{audit_event_type_label(&event.event_type)}</code>
                         </div>
-                        {(!event.summary.is_empty())
-                            .then(|| view! { <p>{event.summary.clone()}</p> })}
-                    </div>
+                    </article>
                 </For>
-            </div>
-        </section>
+            </Show>
+        </div>
     }
 }
 
 #[component]
 pub fn RollbackPanel(
-    selected_version_id: ReadSignal<Option<i64>>,
-    versions: ReadSignal<Vec<crate::models::DecisionVersion>>,
     rollback_reason: ReadSignal<String>,
     set_rollback_reason: WriteSignal<String>,
     rollback_confirmed: ReadSignal<bool>,
@@ -143,19 +139,22 @@ pub fn RollbackPanel(
     on_create_rollback: Callback<()>,
 ) -> impl IntoView {
     view! {
-        <section class="rollback-panel" aria-label="版本回滚">
-            <div class="panel-heading">
-                <strong>"版本回滚"</strong>
-                <small>"从历史版本创建新的草稿"</small>
+        <div class="rollback-controls">
+            <div class="rollback-copy">
+                <strong>"创建回滚草稿"</strong>
+                <small>"复制所选历史版本，线上版本保持不变；新草稿必须重新验收和发布。"</small>
             </div>
-            <Show when=move || selected_version_id.get().is_some()>
-                <div class="rollback-form">
                     <textarea
-                        placeholder="回滚原因（必填）"
+                        rows="2"
+                        maxlength="500"
+                        placeholder="填写回滚原因"
                         prop:value=rollback_reason
-                        on:input=move |event| set_rollback_reason.set(event_target_value(&event))
+                        on:input=move |event| {
+                            set_rollback_reason.set(event_target_value(&event));
+                            set_rollback_confirmed.set(false);
+                        }
                         disabled=rollback_busy
-                    />
+                    ></textarea>
                     <label class="rollback-confirmation">
                         <input
                             type="checkbox"
@@ -163,7 +162,7 @@ pub fn RollbackPanel(
                             on:change=move |event| set_rollback_confirmed.set(event_target_checked(&event))
                             disabled=rollback_busy
                         />
-                        <span>"我已确认需要回滚到选定版本，并理解这会创建一个新的草稿版本"</span>
+                        <span>"我已确认回滚差异，并接受重新验收后才能发布"</span>
                     </label>
                     <button
                         class="button button-primary"
@@ -172,13 +171,8 @@ pub fn RollbackPanel(
                             || rollback_reason.get().trim().is_empty()
                             || !rollback_confirmed.get()
                     >
-                        {move || if rollback_busy.get() { "处理中..." } else { "创建回滚草稿" }}
+                        {move || if rollback_busy.get() { "创建中..." } else { "创建回滚草稿" }}
                     </button>
-                </div>
-            </Show>
-            <Show when=move || selected_version_id.get().is_none()>
-                <p class="rollback-hint">"请先从项目栏的版本下拉列表中选择一个历史版本"</p>
-            </Show>
-        </section>
+        </div>
     }
 }

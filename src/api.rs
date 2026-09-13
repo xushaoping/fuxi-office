@@ -685,6 +685,30 @@ pub async fn create_project(
 }
 
 #[cfg(target_family = "wasm")]
+pub async fn update_project(
+    token: &str,
+    project_id: i64,
+    payload: CreateDecisionProject,
+) -> Result<DecisionProject, String> {
+    let url = api_url(&format!("/api/projects/{project_id}"))
+        .ok_or_else(|| "网络错误，请稍后重试".to_string())?;
+    let response = reqwest::Client::new()
+        .put(url)
+        .header("Authorization", format!("Bearer {token}"))
+        .json(&payload)
+        .send()
+        .await
+        .map_err(|error| format!("更新决策项目失败: {error}"))?;
+    if !response.status().is_success() {
+        return Err(project_api_error(response, "更新决策项目").await);
+    }
+    response
+        .json::<DecisionProject>()
+        .await
+        .map_err(|error| format!("决策项目响应无效: {error}"))
+}
+
+#[cfg(target_family = "wasm")]
 pub async fn delete_project(token: &str, project_id: i64) -> Result<(), String> {
     let url = api_url(&format!("/api/projects/{project_id}"))
         .ok_or_else(|| "网络错误，请稍后重试".to_string())?;

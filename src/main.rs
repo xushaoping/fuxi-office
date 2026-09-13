@@ -157,6 +157,7 @@ async fn main() {
         // same shell here keeps a direct visit or browser refresh from returning 404.
         .route("/login", get(index))
         .route("/admin", get(index))
+        .route("/projects", get(index))
         .nest_service("/pkg", ServeDir::new("target/site/pkg"))
         .nest_service("/style", ServeDir::new("target/site/style"))
         .fallback_service(ServeDir::new("target/site"))

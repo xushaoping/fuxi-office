@@ -713,6 +713,54 @@ async fn create_project(
     Ok((StatusCode::CREATED, Json(project)))
 }
 
+async fn update_project(
+    State(state): State<AppState>,
+    Extension(claims): Extension<Claims>,
+    Path(project_id): Path<i64>,
+    Json(payload): Json<CreateDecisionProject>,
+) -> Result<Json<DecisionProject>, ProjectApiError> {
+    validate_project(&payload)?;
+    ensure_project_permission(&state, project_id, &claims.sub, ProjectPermission::Manage).await?;
+    let mut transaction = state
+        .db
+        .begin()
+        .await
+        .map_err(|error| ProjectApiError::database("更新决策项目", error))?;
+    let project = sqlx::query_as::<_, DecisionProject>(
+        r#"
+        UPDATE decision_projects
+        SET name=$1, description=$2, risk_level=$3, updated_at=NOW()
+        WHERE id=$4
+        RETURNING id, owner_username, name, description, risk_level,
+                  current_draft_version_id, published_version_id, created_at, updated_at
+        "#,
+    )
+    .bind(payload.name.trim())
+    .bind(payload.description.trim())
+    .bind(&payload.risk_level)
+    .bind(project_id)
+    .fetch_optional(&mut *transaction)
+    .await
+    .map_err(|error| ProjectApiError::database("更新决策项目", error))?
+    .ok_or_else(ProjectApiError::not_found)?;
+    insert_audit_event(
+        &mut *transaction,
+        project.id,
+        None,
+        "project.updated",
+        &claims.sub,
+        "更新决策项目",
+        json!({"name": project.name, "riskLevel": project.risk_level}),
+    )
+    .await
+    .map_err(|error| ProjectApiError::database("记录项目审计事件", error))?;
+    transaction
+        .commit()
+        .await
+        .map_err(|error| ProjectApiError::database("提交决策项目更新", error))?;
+    Ok(Json(project))
+}
+
 async fn delete_project(
     State(state): State<AppState>,
     Extension(claims): Extension<Claims>,
@@ -5883,7 +5931,7 @@ pub fn routes() -> Router<AppState> {
         .route("/projects", get(list_projects).post(create_project))
         .route(
             "/projects/{project_id}",
-            get(get_workspace).delete(delete_project),
+            get(get_workspace).put(update_project).delete(delete_project),
         )
         .route("/projects/{project_id}/members", get(list_project_members))
         .route(

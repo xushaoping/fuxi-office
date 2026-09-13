@@ -1,5 +1,5 @@
--- Upgrade an existing fuxi_office database with project/version persistence.
--- Run while connected to fuxi_office, optionally with: -v app_user=fuxi
+-- Upgrade an existing fuxi_dmn database with project/version persistence.
+-- Run while connected to fuxi_dmn, optionally with: -v app_user=fuxi
 
 BEGIN;
 

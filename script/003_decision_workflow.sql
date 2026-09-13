@@ -1,5 +1,5 @@
 -- Add requirement analysis, clarification and decision planning persistence.
--- Run while connected to fuxi_office, optionally with: -v app_user=fuxi
+-- Run while connected to fuxi_dmn, optionally with: -v app_user=fuxi
 
 BEGIN;
 

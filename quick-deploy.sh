@@ -179,7 +179,7 @@ init_database() {
     sleep 10
 
     # 检查数据库是否已初始化
-    if docker exec fuxi-postgres psql -U fuxi -d fuxi_office -c "SELECT 1 FROM users LIMIT 1;" &> /dev/null; then
+    if docker exec fuxi-postgres psql -U fuxi -d fuxi_dmn -c "SELECT 1 FROM users LIMIT 1;" &> /dev/null; then
         echo_info "数据库已初始化，跳过"
         return 0
     fi

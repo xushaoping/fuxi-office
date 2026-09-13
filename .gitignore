@@ -7,3 +7,7 @@ dist/
 .idea/
 fuxi-dmn*.tar.gz
 *.log
+/release
+/script/binaryen-*.tar.gz
+/script/*.swift
+.claude/

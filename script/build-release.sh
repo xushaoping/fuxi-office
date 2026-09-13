@@ -8,8 +8,27 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
+rustc --version
+cargo leptos --version
+for tool in wasm-bindgen wasm-opt; do
+    if ! command -v "$tool"; then
+        printf '缺少构建工具 %s；请在当前构建环境（Docker 构建时是 builder 容器）中安装。\n' "$tool" >&2
+        exit 1
+    fi
+    "$tool" --version
+done
+mkdir -p target
+
 # 1. 前端：编译 wasm 并复制静态资源到 target/site（清空后重建）
-cargo leptos build --release
+if cargo leptos build --release 2>&1 | tee target/build-release.log; then
+    :
+else
+    build_status=$?
+    printf '\n前端构建失败（退出码 %s）；以下为最后 100 行原始日志：\n' "$build_status" >&2
+    tail -n 100 target/build-release.log >&2
+    printf '\n请保留完整 Docker --progress=plain 日志，检查 wasm-opt failed with: 后的 stderr；不能仅凭 optimization failed 判断原因。\n' >&2
+    exit "$build_status"
+fi
 
 # 2. 外壳页面：手动复制项目根模板为 site/index.html
 cp index.html target/site/index.html

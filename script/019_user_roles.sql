@@ -1,4 +1,4 @@
--- Add system roles to users. Run while connected to fuxi_office.
+-- Add system roles to users. Run while connected to fuxi_dmn.
 ALTER TABLE users
     ADD COLUMN IF NOT EXISTS role VARCHAR(16) NOT NULL DEFAULT 'user';
 ALTER TABLE users

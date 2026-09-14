@@ -36,6 +36,7 @@ use crate::models::{
     VersionChangeReview, VersionDiffEntry, VersionVerificationReport,
 };
 use crate::state::AppState;
+use crate::state::WorkspaceDraftSnapshot;
 use crate::utils::use_keyboard_shortcut;
 use crate::workflow::{
     Clarification, ClarificationAnswer, DecisionBrief, DecisionField, DecisionPlan,
@@ -117,6 +118,63 @@ impl TestCaseFilter {
             Self::PendingApproval => "待批准",
             Self::PendingRun => "待运行",
         }
+    }
+}
+
+fn load_compatible_workspace_draft(
+    app_state: &AppState,
+    project_id: i64,
+    base_version_id: Option<i64>,
+) -> Option<WorkspaceDraftSnapshot> {
+    let snapshot = app_state.load_workspace_draft(project_id)?;
+    if snapshot.project_id != project_id {
+        app_state.clear_workspace_draft(project_id);
+        return None;
+    }
+    if snapshot.base_version_id != base_version_id {
+        let mut safe_snapshot = snapshot;
+        safe_snapshot.base_version_id = base_version_id;
+        safe_snapshot.pending_review = None;
+        safe_snapshot.pending_candidate_id = None;
+        safe_snapshot.pending_knowledge_citations.clear();
+        safe_snapshot.review_confirmed = false;
+        safe_snapshot.dsl = None;
+        safe_snapshot.source_dsl.clear();
+        safe_snapshot.xml = None;
+        if safe_snapshot.modify_mode {
+            safe_snapshot.prompt.clear();
+            safe_snapshot.modify_mode = false;
+        }
+        safe_snapshot.workspace_view = "discovery".into();
+        safe_snapshot.version_mismatch = true;
+        return Some(safe_snapshot);
+    }
+    Some(snapshot)
+}
+
+fn workspace_view_key(view: WorkspaceView) -> &'static str {
+    match view {
+        WorkspaceView::Discovery => "discovery",
+        WorkspaceView::Model => "model",
+        WorkspaceView::Validation => "validation",
+        WorkspaceView::Services => "services",
+        WorkspaceView::Analytics => "analytics",
+        WorkspaceView::Versions => "versions",
+        WorkspaceView::Collaboration => "collaboration",
+        WorkspaceView::Resources => "resources",
+    }
+}
+
+fn workspace_view_from_key(value: &str) -> WorkspaceView {
+    match value {
+        "model" => WorkspaceView::Model,
+        "validation" => WorkspaceView::Validation,
+        "services" => WorkspaceView::Services,
+        "analytics" => WorkspaceView::Analytics,
+        "versions" => WorkspaceView::Versions,
+        "collaboration" => WorkspaceView::Collaboration,
+        "resources" => WorkspaceView::Resources,
+        _ => WorkspaceView::Discovery,
     }
 }
 
@@ -307,6 +365,7 @@ pub fn DmnApp() -> impl IntoView {
     let (agent_activity, set_agent_activity) = signal("等待新的建模任务".to_string());
     let (dsl, set_dsl) = signal(Option::<String>::None);
     let (source_dsl, set_source_dsl) = signal(String::new());
+    let (source_dsl_checkpoint, set_source_dsl_checkpoint) = signal(String::new());
     let (xml, set_xml) = signal(Option::<String>::None);
     let (error, set_error) = signal(Option::<String>::None);
     let (status, set_status) = signal(RunStatus::Idle);
@@ -315,13 +374,23 @@ pub fn DmnApp() -> impl IntoView {
     // free-form model edits after a project already has a draft version.
     let (plan_generation_requested, set_plan_generation_requested) = signal(false);
     let (controller, set_controller) = signal(Option::<AbortController>::None);
+    let (workspace_view, set_workspace_view) = signal(WorkspaceView::Discovery);
+    let (prompt_checkpoint, set_prompt_checkpoint) = signal(String::new());
+    let (draft_to_restore, set_draft_to_restore) = signal(Option::<WorkspaceDraftSnapshot>::None);
     let has_unsaved_changes = Signal::derive(move || {
         let workflow = decision_workflow.get();
         let saved_requirement = workflow
             .as_ref()
             .map(|workflow| workflow.requirement_text.as_str())
             .unwrap_or_default();
-        prompt.get() != saved_requirement
+        let prompt_changed = if generation_mode.get() == GenerationMode::Modify {
+            prompt.get() != prompt_checkpoint.get()
+        } else {
+            prompt.get() != saved_requirement
+        };
+        let source_dsl_changed = source_dsl.get() != source_dsl_checkpoint.get();
+        prompt_changed
+            || source_dsl_changed
             || pending_review.get().is_some()
             || workflow.as_ref().is_some_and(|workflow| {
                 clarification_answers.get()
@@ -335,10 +404,106 @@ pub fn DmnApp() -> impl IntoView {
                 .as_ref()
                 .is_some_and(|workflow| workflow.status != "confirmed")
     });
+    let can_model = Signal::derive(move || {
+        let Some(project) = current_project.get() else {
+            return false;
+        };
+        let username = user_id.get();
+        user_role.get() == "admin"
+            || project.owner_username == username
+            || project_members.get().iter().any(|member| {
+                member.project_id == project.id
+                    && member.username == username
+                    && member.role == "modeler"
+            })
+    });
     let app_state = expect_context::<AppState>();
-    on_cleanup(move || app_state.ui.workspace_dirty.set(false));
+    let cleanup_app_state = app_state.clone();
+    on_cleanup(move || cleanup_app_state.ui.workspace_dirty.set(false));
+    let dirty_app_state = app_state.clone();
     Effect::new(move |_| {
-        app_state.ui.workspace_dirty.set(has_unsaved_changes.get());
+        dirty_app_state
+            .ui
+            .workspace_dirty
+            .set(has_unsaved_changes.get());
+    });
+    let local_draft = Signal::derive(move || {
+        let Some(project) = current_project.get() else {
+            return None;
+        };
+        let workflow = decision_workflow.get();
+        let saved_requirement = workflow
+            .as_ref()
+            .map(|workflow| workflow.requirement_text.as_str())
+            .unwrap_or_default();
+        let prompt_changed = if generation_mode.get() == GenerationMode::Modify {
+            prompt.get() != prompt_checkpoint.get()
+        } else {
+            prompt.get() != saved_requirement
+        };
+        let source_dsl_changed = source_dsl.get() != source_dsl_checkpoint.get();
+        let saved_answers = workflow
+            .as_ref()
+            .map(|workflow| {
+                workflow
+                    .answers
+                    .iter()
+                    .map(|answer| (answer.clarification_id.clone(), answer.answer.clone()))
+                    .collect::<BTreeMap<_, _>>()
+            })
+            .unwrap_or_default();
+        let answers_changed = clarification_answers.get() != saved_answers;
+        if !prompt_changed
+            && !source_dsl_changed
+            && !answers_changed
+            && pending_review.get().is_none()
+        {
+            return None;
+        }
+        Some(WorkspaceDraftSnapshot {
+            project_id: project.id,
+            base_version_id: current_version.get().map(|version| version.id),
+            prompt: prompt.get(),
+            clarification_answers: clarification_answers.get(),
+            pending_review: pending_review.get(),
+            pending_candidate_id: pending_candidate_id.get(),
+            pending_knowledge_citations: pending_knowledge_citations.get(),
+            review_confirmed: review_confirmed.get(),
+            dsl: dsl.get(),
+            source_dsl: source_dsl.get(),
+            xml: xml.get(),
+            workspace_view: workspace_view_key(workspace_view.get()).into(),
+            modify_mode: generation_mode.get() == GenerationMode::Modify,
+            version_mismatch: false,
+        })
+    });
+    let persistence_app_state = app_state.clone();
+    Effect::new(move |_| {
+        let Some(project) = current_project.get() else {
+            return;
+        };
+        if project_busy.get() || draft_to_restore.get().is_some() {
+            return;
+        }
+        if let Some(snapshot) = local_draft.get() {
+            persistence_app_state.save_workspace_draft(&snapshot);
+        } else {
+            persistence_app_state.clear_workspace_draft(project.id);
+        }
+    });
+    let cleanup_draft_app_state = app_state.clone();
+    on_cleanup(move || {
+        if draft_to_restore.get_untracked().is_some() {
+            return;
+        }
+        let Some(project) = current_project.get_untracked() else {
+            return;
+        };
+        if let Some(snapshot) = local_draft.get_untracked() {
+            cleanup_draft_app_state.save_workspace_draft(&snapshot);
+        } else if !project_busy.get_untracked() {
+            cleanup_draft_app_state.clear_workspace_draft(project.id);
+        }
     });
     let theme = app_state.ui.theme.read_only();
     provide_app_context(
@@ -349,7 +514,6 @@ pub fn DmnApp() -> impl IntoView {
         current_version,
     );
     // 在工作流尚未加载前展示需求分析；加载后根据是否存在方案切换到对应 Tab。
-    let (workspace_view, set_workspace_view) = signal(WorkspaceView::Discovery);
     let (mobile_model_focus, set_mobile_model_focus) = signal(MobileModelFocus::Conversation);
     let (conversation_width, set_conversation_width) = signal(380.0_f64);
     let (model_expanded, set_model_expanded) = signal(false);
@@ -452,18 +616,33 @@ pub fn DmnApp() -> impl IntoView {
         });
     });
 
+    let initial_app_state = app_state.clone();
     Effect::new(move |_| {
         let Some(token_value) = token.get() else {
             return;
         };
         set_project_busy.set(true);
+        let load_app_state = initial_app_state.clone();
         spawn_local(async move {
             match api::list_projects(&token_value).await {
                 Ok(items) => {
                     set_projects.set(items.clone());
-                    if let Some(project) = items.first().cloned() {
+                    let preferred_project_id =
+                        initial_app_state.ui.active_project_id.get_untracked();
+                    let project = items
+                        .iter()
+                        .find(|project| Some(project.id) == preferred_project_id)
+                        .cloned()
+                        .or_else(|| items.first().cloned());
+                    if let Some(project) = project {
                         match api::get_project_workspace(&token_value, project.id).await {
                             Ok(workspace) => {
+                                load_app_state.set_active_project(Some(project.id));
+                                set_draft_to_restore.set(load_compatible_workspace_draft(
+                                    &load_app_state,
+                                    project.id,
+                                    workspace.version.as_ref().map(|version| version.id),
+                                ));
                                 let has_version = workspace.version.is_some();
                                 let version = workspace.version.clone();
                                 set_current_project.set(Some(workspace.project));
@@ -478,6 +657,7 @@ pub fn DmnApp() -> impl IntoView {
                                 set_release_error.set(None);
                                 set_dsl.set(workspace.dsl_yaml.clone());
                                 set_source_dsl.set(workspace.dsl_yaml.unwrap_or_default());
+                                set_source_dsl_checkpoint.set(source_dsl.get_untracked());
                                 set_xml.set(workspace.dmn_xml.clone());
                                 set_test_xml.set(workspace.dmn_xml.unwrap_or_default());
                                 set_test_result.set(None);
@@ -534,21 +714,27 @@ pub fn DmnApp() -> impl IntoView {
                                             })
                                             .unwrap_or_default();
                                         set_clarification_answers.set(answers);
-                                        set_prompt.set(
-                                            workflow
-                                                .as_ref()
-                                                .map(|state| state.requirement_text.clone())
-                                                .unwrap_or_default(),
-                                        );
+                                        let prompt_value = workflow
+                                            .as_ref()
+                                            .map(|state| state.requirement_text.clone())
+                                            .unwrap_or_default();
+                                        set_prompt_checkpoint.set(prompt_value.clone());
+                                        set_prompt.set(prompt_value);
                                         // 新增模型必须从需求与方案页的确认方案入口触发。
                                         set_workspace_view.set(WorkspaceView::Discovery);
                                         set_decision_workflow.set(workflow);
                                     }
-                                    Err(message) => set_workflow_error.set(Some(message)),
+                                    Err(message) => {
+                                        set_prompt_checkpoint.set(String::new());
+                                        set_workflow_error.set(Some(message));
+                                    }
                                 }
                             }
                             Err(message) => set_project_error.set(Some(message)),
                         }
+                    } else {
+                        load_app_state.set_active_project(None);
+                        set_draft_to_restore.set(None);
                     }
                 }
                 Err(message) => set_project_error.set(Some(message)),
@@ -931,6 +1117,7 @@ pub fn DmnApp() -> impl IntoView {
                     set_current_version.set(version.clone());
                     set_dsl.set(workspace.dsl_yaml.clone());
                     set_source_dsl.set(workspace.dsl_yaml.unwrap_or_default());
+                    set_source_dsl_checkpoint.set(source_dsl.get_untracked());
                     set_xml.set(workspace.dmn_xml);
                     set_version_knowledge_citations.set(workspace.knowledge_citations);
                     set_generation_mode.set(GenerationMode::Modify);
@@ -957,6 +1144,9 @@ pub fn DmnApp() -> impl IntoView {
     };
 
     let submit = move || {
+        if !can_model.get() {
+            return;
+        }
         let mode = generation_mode.get();
         let plan_generation = plan_generation_requested.get();
         let prompt_text = prompt.get();
@@ -1342,6 +1532,9 @@ pub fn DmnApp() -> impl IntoView {
     };
 
     let confirm_change = move |_| {
+        if !can_model.get() {
+            return;
+        }
         let Some(project) = current_project.get() else {
             return;
         };
@@ -1412,6 +1605,7 @@ pub fn DmnApp() -> impl IntoView {
                     });
                     set_dsl.set(Some(submitted_dsl.clone()));
                     set_source_dsl.set(submitted_dsl.clone());
+                    set_source_dsl_checkpoint.set(submitted_dsl.clone());
                     set_xml.set(Some(submitted_xml.clone()));
                     set_test_xml.set(submitted_xml.clone());
                     set_test_result.set(None);
@@ -1421,6 +1615,7 @@ pub fn DmnApp() -> impl IntoView {
                     set_pending_review.set(None);
                     set_pending_candidate_id.set(None);
                     set_review_confirmed.set(true);
+                    set_prompt_checkpoint.set(prompt.get_untracked());
                     set_verification_report.set(None);
                     set_publish_confirmed.set(false);
                     set_release_error.set(None);
@@ -1441,6 +1636,7 @@ pub fn DmnApp() -> impl IntoView {
                             set_current_version.set(workspace.version);
                             set_dsl.set(workspace.dsl_yaml.clone());
                             set_source_dsl.set(workspace.dsl_yaml.unwrap_or_default());
+                            set_source_dsl_checkpoint.set(source_dsl.get_untracked());
                             set_xml.set(workspace.dmn_xml.clone());
                             set_test_xml.set(workspace.dmn_xml.unwrap_or_default());
                             set_version_knowledge_citations.set(workspace.knowledge_citations);
@@ -1517,6 +1713,7 @@ pub fn DmnApp() -> impl IntoView {
                     set_current_version.set(workspace.version);
                     set_dsl.set(workspace.dsl_yaml.clone());
                     set_source_dsl.set(workspace.dsl_yaml.unwrap_or_default());
+                    set_source_dsl_checkpoint.set(source_dsl.get_untracked());
                     set_xml.set(workspace.dmn_xml.clone());
                     set_test_xml.set(workspace.dmn_xml.unwrap_or_default());
                     set_test_result.set(None);
@@ -1585,107 +1782,118 @@ pub fn DmnApp() -> impl IntoView {
         set_model_library_error.set(None);
     };
 
-    let instantiate_selected_model = move |_| {
-        let Some(selected) = selected_model_source.get() else {
-            return;
-        };
-        let Some((source_kind, source_id)) = selected.split_once(':') else {
-            return;
-        };
-        let project_name = reuse_project_name.get().trim().to_string();
-        if project_name.is_empty() || !reuse_confirmed.get() || model_library_busy.get() {
-            return;
-        }
-        let Some(token_value) = token.get() else {
-            return;
-        };
-        let source_kind = source_kind.to_string();
-        let source_id = source_id.to_string();
-        set_model_library_busy.set(true);
-        set_model_library_error.set(None);
-        spawn_local(async move {
-            match api::instantiate_model_library_item(
-                &token_value,
-                &source_kind,
-                &source_id,
-                project_name,
-                String::new(),
-            )
-            .await
-            {
-                Ok(workspace) => {
-                    let project = workspace.project.clone();
-                    let project_id = project.id;
-                    let version = workspace.version.clone();
-                    set_projects.update(|items| items.insert(0, project.clone()));
-                    set_current_project.set(Some(project));
-                    set_current_version.set(version.clone());
-                    set_dsl.set(workspace.dsl_yaml.clone());
-                    set_source_dsl.set(workspace.dsl_yaml.unwrap_or_default());
-                    set_xml.set(workspace.dmn_xml);
-                    set_version_knowledge_citations.set(workspace.knowledge_citations);
-                    set_generation_mode.set(GenerationMode::Modify);
-                    set_workspace_view.set(WorkspaceView::Discovery);
-                    set_messages.set(Vec::new());
-                    set_steps.set(Vec::new());
-                    set_pending_review.set(None);
-                    set_review_confirmed.set(false);
-                    set_selected_version_id.set(None);
-                    set_selected_version_review.set(None);
-                    set_review_loading.set(false);
-                    set_verification_report.set(None);
-                    set_publish_confirmed.set(false);
-                    set_release_error.set(None);
-                    set_decision_workflow.set(None);
-                    set_clarification_answers.set(BTreeMap::new());
-                    set_prompt.set(String::new());
-                    set_workflow_error.set(None);
-                    set_audit_events.set(Vec::new());
-                    set_version_save_status
-                        .set(Some("已从模型库创建 v1 草稿，验收与批准状态已重置".into()));
-                    set_selected_model_source.set(None);
-                    set_reuse_confirmed.set(false);
-                    if let Some(version) = version {
-                        set_versions.set(vec![version]);
-                    }
-                    match api::get_decision_workflow(&token_value, project_id).await {
-                        Ok(workflow) => {
-                            let answers = workflow
-                                .as_ref()
-                                .map(|state| {
-                                    state
-                                        .answers
-                                        .iter()
-                                        .map(|answer| {
-                                            (answer.clarification_id.clone(), answer.answer.clone())
-                                        })
-                                        .collect()
-                                })
-                                .unwrap_or_default();
-                            set_clarification_answers.set(answers);
-                            set_prompt.set(
-                                workflow
+    let instantiate_selected_model = Callback::new({
+        let instantiate_app_state = app_state.clone();
+        move |_: leptos::ev::MouseEvent| {
+            let Some(selected) = selected_model_source.get() else {
+                return;
+            };
+            let Some((source_kind, source_id)) = selected.split_once(':') else {
+                return;
+            };
+            let project_name = reuse_project_name.get().trim().to_string();
+            if project_name.is_empty() || !reuse_confirmed.get() || model_library_busy.get() {
+                return;
+            }
+            let Some(token_value) = token.get() else {
+                return;
+            };
+            let source_kind = source_kind.to_string();
+            let source_id = source_id.to_string();
+            set_model_library_busy.set(true);
+            set_model_library_error.set(None);
+            let run_app_state = instantiate_app_state.clone();
+            spawn_local(async move {
+                match api::instantiate_model_library_item(
+                    &token_value,
+                    &source_kind,
+                    &source_id,
+                    project_name,
+                    String::new(),
+                )
+                .await
+                {
+                    Ok(workspace) => {
+                        let project = workspace.project.clone();
+                        let project_id = project.id;
+                        let version = workspace.version.clone();
+                        run_app_state.set_active_project(Some(project.id));
+                        set_projects.update(|items| items.insert(0, project.clone()));
+                        set_current_project.set(Some(project));
+                        set_current_version.set(version.clone());
+                        set_dsl.set(workspace.dsl_yaml.clone());
+                        set_source_dsl.set(workspace.dsl_yaml.unwrap_or_default());
+                        set_source_dsl_checkpoint.set(source_dsl.get_untracked());
+                        set_xml.set(workspace.dmn_xml);
+                        set_version_knowledge_citations.set(workspace.knowledge_citations);
+                        set_generation_mode.set(GenerationMode::Modify);
+                        set_workspace_view.set(WorkspaceView::Discovery);
+                        set_draft_to_restore.set(None);
+                        set_messages.set(Vec::new());
+                        set_steps.set(Vec::new());
+                        set_pending_review.set(None);
+                        set_review_confirmed.set(false);
+                        set_selected_version_id.set(None);
+                        set_selected_version_review.set(None);
+                        set_review_loading.set(false);
+                        set_verification_report.set(None);
+                        set_publish_confirmed.set(false);
+                        set_release_error.set(None);
+                        set_decision_workflow.set(None);
+                        set_clarification_answers.set(BTreeMap::new());
+                        set_prompt_checkpoint.set(String::new());
+                        set_prompt.set(String::new());
+                        set_workflow_error.set(None);
+                        set_audit_events.set(Vec::new());
+                        set_version_save_status
+                            .set(Some("已从模型库创建 v1 草稿，验收与批准状态已重置".into()));
+                        set_selected_model_source.set(None);
+                        set_reuse_confirmed.set(false);
+                        if let Some(version) = version {
+                            set_versions.set(vec![version]);
+                        }
+                        match api::get_decision_workflow(&token_value, project_id).await {
+                            Ok(workflow) => {
+                                let answers = workflow
+                                    .as_ref()
+                                    .map(|state| {
+                                        state
+                                            .answers
+                                            .iter()
+                                            .map(|answer| {
+                                                (
+                                                    answer.clarification_id.clone(),
+                                                    answer.answer.clone(),
+                                                )
+                                            })
+                                            .collect()
+                                    })
+                                    .unwrap_or_default();
+                                set_clarification_answers.set(answers);
+                                let prompt_value = workflow
                                     .as_ref()
                                     .map(|state| state.requirement_text.clone())
-                                    .unwrap_or_default(),
-                            );
-                            // 新增模型必须从需求与方案页的确认方案入口触发。
-                            set_workspace_view.set(WorkspaceView::Discovery);
-                            set_decision_workflow.set(workflow);
+                                    .unwrap_or_default();
+                                set_prompt_checkpoint.set(prompt_value.clone());
+                                set_prompt.set(prompt_value);
+                                // 新增模型必须从需求与方案页的确认方案入口触发。
+                                set_workspace_view.set(WorkspaceView::Discovery);
+                                set_decision_workflow.set(workflow);
+                            }
+                            Err(message) => set_workflow_error.set(Some(message)),
                         }
-                        Err(message) => set_workflow_error.set(Some(message)),
+                        match api::list_project_audit_events(&token_value, project_id).await {
+                            Ok(events) => set_audit_events.set(events),
+                            Err(message) => set_project_error.set(Some(message)),
+                        }
+                        set_audit_revision.update(|revision| *revision += 1);
                     }
-                    match api::list_project_audit_events(&token_value, project_id).await {
-                        Ok(events) => set_audit_events.set(events),
-                        Err(message) => set_project_error.set(Some(message)),
-                    }
-                    set_audit_revision.update(|revision| *revision += 1);
+                    Err(message) => set_model_library_error.set(Some(message)),
                 }
-                Err(message) => set_model_library_error.set(Some(message)),
-            }
-            set_model_library_busy.set(false);
-        });
-    };
+                set_model_library_busy.set(false);
+            });
+        }
+    });
 
     let save_selected_history_template = move |_| {
         let Some(selected) = selected_model_source.get() else {
@@ -1773,6 +1981,7 @@ pub fn DmnApp() -> impl IntoView {
         });
     };
 
+    let switch_app_state = app_state.clone();
     let select_project = move |value: String| {
         let Ok(project_id) = value.parse::<i64>() else {
             return;
@@ -1819,18 +2028,37 @@ pub fn DmnApp() -> impl IntoView {
             return;
         }
         if has_unsaved_changes.get() {
-            let message = "当前项目有未确认的需求或模型变更。切换将放弃本地未保存内容，已保存的需求方案仍会保留。确定切换吗？取消可继续编辑。";
+            let message = if local_draft.get_untracked().is_some() {
+                "当前项目有本地未保存内容。确认后会先保存为本地草稿，切换后可从项目中恢复。取消可继续编辑。"
+            } else {
+                "当前项目有未确认的需求方案。已生成的需求分析会保留在服务端，确定切换吗？取消可继续编辑。"
+            };
             let confirmed = web_sys::window()
                 .is_some_and(|window| window.confirm_with_message(message).unwrap_or(false));
             if !confirmed {
                 return;
             }
+            if let Some(snapshot) = local_draft.get_untracked()
+                && !switch_app_state.save_workspace_draft(&snapshot)
+            {
+                set_project_error.set(Some(
+                    "本地草稿保存失败，未执行项目切换；请检查浏览器存储空间后重试。".into(),
+                ));
+                return;
+            }
         }
         set_project_busy.set(true);
         set_project_error.set(None);
+        set_draft_to_restore.set(None);
+        let run_switch_app_state = switch_app_state.clone();
         spawn_local(async move {
             match api::get_project_workspace(&token_value, project.id).await {
                 Ok(workspace) => {
+                    let draft = load_compatible_workspace_draft(
+                        &run_switch_app_state,
+                        project.id,
+                        workspace.version.as_ref().map(|version| version.id),
+                    );
                     let workflow = match api::get_decision_workflow(&token_value, project.id).await
                     {
                         Ok(workflow) => workflow,
@@ -1869,10 +2097,13 @@ pub fn DmnApp() -> impl IntoView {
                     unread_messages.set(false);
                     let has_version = workspace.version.is_some();
                     let version = workspace.version.clone();
+                    switch_app_state.set_active_project(Some(project.id));
+                    set_draft_to_restore.set(draft);
                     set_current_project.set(Some(workspace.project));
                     set_current_version.set(version.clone());
                     set_dsl.set(workspace.dsl_yaml.clone());
                     set_source_dsl.set(workspace.dsl_yaml.unwrap_or_default());
+                    set_source_dsl_checkpoint.set(source_dsl.get_untracked());
                     set_xml.set(workspace.dmn_xml);
                     set_version_knowledge_citations.set(workspace.knowledge_citations);
                     set_generation_mode.set(if has_version {
@@ -1918,12 +2149,12 @@ pub fn DmnApp() -> impl IntoView {
                             })
                             .unwrap_or_default();
                         set_clarification_answers.set(answers);
-                        set_prompt.set(
-                            workflow
-                                .as_ref()
-                                .map(|state| state.requirement_text.clone())
-                                .unwrap_or_default(),
-                        );
+                        let prompt_value = workflow
+                            .as_ref()
+                            .map(|state| state.requirement_text.clone())
+                            .unwrap_or_default();
+                        set_prompt_checkpoint.set(prompt_value.clone());
+                        set_prompt.set(prompt_value);
                         // 项目进入后统一从需求与方案开始；生成模型由确认方案入口触发。
                         set_workspace_view.set(WorkspaceView::Discovery);
                         set_decision_workflow.set(workflow);
@@ -1934,6 +2165,59 @@ pub fn DmnApp() -> impl IntoView {
             set_project_busy.set(false);
         });
     };
+
+    let restore_workspace_draft = move |_| {
+        let Some(snapshot) = draft_to_restore.get_untracked() else {
+            return;
+        };
+        let restored_dsl = snapshot.dsl.clone();
+        let restored_xml = snapshot.xml.clone();
+        set_prompt.set(snapshot.prompt.clone());
+        set_clarification_answers.set(snapshot.clarification_answers.clone());
+        set_pending_review.set(snapshot.pending_review.clone());
+        set_pending_candidate_id.set(snapshot.pending_candidate_id);
+        set_pending_knowledge_citations.set(snapshot.pending_knowledge_citations.clone());
+        set_review_confirmed.set(snapshot.review_confirmed);
+        set_dsl.set(restored_dsl.clone());
+        set_source_dsl.set(if snapshot.source_dsl.is_empty() {
+            restored_dsl.clone().unwrap_or_default()
+        } else {
+            snapshot.source_dsl.clone()
+        });
+        set_xml.set(restored_xml.clone());
+        set_test_xml.set(restored_xml.unwrap_or_default());
+        set_test_result.set(None);
+        set_test_error.set(None);
+        set_validation_result.set(None);
+        set_validation_error.set(None);
+        set_generation_mode.set(if snapshot.modify_mode {
+            GenerationMode::Modify
+        } else {
+            GenerationMode::Create
+        });
+        set_workspace_view.set(workspace_view_from_key(&snapshot.workspace_view));
+        set_draft_to_restore.set(None);
+        if snapshot.version_mismatch {
+            set_version_save_status.set(Some(
+                "服务端版本已变化，仅恢复需求和澄清答案；旧模型变更未恢复，请重新生成".into(),
+            ));
+            set_agent_activity.set("版本基线已变化，请重新生成模型".into());
+        } else {
+            set_version_save_status.set(Some("已恢复本地草稿，请继续确认或保存".into()));
+            set_agent_activity.set("本地草稿已恢复".into());
+        }
+    };
+
+    let discard_workspace_draft = Callback::new({
+        let discard_app_state = app_state.clone();
+        move |_: leptos::ev::MouseEvent| {
+            if let Some(project) = current_project.get_untracked() {
+                discard_app_state.clear_workspace_draft(project.id);
+            }
+            set_draft_to_restore.set(None);
+            set_version_save_status.set(Some("已使用服务端内容，本地草稿已移除".into()));
+        }
+    });
 
     let select_version_review = move |raw: String| {
         if raw.is_empty() {
@@ -2021,6 +2305,7 @@ pub fn DmnApp() -> impl IntoView {
                     set_current_version.set(version);
                     set_dsl.set(workspace.dsl_yaml.clone());
                     set_source_dsl.set(workspace.dsl_yaml.unwrap_or_default());
+                    set_source_dsl_checkpoint.set(source_dsl.get_untracked());
                     set_xml.set(workspace.dmn_xml);
                     set_version_knowledge_citations.set(workspace.knowledge_citations);
                     set_generation_mode.set(GenerationMode::Modify);
@@ -2177,6 +2462,9 @@ pub fn DmnApp() -> impl IntoView {
     };
 
     let create_business_test_case = move |_| {
+        if !can_model.get() {
+            return;
+        }
         let (Some(project), Some(version), Some(token_value)) =
             (current_project.get(), current_version.get(), token.get())
         else {
@@ -2243,6 +2531,9 @@ pub fn DmnApp() -> impl IntoView {
     };
 
     let generate_business_test_cases = move |_| {
+        if !can_model.get() {
+            return;
+        }
         let (Some(project), Some(version), Some(token_value)) =
             (current_project.get(), current_version.get(), token.get())
         else {
@@ -2525,6 +2816,9 @@ pub fn DmnApp() -> impl IntoView {
     let batch_revoke = move |_| batch_approve_test_cases(false);
 
     let delete_business_test_case = move |case_id: i64| {
+        if !can_model.get() {
+            return;
+        }
         let (Some(project), Some(version), Some(token_value)) =
             (current_project.get(), current_version.get(), token.get())
         else {
@@ -2958,6 +3252,9 @@ pub fn DmnApp() -> impl IntoView {
     };
 
     let analyze_requirement_action = move || {
+        if !can_model.get() {
+            return;
+        }
         // 已确认方案是后续建模的唯一依据，确认后禁止重新分析，避免覆盖已确认方案。
         if decision_workflow
             .get()
@@ -3013,6 +3310,7 @@ pub fn DmnApp() -> impl IntoView {
                     }
                     SseEvent::WorkflowResult(workflow) => {
                         set_clarification_answers.set(BTreeMap::new());
+                        set_prompt_checkpoint.set(workflow.requirement_text.clone());
                         set_decision_workflow.set(Some(workflow));
                         set_agent_activity.set("需求分析完成，请核对摘要和澄清问题".into());
                     }
@@ -3041,6 +3339,9 @@ pub fn DmnApp() -> impl IntoView {
     let analyze_requirement = move |_| analyze_requirement_action();
 
     let create_decision_plan_action = move || {
+        if !can_model.get() {
+            return;
+        }
         let Some(project) = current_project.get() else {
             return;
         };
@@ -3064,6 +3365,7 @@ pub fn DmnApp() -> impl IntoView {
         spawn_local(async move {
             match api::create_decision_plan(&token_value, project.id, answers).await {
                 Ok(workflow) => {
+                    set_prompt_checkpoint.set(workflow.requirement_text.clone());
                     set_decision_workflow.set(Some(workflow));
                     set_agent_activity.set("决策方案已生成，等待确认".into());
                 }
@@ -3079,6 +3381,9 @@ pub fn DmnApp() -> impl IntoView {
     let create_decision_plan = move |_| create_decision_plan_action();
 
     let confirm_decision_plan_action = move || {
+        if !can_model.get() {
+            return;
+        }
         let Some(project) = current_project.get() else {
             return;
         };
@@ -3094,6 +3399,7 @@ pub fn DmnApp() -> impl IntoView {
             match api::confirm_decision_plan(&token_value, project.id).await {
                 Ok(workflow) => {
                     set_prompt.set(workflow.requirement_text.clone());
+                    set_prompt_checkpoint.set(workflow.requirement_text.clone());
                     set_decision_workflow.set(Some(workflow));
                     set_agent_activity.set("方案已确认，可以生成可执行模型".into());
                 }
@@ -3106,6 +3412,9 @@ pub fn DmnApp() -> impl IntoView {
     let confirm_decision_plan = move |_| confirm_decision_plan_action();
 
     let generate_model_from_plan = move |_| {
+        if !can_model.get() {
+            return;
+        }
         let confirmed = decision_workflow
             .get()
             .as_ref()
@@ -3135,6 +3444,7 @@ pub fn DmnApp() -> impl IntoView {
     let on_keydown = move |event: KeyboardEvent| {
         if event.is_composing()
             || project_busy.get()
+            || !can_model.get()
             || !(event.ctrl_key() || event.meta_key())
             || event.key() != "Enter"
         {
@@ -3366,9 +3676,27 @@ pub fn DmnApp() -> impl IntoView {
                 review_loading=review_loading
                 version_save_status=version_save_status
                 project_error=project_error
+                workspace_draft_storage_error=app_state.ui.workspace_draft_storage_error.read_only()
                 on_select_project=Callback::new(move |value: String| select_project(value))
                 on_select_version_review=Callback::new(move |value: String| select_version_review(value))
             />
+
+            <Show when=move || draft_to_restore.get().is_some()>
+                <section class="workspace-draft-recovery" aria-label="本地草稿恢复">
+                    <div class="workspace-draft-recovery-copy">
+                        <strong>"发现本地草稿"</strong>
+                        <span>"这里保存了离开工作台前未确认的需求或模型变更。请选择恢复，或使用服务端内容继续。"</span>
+                    </div>
+                    <div class="workspace-draft-recovery-actions">
+                        <button class="button button-primary" type="button" on:click=restore_workspace_draft>
+                            "恢复本地草稿"
+                        </button>
+                        <button class="button button-quiet" type="button" on:click=move |event| discard_workspace_draft.run(event)>
+                            "使用服务端内容"
+                        </button>
+                    </div>
+                </section>
+            </Show>
 
             <nav class="workspace-view-tabs" aria-label="项目工作区" role="tablist">
                 <span class="workspace-nav-label workspace-nav-primary">"主流程"</span>
@@ -3478,30 +3806,58 @@ pub fn DmnApp() -> impl IntoView {
                             <strong>"成员与发布职责"</strong>
                             <small>"负责人负责成员配置和建模；建模、复核、审批由不同角色完成，同一账号可添加多个角色。"</small>
                         </div>
-                        <Show when=move || current_version.get().is_some_and(|version| version.reviewed_by.is_none())>
+                        /*<Show when=move || current_version.get().is_some_and(|version| version.reviewed_by.is_none())>
                             <button class="button button-primary" on:click=review_current_version disabled=move || verification_busy.get()>
                                 {move || if verification_busy.get() { "处理中..." } else { "独立复核当前版本" }}
                             </button>
-                        </Show>
+                        </Show>*/
                     </div>
-                    <div class="member-role-guide">
-                        <span><b>建模者</b>" 需求、模型与案例"</span>
-                        <span><b>复核者</b>" 独立复核、批准案例、执行验收"</span>
-                        <span><b>审批人</b>" 在门禁通过后发布"</span>
-                        <span><b>查看者</b>" 只读访问"</span>
+                    <div class="collaboration-layout">
+                        <aside class="collaboration-overview" aria-label="协作上下文">
+                            <div class="collaboration-context">
+                                <span class="member-section-kicker">"CURRENT PROJECT"</span>
+                                <strong>{move || current_project.get().map(|project| project.name).unwrap_or_else(|| "当前项目".into())}</strong>
+                                <small>{move || current_version.get().map(|version| format!("当前版本 v{} · {}", version.version_number, version.status)).unwrap_or_else(|| "尚未生成版本".into())}</small>
+                            </div>
+                            <div class="member-role-guide" aria-label="项目职责说明">
+                                <div class="member-role-guide-heading">
+                                    <span class="member-section-kicker">"RESPONSIBILITY MODEL"</span>
+                                    <strong>"职责边界"</strong>
+                                    <small>"将建模、复核和发布职责分开，保持决策变更可追溯。"</small>
+                                </div>
+                                <div class="member-role-grid">
+                                    <div class="member-role-card">
+                                        <span class="member-role-icon" aria-hidden="true">"模"</span>
+                                        <div><strong>"建模者"</strong><small>"需求、模型与案例"</small></div>
+                                    </div>
+                                    <div class="member-role-card">
+                                        <span class="member-role-icon" aria-hidden="true">"核"</span>
+                                        <div><strong>"复核者"</strong><small>"独立复核、批准案例、执行验收"</small></div>
+                                    </div>
+                                    <div class="member-role-card">
+                                        <span class="member-role-icon" aria-hidden="true">"审"</span>
+                                        <div><strong>"审批者"</strong><small>"门禁通过后发布服务"</small></div>
+                                    </div>
+                                    <div class="member-role-card">
+                                        <span class="member-role-icon" aria-hidden="true">"阅"</span>
+                                        <div><strong>"查看者"</strong><small>"只读访问项目内容"</small></div>
+                                    </div>
+                                </div>
+                            </div>
+                        </aside>
+                        <MemberManagementPanel
+                            members=project_members
+                            member_username=member_username
+                            set_member_username=set_member_username
+                            member_role=member_role
+                            set_member_role=set_member_role
+                            member_busy=member_busy
+                            member_error=member_error
+                            member_status=member_status
+                            on_save_member=Callback::new(move |_| save_member())
+                            on_remove_member=Callback::new(move |(username, role)| remove_member(username, role))
+                        />
                     </div>
-                    <MemberManagementPanel
-                        members=project_members
-                        member_username=member_username
-                        set_member_username=set_member_username
-                        member_role=member_role
-                        set_member_role=set_member_role
-                        member_busy=member_busy
-                        member_error=member_error
-                        member_status=member_status
-                        on_save_member=Callback::new(move |_| save_member())
-                        on_remove_member=Callback::new(move |(username, role)| remove_member(username, role))
-                    />
                 </section>
             </Show>
 
@@ -3680,7 +4036,7 @@ pub fn DmnApp() -> impl IntoView {
                                     </label>
                                     <button
                                         class="button button-primary"
-                                        on:click=instantiate_selected_model
+                                        on:click=move |event| instantiate_selected_model.run(event)
                                         disabled=move || model_library_busy.get() || !reuse_confirmed.get() || reuse_project_name.get().trim().is_empty()
                                     >{move || if model_library_busy.get() { "处理中..." } else { "创建复用项目" }}</button>
                                     <Show when=move || is_history>
@@ -4147,13 +4503,13 @@ pub fn DmnApp() -> impl IntoView {
 
             <Show when=move || workspace_view.get() == WorkspaceView::Validation>
             <div id="workspace-panel-validation" role="tabpanel" aria-labelledby="workspace-tab-validation" tabindex="0">
-            <Show when=move || pending_review.get().is_some()>
+            <Show when=move || pending_review.get().is_some() && can_model.get()>
                 <div class="model-change-lock" role="status">
                     <strong>"请先处理待确认的模型变更"</strong>
                     <button class="button button-quiet" on:click=move |_| set_workspace_view.set(WorkspaceView::Model)>"返回建模查看变更"</button>
                 </div>
             </Show>
-            <Show when=move || current_version.get().is_some() && pending_review.get().is_none()>
+            <Show when=move || current_version.get().is_some() && (pending_review.get().is_none() || !can_model.get())>
                 <section class="business-tests-panel" aria-label="业务验收测试套件">
                     <div class="business-tests-heading">
                         <div>
@@ -4186,14 +4542,16 @@ pub fn DmnApp() -> impl IntoView {
                                 on:click=batch_revoke
                                 disabled=move || test_case_busy.get() || selected_test_case_ids.get().is_empty()
                             >"批量撤销"</button>
-                            <button
-                                class="button button-quiet"
-                                on:click=generate_business_test_cases
-                                disabled=move || test_case_busy.get()
-                                    || current_version.get().is_some_and(|version| matches!(version.status.as_str(), "published" | "retired"))
-                            >
-                                {move || if test_case_running.get() { "案例执行中" } else if test_case_busy.get() { "处理中..." } else { "生成候选案例" }}
-                            </button>
+                            <Show when=move || can_model.get()>
+                                <button
+                                    class="button button-quiet"
+                                    on:click=generate_business_test_cases
+                                    disabled=move || test_case_busy.get()
+                                        || current_version.get().is_some_and(|version| matches!(version.status.as_str(), "published" | "retired"))
+                                >
+                                    {move || if test_case_running.get() { "案例执行中" } else if test_case_busy.get() { "处理中..." } else { "生成候选案例" }}
+                                </button>
+                            </Show>
                             <button
                                 class="button button-primary"
                                 on:click=run_business_test_cases
@@ -4267,7 +4625,7 @@ pub fn DmnApp() -> impl IntoView {
                             <span>{move || test_case_generation_summary.get().unwrap_or_default()}</span>
                         </div>
                     </Show>
-                    <Show when=move || current_version.get().is_some_and(|version| !matches!(version.status.as_str(), "published" | "retired"))>
+                    <Show when=move || can_model.get() && current_version.get().is_some_and(|version| !matches!(version.status.as_str(), "published" | "retired"))>
                         <div class="business-test-form">
                             <label>
                                 <span>"案例名称"</span>
@@ -4411,12 +4769,14 @@ pub fn DmnApp() -> impl IntoView {
                                                     || !can_approve
                                                     || current_version.get().is_some_and(|version| matches!(version.status.as_str(), "published" | "retired"))
                                             >{if approved { "撤销批准" } else { "批准" }}</button>
-                                            <button
-                                                class="button button-quiet danger-action"
-                                                on:click=move |_| delete_business_test_case(case_id)
-                                                disabled=move || test_case_busy.get()
-                                                    || current_version.get().is_some_and(|version| matches!(version.status.as_str(), "published" | "retired"))
-                                            >"删除"</button>
+                                            <Show when=move || can_model.get()>
+                                                <button
+                                                    class="button button-quiet danger-action"
+                                                    on:click=move |_| delete_business_test_case(case_id)
+                                                    disabled=move || test_case_busy.get()
+                                                        || current_version.get().is_some_and(|version| matches!(version.status.as_str(), "published" | "retired"))
+                                                >"删除"</button>
+                                            </Show>
                                         </div>
                                         {trace.map(|trace| view! {
                                             <details class="business-test-trace">
@@ -4436,7 +4796,7 @@ pub fn DmnApp() -> impl IntoView {
                 </section>
             </Show>
 
-            <Show when=move || workspace_view.get() == WorkspaceView::Validation && current_version.get().is_some() && pending_review.get().is_none()>
+            <Show when=move || workspace_view.get() == WorkspaceView::Validation && current_version.get().is_some() && (pending_review.get().is_none() || !can_model.get())>
                 {move || match verification_report.get() {
                     Some(report) => {
                         let published = current_version
@@ -4561,15 +4921,17 @@ pub fn DmnApp() -> impl IntoView {
                                         prop:value=prompt
                                         on:input=move |event| set_prompt.set(event_target_value(&event))
                                         on:keydown=on_keydown
-                                        disabled=move || workflow_busy.get()
+                                        disabled=move || workflow_busy.get() || !can_model.get()
                                     ></textarea>
-                                    <button
-                                        class="button button-primary analysis-submit"
-                                        on:click=analyze_requirement
-                                        disabled=move || workflow_busy.get() || prompt.get().trim().is_empty()
-                                    >
-                                        {move || if workflow_busy.get() { "分析中..." } else { "开始分析需求" }}
-                                    </button>
+                                    <Show when=move || can_model.get()>
+                                        <button
+                                            class="button button-primary analysis-submit"
+                                            on:click=analyze_requirement
+                                            disabled=move || workflow_busy.get() || prompt.get().trim().is_empty()
+                                        >
+                                            {move || if workflow_busy.get() { "分析中..." } else { "开始分析需求" }}
+                                        </button>
+                                    </Show>
                                 </div>
                             </div>
                         </Show>
@@ -4601,7 +4963,7 @@ pub fn DmnApp() -> impl IntoView {
                                     prop:value=prompt
                                     on:input=move |event| set_prompt.set(event_target_value(&event))
                                     on:keydown=on_keydown
-                                    disabled=move || workflow_busy.get()
+                                    disabled=move || workflow_busy.get() || !can_model.get()
                                 ></textarea>
                             </div>
                         </Show>
@@ -4614,6 +4976,7 @@ pub fn DmnApp() -> impl IntoView {
                                 </div>
                             </div>
                         </Show>
+                        <Show when=move || can_model.get()>
                         <div class="workflow-actions">
                             <Show when=move || decision_workflow.get().is_some()>
                                 <button
@@ -4650,6 +5013,7 @@ pub fn DmnApp() -> impl IntoView {
                                 </Show>
                             </Show>
                         </div>
+                        </Show>
                     </section>
                 </Show>
             <Show when=move || workspace_view.get() == WorkspaceView::Model>
@@ -4662,7 +5026,7 @@ pub fn DmnApp() -> impl IntoView {
                         aria-controls="workspace-pane-conversation"
                         aria-pressed=move || mobile_model_focus.get() == MobileModelFocus::Conversation
                         on:click=move |_| set_mobile_model_focus.set(MobileModelFocus::Conversation)
-                    >"建模对话"<span class="model-pane-status">{move || if pending_review.get().is_some() { "待确认" } else if unread_messages.get() { "有更新" } else { "" }}</span></button>
+                    >"建模对话"<span class="model-pane-status">{move || if pending_review.get().is_some() && can_model.get() { "待确认" } else if unread_messages.get() { "有更新" } else { "" }}</span></button>
                     <button
                         id="model-pane-tab-inspector"
                         class=move || if mobile_model_focus.get() == MobileModelFocus::Inspector { "model-pane-tab is-active" } else { "model-pane-tab" }
@@ -4693,8 +5057,8 @@ pub fn DmnApp() -> impl IntoView {
                     <div class="panel-heading conversation-heading">
                         <div class="heading-copy">
                             <p class="eyebrow">"AGENT CONVERSATION"</p>
-                            <h2>{move || if generation_mode.get() == GenerationMode::Modify { "修改当前决策模型" } else { "方案驱动建模" }}</h2>
-                            <p class="heading-description">{move || if generation_mode.get() == GenerationMode::Modify { "描述需要调整的规则，智能体将提交受控增量修改。" } else { "请在需求与方案页确认方案，再使用方案生成模型。" }}</p>
+                            <h2>{move || if !can_model.get() { "查看当前决策模型" } else if generation_mode.get() == GenerationMode::Modify { "修改当前决策模型" } else { "方案驱动建模" }}</h2>
+                            <p class="heading-description">{move || if !can_model.get() { "当前角色仅可查看模型产物与验收结果。" } else if generation_mode.get() == GenerationMode::Modify { "描述需要调整的规则，智能体将提交受控增量修改。" } else { "请在需求与方案页确认方案，再使用方案生成模型。" }}</p>
                         </div>
                     </div>
                     <div class="conversation-content">
@@ -4735,7 +5099,7 @@ pub fn DmnApp() -> impl IntoView {
                             </article>
                         </Show>
                     </div>
-                    <Show when=move || pending_review.get().is_some()>
+                    <Show when=move || pending_review.get().is_some() && can_model.get()>
                         {move || pending_review.get().map(|review| view! {
                             <VersionChangeReviewView
                                 review=review
@@ -4763,8 +5127,9 @@ pub fn DmnApp() -> impl IntoView {
                                     }
                                 }
                             }
-                        >{move || if pending_review.get().is_some() { "有新变更，查看并确认 ↓" } else { "有新内容，回到底部 ↓" }}</button>
+                        >{move || if pending_review.get().is_some() && can_model.get() { "有新变更，查看并确认 ↓" } else { "有新内容，回到底部 ↓" }}</button>
                     </Show>
+                    <Show when=move || can_model.get()>
                     <div class="composer-wrap">
                         <Show when=move || pending_review.get().is_some()>
                             <div class="model-change-lock" role="status">
@@ -4833,6 +5198,7 @@ pub fn DmnApp() -> impl IntoView {
                             </div>
                         </div>
                     </div>
+                    </Show>
                     </div>
                 </section>
 

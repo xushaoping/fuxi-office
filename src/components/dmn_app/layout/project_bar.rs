@@ -13,6 +13,7 @@ pub fn ProjectBar(
     review_loading: ReadSignal<bool>,
     version_save_status: ReadSignal<Option<String>>,
     project_error: ReadSignal<Option<String>>,
+    workspace_draft_storage_error: ReadSignal<Option<String>>,
     on_select_project: Callback<String>,
     on_select_version_review: Callback<String>,
 ) -> impl IntoView {
@@ -96,6 +97,11 @@ pub fn ProjectBar(
                 </span>
                 <Show when=move || project_error.get().is_some()>
                     <strong>{move || project_error.get().unwrap_or_default()}</strong>
+                </Show>
+                <Show when=move || workspace_draft_storage_error.get().is_some()>
+                    <strong class="project-storage-warning" role="alert">
+                        {move || workspace_draft_storage_error.get().unwrap_or_default()}
+                    </strong>
                 </Show>
             </div>
         </section>

@@ -156,7 +156,7 @@ pub fn ProjectManagementPage() -> impl IntoView {
                 <button class="button button-quiet" on:click=move |_| {
                     if !app_state.ui.workspace_dirty.get_untracked()
                         || web_sys::window().is_some_and(|window| {
-                            window.confirm_with_message("当前工作台有未确认的需求或模型变更，返回将放弃本地内容。确定返回吗？").unwrap_or(false)
+                            window.confirm_with_message("当前工作台有未确认的需求或模型变更，本地草稿会保留，确定返回吗？").unwrap_or(false)
                         })
                     {
                         navigate("/", Default::default());
@@ -178,22 +178,22 @@ pub fn ProjectManagementPage() -> impl IntoView {
                     </div>
                 </section>
                 <div class="admin-layout">
-                    <section class="admin-user-editor">
+                    <section class="management-form-panel">
                         <div class="admin-section-heading">
                             <div><span class="yaml-kicker">"PROJECT FORM"</span><h2>{move || if editing_id.get().is_some() { "修改项目" } else { "添加项目" }}</h2></div>
                             <span class="admin-section-index">"01"</span>
                         </div>
-                        <div class="admin-form-grid">
+                        <div class="admin-form-grid management-form-grid">
                             <label><span>"项目名称"</span><input maxlength="120" placeholder="输入项目名称" prop:value=name on:input=move |event| name.set(event_target_value(&event)) /></label>
                             <label><span>"风险等级"</span><select prop:value=risk_level on:change=move |event| risk_level.set(event_target_value(&event))><option value="low">"低风险"</option><option value="medium">"中风险"</option><option value="high">"高风险"</option></select></label>
-                            <label class="admin-form-wide"><span>"项目说明"</span><textarea maxlength="4000" rows="5" placeholder="补充项目用途、边界和责任说明" prop:value=description on:input=move |event| description.set(event_target_value(&event))></textarea></label>
+                            <label class="management-form-wide"><span>"项目说明"</span><textarea maxlength="4000" rows="5" placeholder="补充项目用途、边界和责任说明" prop:value=description on:input=move |event| description.set(event_target_value(&event))></textarea></label>
                         </div>
                         <div class="project-management-form-actions">
                             <button class="button button-primary" on:click=save disabled=move || busy.get() || name.get().trim().is_empty()>{move || if busy.get() { "处理中..." } else if editing_id.get().is_some() { "保存修改" } else { "创建项目" }}</button>
                             <button class="button button-quiet" on:click=move |_| clear_form() disabled=move || busy.get()>"清空"</button>
                         </div>
                     </section>
-                    <section class="admin-users-panel">
+                    <section class="management-list-panel">
                         <div class="admin-section-heading">
                             <div><span class="yaml-kicker">"PROJECT DIRECTORY"</span><h2>"项目列表"</h2></div>
                             <span class="admin-user-count">{move || projects.get().len()} " 个项目"</span>

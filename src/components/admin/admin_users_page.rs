@@ -147,7 +147,7 @@ pub fn AdminUsersPage() -> impl IntoView {
     };
 
     view! {
-        <main class="admin-page">
+        <main class="admin-page admin-users-page">
             <header class="admin-topbar">
                 <div class="admin-brand">
                     <div class="brand-mark">
@@ -161,7 +161,7 @@ pub fn AdminUsersPage() -> impl IntoView {
                 <button class="button button-quiet" on:click=move |_| {
                     if !app_state.ui.workspace_dirty.get_untracked()
                         || web_sys::window().is_some_and(|window| {
-                            window.confirm_with_message("当前工作台有未确认的需求或模型变更，返回将放弃本地内容。确定返回吗？").unwrap_or(false)
+                            window.confirm_with_message("当前工作台有未确认的需求或模型变更，本地草稿会保留，确定返回吗？").unwrap_or(false)
                         })
                     {
                         navigate("/", Default::default());
@@ -184,13 +184,13 @@ pub fn AdminUsersPage() -> impl IntoView {
                     </div>
                 </section>
                 <div class="admin-layout">
-                    <section class="admin-user-editor">
+                    <section class="management-form-panel">
                         <div class="admin-section-heading">
                             <div><span class="yaml-kicker">"ADD ACCOUNT"</span><h2>"添加用户"</h2></div>
                             <span class="admin-section-index">"01"</span>
                         </div>
                         <p class="admin-section-note">"创建后，用户可使用账号登录并参与已分配的项目。"</p>
-                        <div class="admin-form-grid">
+                        <div class="admin-form-grid management-form-grid">
                             <label><span>"用户名"</span><input maxlength="255" placeholder="输入用户名" prop:value=username on:input=move |event| username.set(event_target_value(&event)) /></label>
                             <label><span>"初始密码"</span><input type="password" placeholder="至少 6 位" prop:value=password on:input=move |event| password.set(event_target_value(&event)) /></label>
                             <label><span>"确认密码"</span><input type="password" placeholder="再次输入密码" prop:value=confirm_password on:input=move |event| confirm_password.set(event_target_value(&event)) /></label>
@@ -203,7 +203,7 @@ pub fn AdminUsersPage() -> impl IntoView {
                             <span aria-hidden="true">"+"</span> {move || if busy.get() { "处理中..." } else { "创建用户" }}
                         </button>
                     </section>
-                    <section class="admin-users-panel">
+                    <section class="management-list-panel">
                         <div class="admin-section-heading">
                             <div><span class="yaml-kicker">"ACTIVE ACCOUNTS"</span><h2>"用户列表"</h2></div>
                             <span class="admin-user-count">{move || users.get().len()} " 个用户"</span>

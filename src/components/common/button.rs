@@ -83,8 +83,10 @@ pub fn Button(
     view! {
         <button
             node_ref=button_ref
+            type="button"
             class=format!("btn {variant_class} {size_class} {class}")
             disabled=is_disabled
+            aria-busy=loading
             on:click=handle_click
         >
             {loading.then(|| view! { <span class="btn-spinner" aria-label="处理中"></span> })}

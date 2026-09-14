@@ -4,6 +4,7 @@ use sqlx::PgPool;
 pub enum ProjectPermission {
     View,
     Model,
+    ExecuteAcceptance,
     Review,
     Approve,
     Manage,
@@ -17,6 +18,7 @@ impl ProjectPermission {
             (self, role.as_str()),
             (Self::View, "modeler" | "reviewer" | "approver" | "viewer")
                 | (Self::Model, "modeler")
+                | (Self::ExecuteAcceptance, "modeler" | "reviewer")
                 | (Self::Review, "reviewer")
                 | (Self::Approve, "approver")
                 | (Self::ManageService, "approver")
@@ -27,8 +29,8 @@ impl ProjectPermission {
 /// Project roles are intentionally resolved from PostgreSQL for every request,
 /// so a membership change takes effect immediately instead of waiting for JWT
 /// expiry. The system admin is a super administrator; other owners keep
-/// management and modelling rights, while approvers may additionally manage
-/// scoped external-service credentials.
+/// management, modelling, and acceptance-execution rights, while approvers may
+/// additionally manage scoped external-service credentials.
 pub async fn has_permission(
     db: &PgPool,
     project_id: i64,
@@ -56,6 +58,7 @@ pub async fn has_permission(
             permission,
             ProjectPermission::View
                 | ProjectPermission::Model
+                | ProjectPermission::ExecuteAcceptance
                 | ProjectPermission::Manage
                 | ProjectPermission::ManageService
         )
@@ -82,6 +85,12 @@ mod tests {
     #[test]
     fn delegated_roles_are_separated_by_responsibility() {
         assert!(ProjectPermission::Model.allows("modeler"));
+        assert!(!ProjectPermission::Model.allows("reviewer"));
+        assert!(!ProjectPermission::Model.allows("approver"));
+        assert!(ProjectPermission::ExecuteAcceptance.allows("modeler"));
+        assert!(ProjectPermission::ExecuteAcceptance.allows("reviewer"));
+        assert!(!ProjectPermission::ExecuteAcceptance.allows("viewer"));
+        assert!(!ProjectPermission::ExecuteAcceptance.allows("approver"));
         assert!(!ProjectPermission::Review.allows("modeler"));
         assert!(ProjectPermission::Review.allows("reviewer"));
         assert!(!ProjectPermission::Approve.allows("reviewer"));

@@ -130,13 +130,25 @@ pub fn service_sample_value(type_ref: &str) -> serde_json::Value {
 }
 
 pub fn service_input_template(service: &PublishedDecisionService) -> String {
-    serde_json::to_string_pretty(
-        &service
-            .inputs
-            .iter()
-            .map(|field| (field.name.clone(), service_sample_value(&field.type_ref)))
-            .collect::<serde_json::Map<_, _>>(),
-    )
+    serde_json::to_string_pretty(&service_input_values(service)).unwrap_or_else(|_| "{}".into())
+}
+
+fn service_input_values(
+    service: &PublishedDecisionService,
+) -> serde_json::Map<String, serde_json::Value> {
+    service
+        .inputs
+        .iter()
+        .map(|field| (field.name.clone(), service_sample_value(&field.type_ref)))
+        .collect()
+}
+
+fn service_request_template(service: &PublishedDecisionService) -> String {
+    serde_json::to_string_pretty(&serde_json::json!({
+        "serviceId": service.id,
+        "businessReference": "ORDER-2026-0001",
+        "inputs": service_input_values(service),
+    }))
     .unwrap_or_else(|_| "{}".into())
 }
 
@@ -187,17 +199,77 @@ pub fn optimization_proposal_status_label(status: &str) -> &'static str {
 }
 
 pub fn public_service_endpoint(service: &PublishedDecisionService) -> String {
-    format!("/api/decision-services/{}/invoke", service.id)
+    let path = format!(
+        "/api/public/projects/{}/decision-services/execute",
+        service.project_id
+    );
+    #[cfg(target_family = "wasm")]
+    if let Some(origin) = web_sys::window().and_then(|window| window.location().origin().ok()) {
+        return format!("{origin}{path}");
+    }
+    path
+}
+
+fn shell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\"'\"'"))
 }
 
 pub fn public_service_curl(service: &PublishedDecisionService, secret: &str) -> String {
     format!(
-        r#"curl -X POST '{endpoint}' \
-  -H 'Authorization: Bearer {secret}' \
-  -H 'Content-Type: application/json' \
-  -d '{template}'"#,
-        endpoint = public_service_endpoint(service),
-        secret = secret,
-        template = service_input_template(service)
+        r#"curl -X POST {endpoint} \
+  -H {key_header} \
+  -H {content_type} \
+  -d {body}"#,
+        endpoint = shell_quote(&public_service_endpoint(service)),
+        key_header = shell_quote(&format!("X-Decision-Key: {secret}")),
+        content_type = shell_quote("Content-Type: application/json"),
+        body = shell_quote(&service_request_template(service)),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::models::DecisionServiceField;
+
+    fn service() -> PublishedDecisionService {
+        PublishedDecisionService {
+            project_id: 42,
+            version_id: 7,
+            version_number: 3,
+            id: "pricing".into(),
+            name: "Pricing".into(),
+            inputs: vec![
+                DecisionServiceField {
+                    name: "Amount".into(),
+                    type_ref: "number".into(),
+                    source: "input_data".into(),
+                },
+                DecisionServiceField {
+                    name: "Approved".into(),
+                    type_ref: "boolean".into(),
+                    source: "input_data".into(),
+                },
+            ],
+            outputs: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn public_endpoint_matches_public_execution_route() {
+        assert_eq!(
+            public_service_endpoint(&service()),
+            "/api/public/projects/42/decision-services/execute"
+        );
+    }
+
+    #[test]
+    fn generated_curl_matches_public_execution_contract() {
+        let command = public_service_curl(&service(), "dmn_live_secret");
+        assert!(command.contains("X-Decision-Key: dmn_live_secret"));
+        assert!(!command.contains("Authorization: Bearer"));
+        assert!(command.contains("\"serviceId\": \"pricing\""));
+        assert!(command.contains("\"businessReference\": \"ORDER-2026-0001\""));
+        assert!(command.contains("\"inputs\": {"));
+    }
 }

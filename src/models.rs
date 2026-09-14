@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 pub struct UserRecord {
     pub username: String,
     pub password_hash: String,
+    pub role: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

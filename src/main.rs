@@ -7,10 +7,11 @@ use axum::{
 
 use crate::auth::{
     auth_middleware, create_user, delete_user, ensure_admin_user, get_me, list_users, login,
-    update_user,
+    captcha, update_user,
 };
 use crate::types::AppState;
 use sqlx::postgres::PgPool;
+use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tower_http::services::ServeDir;
@@ -67,6 +68,48 @@ impl IntoResponse for ApiError {
     }
 }
 
+// 后台清理任务：定期清理过期的验证码和频率限制窗口
+async fn cleanup_expired_entries(state: AppState) {
+    let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
+    loop {
+        interval.tick().await;
+
+        // 清理过期验证码
+        if let Ok(mut captchas) = state.captchas.lock() {
+            let before = captchas.len();
+            captchas.retain(|_, challenge| !challenge.is_expired());
+            let removed = before.saturating_sub(captchas.len());
+            if removed > 0 {
+                println!("[维护] 清理了 {} 个过期验证码", removed);
+            }
+        }
+
+        // 清理过期的频率限制窗口（60秒窗口）
+        let cleanup_rate_limits = |limits: &Arc<std::sync::Mutex<HashMap<String, types::RateLimitWindow>>>| {
+            if let Ok(mut limits) = limits.lock() {
+                let before = limits.len();
+                limits.retain(|_, window| {
+                    window.created_at.elapsed().as_secs() <= 60
+                });
+                before.saturating_sub(limits.len())
+            } else {
+                0
+            }
+        };
+
+        let captcha_removed = cleanup_rate_limits(&state.captcha_rate_limits);
+        let login_removed = cleanup_rate_limits(&state.login_rate_limits);
+        let verify_removed = cleanup_rate_limits(&state.captcha_verify_limits);
+
+        if captcha_removed + login_removed + verify_removed > 0 {
+            println!(
+                "[维护] 清理了频率限制窗口 - 验证码请求: {}, 登录: {}, 验证码验证: {}",
+                captcha_removed, login_removed, verify_removed
+            );
+        }
+    }
+}
+
 #[tokio::main]
 async fn main() {
     // 1. 读取 .env 中的 DATABASE_URL 并连接 PostgreSQL
@@ -100,13 +143,31 @@ async fn main() {
         }
     };
     let state = AppState {
-        db: pool,
+        db: pool.clone(),
         jwt_secret,
+        captchas: Arc::new(std::sync::Mutex::new(HashMap::new())),
+        captcha_rate_limits: Arc::new(std::sync::Mutex::new(HashMap::new())),
+        login_rate_limits: Arc::new(std::sync::Mutex::new(HashMap::new())),
+        captcha_verify_limits: Arc::new(std::sync::Mutex::new(HashMap::new())),
+        trust_proxy_headers: std::env::var("TRUST_PROXY_HEADERS")
+            .map(|value| {
+                matches!(
+                    value.trim().to_ascii_lowercase().as_str(),
+                    "1" | "true" | "yes" | "on"
+                )
+            })
+            .unwrap_or(false),
+        boot_time: std::time::Instant::now(),
     };
     let llm_state = Arc::new(api::LlmState::from_env());
 
+    // 启动后台清理任务
+    tokio::spawn(cleanup_expired_entries(state.clone()));
+
     // 1. 公开路由（不需要鉴权）：仅登录；用户由超级管理员创建
-    let public_routes = Router::new().route("/login", post(login));
+    let public_routes = Router::new()
+        .route("/login", post(login))
+        .with_state(state.clone());
 
     // 2. 受保护路由：先经 auth_middleware 校验 JWT，用户名注入请求扩展供 handler 提取
     //    注意：axum 0.8 路径参数语法为 {id}（0.7 的 :id 会被当作字面量导致 404）
@@ -151,6 +212,7 @@ async fn main() {
     //      Service 的 Router<()>，此处 Router<AppState> 不能直接用 nest_service）
     //    - 根路径由服务端返回页面外壳；fallback_service 负责其余静态资源（pkg、style 等）
     let app = Router::new()
+        .route("/api/captcha", get(captcha))
         .nest("/api", api_routes)
         .route("/", get(index))
         // The CSR router owns this path after the initial page load. Serving the
@@ -181,5 +243,10 @@ async fn main() {
         }
     };
     println!("🚀 CSR 服务启动于 http://{addr}");
-    axum::serve(listener, app).await.unwrap();
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .await
+    .unwrap();
 }

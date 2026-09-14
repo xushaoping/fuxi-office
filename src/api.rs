@@ -98,12 +98,24 @@ use tokio_stream::{StreamExt as _, wrappers::ReceiverStream};
 pub struct LoginPayload {
     pub username: String,
     pub password: String,
+    #[serde(rename = "captchaId")]
+    pub captcha_id: String,
+    #[serde(rename = "captchaCode")]
+    pub captcha_code: String,
 }
 
 #[cfg(target_family = "wasm")]
 #[derive(Debug, Serialize, Deserialize)]
 pub struct LoginResponse {
     pub token: String,
+}
+
+#[cfg(target_family = "wasm")]
+#[derive(Debug, Deserialize)]
+pub struct CaptchaResponse {
+    #[serde(rename = "captchaId")]
+    pub captcha_id: String,
+    pub image: String,
 }
 
 #[cfg(not(target_family = "wasm"))]
@@ -164,21 +176,21 @@ async fn apply_effective_knowledge(
     let Some(project_id) = req.project_id else {
         return Ok(Vec::new());
     };
-    let exists = sqlx::query_scalar::<_, bool>(
-        "SELECT EXISTS(SELECT 1 FROM decision_projects WHERE id=$1 AND owner_username=$2)",
+    let allowed = crate::project_access::has_permission(
+        &state.db,
+        project_id,
+        &claims.sub,
+        crate::project_access::ProjectPermission::Model,
     )
-    .bind(project_id)
-    .bind(&claims.sub)
-    .fetch_one(&state.db)
     .await
     .map_err(|error| {
-        eprintln!("数据库操作失败 [读取生成项目]: {error}");
+        eprintln!("数据库操作失败 [校验模型生成权限]: {error}");
         (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "ok": false, "error": format!("读取生成项目失败：{error}") })),
+            Json(json!({ "ok": false, "error": format!("校验模型生成权限失败：{error}") })),
         )
     })?;
-    if !exists {
+    if !allowed {
         return Err((
             StatusCode::NOT_FOUND,
             Json(json!({ "ok": false, "error": "决策项目不存在" })),
@@ -501,13 +513,20 @@ async fn health() -> Json<Value> {
 
 // 登录：成功返回 JWT token，失败（密码错误/网络错误）返回 None
 #[cfg(target_family = "wasm")]
-pub async fn login(username: &str, password: &str) -> Option<String> {
+pub async fn login(
+    username: &str,
+    password: &str,
+    captcha_id: &str,
+    captcha_code: &str,
+) -> Option<String> {
     let url = api_url("/api/login")?;
     let res = reqwest::Client::new()
         .post(url)
         .json(&LoginPayload {
             username: username.to_string(),
             password: password.to_string(),
+            captcha_id: captcha_id.to_string(),
+            captcha_code: captcha_code.to_string(),
         })
         .send()
         .await
@@ -517,6 +536,25 @@ pub async fn login(username: &str, password: &str) -> Option<String> {
     }
     let data: LoginResponse = res.json().await.ok()?;
     Some(data.token)
+}
+
+#[cfg(target_family = "wasm")]
+pub async fn captcha() -> Result<CaptchaResponse, String> {
+    let url = api_url("/api/captcha").ok_or_else(|| "无法确定验证码接口地址".to_string())?;
+    let response = reqwest::Client::new()
+        .get(url)
+        .timeout(std::time::Duration::from_secs(8))
+        .send()
+        .await
+        .map_err(|error| format!("验证码请求失败：{error}"))?;
+    let status = response.status();
+    if !status.is_success() {
+        return Err(format!("验证码接口返回 HTTP {}", status.as_u16()));
+    }
+    response
+        .json()
+        .await
+        .map_err(|error| format!("验证码响应解析失败：{error}"))
 }
 
 // 获取当前登录用户：成功返回用户名，token 失效/网络错误返回 None

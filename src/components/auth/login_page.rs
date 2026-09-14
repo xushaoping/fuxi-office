@@ -17,7 +17,42 @@ pub fn LoginPage() -> impl IntoView {
     let error_msg = RwSignal::new(None::<String>);
     let is_loading = RwSignal::new(false);
     let password_visible = RwSignal::new(false);
+    let captcha_id = RwSignal::new(String::new());
+    let captcha_code = RwSignal::new(String::new());
+    let captcha_image = RwSignal::new(String::new());
+    let captcha_loading = RwSignal::new(false);
+    let captcha_error = RwSignal::new(None::<String>);
     let app_state = expect_context::<AppState>();
+
+    let refresh_captcha = move || {
+        let captcha_id = captcha_id;
+        let captcha_image = captcha_image;
+        let captcha_loading = captcha_loading;
+        let captcha_error = captcha_error;
+        captcha_code.set(String::new());
+        if captcha_loading.get() {
+            return;
+        }
+        captcha_loading.set(true);
+        captcha_error.set(None);
+        spawn_local(async move {
+            match api::captcha().await {
+                Ok(data) => {
+                    captcha_id.set(data.captcha_id);
+                    captcha_image.set(data.image);
+                    captcha_loading.set(false);
+                }
+                Err(error) => {
+                    warn!("验证码加载失败：{error}");
+                    captcha_id.set(String::new());
+                    captcha_image.set(String::new());
+                    captcha_error.set(Some(error));
+                    captcha_loading.set(false);
+                }
+            }
+        });
+    };
+    refresh_captcha();
 
     let on_submit = move |ev: leptos::ev::SubmitEvent| {
         ev.prevent_default(); // 阻止表单默认提交导致页面刷新
@@ -30,11 +65,14 @@ pub fn LoginPage() -> impl IntoView {
 
         let username = username.get();
         let password = password.get();
+        let captcha_id_value = captcha_id.get();
+        let captcha_code_value = captcha_code.get();
         let navigate = navigate.clone();
+        let refresh_captcha = refresh_captcha.clone();
 
         spawn_local(async move {
             log!("开始发送登录请求...");
-            match api::login(&username, &password).await {
+            match api::login(&username, &password, &captcha_id_value, &captcha_code_value).await {
                 Some(t) => {
                     LocalStorage::set(TOKEN_KEY, t.clone()).ok();
                     token.set(Some(t));
@@ -42,7 +80,8 @@ pub fn LoginPage() -> impl IntoView {
                 }
                 None => {
                     warn!("登录失败：用户名或密码错误");
-                    error_msg.set(Some("用户名或密码错误".to_string()));
+                    error_msg.set(Some("验证码错误或用户名、密码不正确，请重试".to_string()));
+                    refresh_captcha();
                     is_loading.set(false);
                 }
             }
@@ -105,11 +144,44 @@ pub fn LoginPage() -> impl IntoView {
                     >{move || if password_visible.get() { "隐藏" } else { "显示" }}</button>
                     </div>
                 </div>
+                <div class="form-group">
+                    <label for="login-captcha">"验证码"</label>
+                    <div class="auth-captcha-field">
+                        <input
+                            id="login-captcha"
+                            type="text"
+                            class="input"
+                            placeholder="输入图片中的字符"
+                            autocomplete="off"
+                            name="captchaCode"
+                            maxlength="5"
+                            required=true
+                            bind:value=captcha_code
+                            disabled=move || is_loading.get()
+                        />
+                        <button
+                            type="button"
+                            class="auth-captcha-refresh"
+                            aria-label="刷新验证码"
+                            title="看不清？点击刷新"
+                            on:click=move |_| refresh_captcha()
+                            disabled=move || is_loading.get() || captcha_loading.get()
+                        >
+                            {move || if captcha_loading.get() { "加载中..." } else if captcha_error.get().is_some() { "重新加载" } else { "换一张" }}
+                        </button>
+                    </div>
+                    {move || (!captcha_image.get().is_empty()).then(|| view! {
+                        <img class="auth-captcha-image" src=captcha_image alt="验证码图片，点击换一张" on:click=move |_| refresh_captcha() />
+                    })}
+                    {move || captcha_error.get().map(|error| view! {
+                        <span class="auth-captcha-error" role="status">{error}</span>
+                    })}
+                </div>
                 <button
                     type="submit"
-                    class="btn btn-primary"
+                    class="button button-primary"
                     style="width: 100%;"
-                    disabled=move || is_loading.get()
+                    disabled=move || is_loading.get() || captcha_loading.get() || captcha_id.get().is_empty()
                 >
                     {move || if is_loading.get() {
                         "处理中..."

@@ -4135,7 +4135,13 @@ async fn run_test_cases(
     Extension(claims): Extension<Claims>,
     Path((project_id, version_id)): Path<(i64, i64)>,
 ) -> Result<Json<Vec<DecisionTestCase>>, ProjectApiError> {
-    ensure_project_permission(&state, project_id, &claims.sub, ProjectPermission::Model).await?;
+    ensure_project_permission(
+        &state,
+        project_id,
+        &claims.sub,
+        ProjectPermission::ExecuteAcceptance,
+    )
+    .await?;
     let row = sqlx::query_as::<_, (String, String, Option<i64>, i32)>(
         r#"
         SELECT artifact.dmn_xml, version.status, project.current_draft_version_id,
@@ -4352,10 +4358,15 @@ async fn verify_project_version(
     Path((project_id, version_id)): Path<(i64, i64)>,
 ) -> Result<Json<VersionVerificationReport>, ProjectApiError> {
     // Automatic verification executes the current model and writes its gate
-    // snapshot; it is part of the modeler's workflow, not the independent
-    // human review step. Owners/modelers must therefore be able to run it,
-    // while review approval remains protected by the Review permission below.
-    ensure_project_permission(&state, project_id, &claims.sub, ProjectPermission::Model).await?;
+    // snapshot. Both modelers and reviewers may run acceptance; review
+    // approval remains protected by the Review permission below.
+    ensure_project_permission(
+        &state,
+        project_id,
+        &claims.sub,
+        ProjectPermission::ExecuteAcceptance,
+    )
+    .await?;
     let row = sqlx::query_as::<
         _,
         (

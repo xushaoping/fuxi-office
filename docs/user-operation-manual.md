@@ -29,7 +29,7 @@
 
 ### 2.1 登录与退出
 
-填写用户名和密码，点击“登录”进入工作台。右上角“退出登录”会清除本地登录凭据并返回登录页。
+填写用户名、密码和图片验证码，点击“登录”进入工作台。验证码区支持点击图片或“换一张”刷新；验证码 5 分钟内有效且只能使用一次。登录失败后系统会自动刷新验证码并清空验证码输入。右上角“退出登录”会清除本地登录凭据并返回登录页。
 
 登录凭据失效后，系统会清除无效凭据并跳转到登录页。重新登录后再继续操作；尚未提交到服务端的输入内容可能无法恢复。
 
@@ -335,9 +335,15 @@ JSON 键应使用页面分析出的执行键。若模型定义了 `variable`，�
 外部系统调用时使用页面展示的地址：
 
 ```text
-POST /api/public/projects/{project_id}/decision-services/{service_id}/execute
+POST /api/public/projects/{project_id}/decision-services/execute
 X-Decision-Key: dmn_live_<secret>
 Content-Type: application/json
+
+{
+  "serviceId": "<service_id>",
+  "businessReference": "ORDER-2026-0001",
+  "inputs": { "Amount": 1200 }
+}
 ```
 
 服务页的“对外调用凭证”区域可以生成和撤销凭证。凭证按项目和服务绑定，完整密钥只在生成成功时显示一次，数据库仅保存 Argon2 哈希。凭证支持过期时间，每个项目最多保留 50 个有效凭证；项目成员失去查看权限后，其创建的凭证也不能继续执行。生产环境还应在网关侧启用 HTTPS、按 IP/凭证限流，并限制允许的来源。

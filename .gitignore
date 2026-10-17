@@ -1,4 +1,6 @@
 /target
+/deploy
+.github
 dist/
 .env*
 !.env.example

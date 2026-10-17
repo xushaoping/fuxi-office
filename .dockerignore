@@ -1,0 +1,28 @@
+.git
+.github
+.claude
+.codex
+.agents
+.DS_Store
+
+# Build outputs and local caches
+target
+dist
+release
+.docker-cache
+*.log
+*.pdf
+
+# Documentation and generated artifacts are not needed by Dockerfile COPY
+docs
+backups
+deploy
+
+# Keep the Linux Binaryen archive used by the builder.
+script/*.tar.gz
+!script/binaryen-version_132-x86_64-linux.tar.gz
+
+# Local environment files
+.env
+.env.*
+!.env.example

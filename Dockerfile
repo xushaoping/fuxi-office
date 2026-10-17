@@ -1,7 +1,7 @@
 # ==================== 构建阶段 ====================
 # The Rust image can be overridden for environments with a local or regional
 # registry mirror, but the default is the public Docker Hub image.
-ARG RUST_IMAGE=rust:1.90-bookworm
+ARG RUST_IMAGE=rust:1.90-slim-bookworm
 FROM ${RUST_IMAGE} AS builder
 
 # 使用国内镜像加速（可选，国内服务器推荐）
@@ -26,6 +26,11 @@ RUN mkdir -p /usr/local/cargo && \
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
     apt-get update && apt-get install -y \
+    --no-install-recommends \
+    ca-certificates \
+    curl \
+    git \
+    build-essential \
     pkg-config \
     libssl-dev \
     && rm -rf /var/lib/apt/lists/*

@@ -6,8 +6,8 @@ use axum::{
 };
 
 use crate::auth::{
-    auth_middleware, create_user, delete_user, ensure_admin_user, get_me, list_users, login,
-    captcha, update_user,
+    auth_middleware, create_user, delete_user, ensure_admin_user, get_me, hcaptcha_config,
+    list_users, login, update_user,
 };
 use crate::types::AppState;
 use sqlx::postgres::PgPool;
@@ -142,9 +142,25 @@ async fn main() {
             return;
         }
     };
+    let hcaptcha_secret = match std::env::var("HCAPTCHA_SECRET") {
+        Ok(value) if !value.trim().is_empty() => value,
+        _ => {
+            eprintln!("环境变量 HCAPTCHA_SECRET 未设置（请在 .env 中配置）");
+            return;
+        }
+    };
+    let hcaptcha_site_key = match std::env::var("HCAPTCHA_SITE_KEY") {
+        Ok(value) if !value.trim().is_empty() => value,
+        _ => {
+            eprintln!("环境变量 HCAPTCHA_SITE_KEY 未设置（请在 .env 中配置）");
+            return;
+        }
+    };
     let state = AppState {
         db: pool.clone(),
         jwt_secret,
+        hcaptcha_secret,
+        hcaptcha_site_key,
         captchas: Arc::new(std::sync::Mutex::new(HashMap::new())),
         captcha_rate_limits: Arc::new(std::sync::Mutex::new(HashMap::new())),
         login_rate_limits: Arc::new(std::sync::Mutex::new(HashMap::new())),
@@ -212,7 +228,7 @@ async fn main() {
     //      Service 的 Router<()>，此处 Router<AppState> 不能直接用 nest_service）
     //    - 根路径由服务端返回页面外壳；fallback_service 负责其余静态资源（pkg、style 等）
     let app = Router::new()
-        .route("/api/captcha", get(captcha))
+        .route("/api/hcaptcha-config", get(hcaptcha_config))
         .nest("/api", api_routes)
         .route("/", get(index))
         // The CSR router owns this path after the initial page load. Serving the

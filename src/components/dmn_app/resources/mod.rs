@@ -3,6 +3,7 @@ use leptos::task::spawn_local;
 use std::collections::HashSet;
 
 use crate::api;
+use crate::components::common::{SelectOption, WorkbenchDatePicker, WorkbenchSelect};
 use crate::models::{DecisionProject, KnowledgeSource, SaveKnowledgeSource};
 
 /// 知识类型标签
@@ -337,12 +338,19 @@ pub fn KnowledgeLibraryPanel(
                         <button class="button button-quiet" on:click=move |_| clear_form()>"清空"</button>
                     </div>
                     <div class="knowledge-form-grid">
-                        <label><span>"类型"</span><select prop:value=source_type on:change=move |event| source_type.set(event_target_value(&event))><option value="term">"企业术语"</option><option value="field">"字段目录"</option><option value="policy">"制度政策"</option></select></label>
+                        <WorkbenchSelect
+                            label="类型"
+                            options=Signal::derive(|| vec![SelectOption::new("term", "企业术语"), SelectOption::new("field", "字段目录"), SelectOption::new("policy", "制度政策")])
+                            value=source_type
+                            disabled=busy
+                            placeholder=Signal::derive(|| "请选择类型".to_string())
+                            on_change=Callback::new(move |value| source_type.set(value))
+                        />
                         <label><span>"名称"</span><input maxlength="160" prop:value=name on:input=move |event| name.set(event_target_value(&event)) /></label>
                         <label><span>"版本"</span><input maxlength="80" placeholder="例如 2026.1" prop:value=version_label on:input=move |event| version_label.set(event_target_value(&event)) /></label>
                         <label class="knowledge-form-wide"><span>"说明"</span><input maxlength="4000" prop:value=description on:input=move |event| description.set(event_target_value(&event)) /></label>
-                        <label><span>"生效日期"</span><input type="date" prop:value=valid_from on:input=move |event| valid_from.set(event_target_value(&event)) /></label>
-                        <label><span>"失效日期"</span><input type="date" prop:value=valid_until on:input=move |event| valid_until.set(event_target_value(&event)) /></label>
+                        <WorkbenchDatePicker label="生效日期" value=valid_from disabled=busy on_change=Callback::new(move |value| valid_from.set(value)) />
+                        <WorkbenchDatePicker label="失效日期" value=valid_until disabled=busy on_change=Callback::new(move |value| valid_until.set(value)) />
                         <label class="knowledge-form-wide"><span>"来源地址"</span><input maxlength="2000" placeholder="制度页面、文档或数据字典地址" prop:value=source_uri on:input=move |event| source_uri.set(event_target_value(&event)) /></label>
                         <label class="knowledge-form-wide"><span>"知识内容"</span><textarea maxlength="50000" rows="7" prop:value=content on:input=move |event| content.set(event_target_value(&event))></textarea></label>
                     </div>

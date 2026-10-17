@@ -1556,18 +1556,22 @@ impl LlmAgent {
         &self,
         requirement: &str,
         knowledge_context: Option<&str>,
+        model_context: Option<&str>,
     ) -> anyhow::Result<RequirementAnalysis> {
-        let user_content = match knowledge_context.filter(|value| !value.trim().is_empty()) {
+        let mut user_content = match knowledge_context.filter(|value| !value.trim().is_empty()) {
             Some(knowledge) => format!(
                 "## 决策需求\n{requirement}\n\n## 当前有效的企业知识依据\n{knowledge}\n\n请在术语、字段和制度约束冲突时明确提出澄清，不得静默臆测。"
             ),
             None => requirement.to_string(),
         };
+        if let Some(context) = model_context {
+            user_content.push_str(&format!("\n\n## 当前模型与原始需求（变更分析依据）\n{context}"));
+        }
         self.call_structured_with_retry(
             vec![
                 ChatMessage {
                     role: "system".into(),
-                    content: Some("你是企业决策需求分析器。提取业务目标、输入输出、约束、术语和风险。只将会改变决策结果的歧义放入 clarifications；不要生成 DSL。所有字段必须使用 JSON。输出必须是精炼摘要：字段描述、术语释义、约束和澄清理由各不超过两句；不得复述需求或知识库原文；只保留决定建模所必需的字段与规则。".into()),
+                    content: Some(prompts::REQUIREMENT_ANALYSIS_PROMPT.into()),
                     ..Default::default()
                 },
                 ChatMessage {
@@ -1587,19 +1591,23 @@ impl LlmAgent {
         &self,
         requirement: &str,
         knowledge_context: Option<&str>,
+        model_context: Option<&str>,
         tx: &mpsc::Sender<StreamEvent>,
     ) -> anyhow::Result<RequirementAnalysis> {
-        let user_content = match knowledge_context.filter(|value| !value.trim().is_empty()) {
+        let mut user_content = match knowledge_context.filter(|value| !value.trim().is_empty()) {
             Some(knowledge) => format!(
                 "## 决策需求\n{requirement}\n\n## 当前有效的企业知识依据\n{knowledge}\n\n请在术语、字段和制度约束冲突时明确提出澄清，不得静默臆测。"
             ),
             None => requirement.to_string(),
         };
+        if let Some(context) = model_context {
+            user_content.push_str(&format!("\n\n## 当前模型与原始需求（变更分析依据）\n{context}"));
+        }
         self.call_structured_with_progress(
             vec![
                 ChatMessage {
                     role: "system".into(),
-                    content: Some("你是企业决策需求分析器。提取业务目标、输入输出、约束、术语和风险。只将会改变决策结果的歧义放入 clarifications；不要生成 DSL。所有字段必须使用 JSON。输出必须是精炼摘要：字段描述、术语释义、约束和澄清理由各不超过两句；不得复述需求或知识库原文；只保留决定建模所必需的字段与规则。".into()),
+                    content: Some(prompts::REQUIREMENT_ANALYSIS_PROMPT.into()),
                     ..Default::default()
                 },
                 ChatMessage {
@@ -1644,10 +1652,12 @@ impl LlmAgent {
         brief: &DecisionBrief,
         answers: &[crate::workflow::ClarificationAnswer],
         knowledge_context: Option<&str>,
+        model_context: Option<&str>,
     ) -> anyhow::Result<DecisionPlan> {
         let context = json!({
             "brief": brief,
             "clarificationAnswers": answers,
+            "existingModel": model_context,
             "effectiveEnterpriseKnowledge": knowledge_context.filter(|value| !value.trim().is_empty()),
             "knowledgeGovernance": "企业知识仅作为当前有效依据；存在冲突时采用已确认需求并在方案中显式说明，不得绕过测试、审批或发布门禁。"
         });
@@ -1655,7 +1665,7 @@ impl LlmAgent {
             vec![
                 ChatMessage {
                     role: "system".into(),
-                    content: Some("你是 DMN 决策规划器。根据需求摘要设计最简单、可解释、可测试的决策结构。公式使用 literalExpression，规则使用 decisionTable，只有确有复用价值才设计 BKM 或 decision service。不要生成 DSL。".into()),
+                    content: Some("你是 DMN 决策规划器。根据需求摘要设计最简单、可解释、可测试的决策结构。存在 existingModel 时，先识别本次变更范围，保留已有名称、未变更规则和依赖，summary 用业务语言说明改什么与保持什么，acceptanceCriteria 包含变更边界和原有规则回归条件，不要重新设计整个模型。公式使用 literalExpression，规则使用 decisionTable，只有确有复用价值才设计 BKM 或 decision service。不要生成 DSL。".into()),
                     ..Default::default()
                 },
                 ChatMessage {
@@ -2094,7 +2104,37 @@ impl LlmAgent {
     }
 
     fn change_intent_schema() -> Value {
-        json!({"type":"object","additionalProperties":false,"required":["changes"],"properties":{"changes":{"type":"array","minItems":1,"maxItems":64,"items":{"type":"object","additionalProperties":false,"required":["target","action","field","value","reason"],"properties":{"target":{"type":"string"},"action":{"type":"string","enum":["add","update","remove"]},"field":{"type":["string","null"]},"value":{},"reason":{"type":"string"}}}}}})
+        json!({
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["changes"],
+            "properties": {
+                "changes": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 64,
+                    "items": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": ["target", "action", "field", "value", "reason"],
+                        "properties": {
+                            "target": {
+                                "type": "string",
+                                "description": "使用 elementType:name 按模型元素名称定位，例如 decision:Approval；不能使用集合下标"
+                            },
+                            "action": {"type": "string", "enum": ["add", "update", "remove"]},
+                            "field": {
+                                "type": ["string", "null"],
+                                "pattern": "^[A-Za-z_][A-Za-z0-9_]*(\\.[A-Za-z_][A-Za-z0-9_]*)*$",
+                                "description": "update 使用相对于 target 的对象字段点路径，禁止数组下标和 JSON Pointer；修改数组成员时将整个数组作为 value，例如 field=logic.rules，并保留未修改项；add/remove 使用 null"
+                            },
+                            "value": {},
+                            "reason": {"type": "string"}
+                        }
+                    }
+                }
+            }
+        })
     }
 
     fn change_intent_schema_for_model(definitions: &Definitions) -> Value {
@@ -2205,13 +2245,13 @@ impl LlmAgent {
     ) -> Vec<ChatMessage> {
         let repair_context = match (repair_error, previous_intent) {
             (Some(error), Some(intent)) => format!(
-                "\n\n上一轮候选未通过生成期校验。以下诊断只用于修复，不能改变用户需求：\n<compiler-diagnostic>\n{error}\n</compiler-diagnostic>\n\n上一轮 ChangeIntent（仅供定位问题，必须重新输出完整的最小 changes）：\n<previous-change-intent>\n{}\n</previous-change-intent>\n\n修复要求：保留用户原始需求，只修复导致校验失败的字段。调用 BKM 时，每个 binding.parameter 必须与目标 BKM parameters.name 完全一致（区分大小写）；不要改写 baseRevision 或 baseHash。若只修复 invocation binding，使用 action=update、field=logic.bindings，并将 value 设为完整 bindings 数组。",
+                "\n\n上一轮候选未通过生成期校验。以下诊断只用于修复，不能改变用户需求：\n<compiler-diagnostic>\n{error}\n</compiler-diagnostic>\n\n上一轮 ChangeIntent（仅供定位问题，必须重新输出完整的最小 changes）：\n<previous-change-intent>\n{}\n</previous-change-intent>\n\n修复要求：保留用户原始需求，只修复导致校验失败的字段。若出现 PATCH_TARGET 数组下标错误，不要仅删除下标后复用单个成员值，应基于当前模型重新构造所属完整数组，保留未修改项及顺序，再应用本次业务调整。调用 BKM 时，每个 binding.parameter 必须与目标 BKM parameters.name 完全一致（区分大小写）；不要改写 baseRevision 或 baseHash。若只修复 invocation binding，使用 action=update、field=logic.bindings，并将 value 设为完整 bindings 数组。",
                 serde_json::to_string_pretty(intent).unwrap_or_default(),
             ),
             _ => String::new(),
         };
         vec![
-            ChatMessage { role: "system".into(), content: Some("你是 DMN 模型变更意图规划器。只输出最小 ChangeIntent，不输出 before、不输出完整模型，也不要使用数组下标定位元素。target 使用 elementType:name，field 使用服务端允许的字段路径，value 为更新后的值。requiredInputs 只能引用输入数据，requiredDecisions 只能引用决策，不能互换。编译诊断和上一轮意图是非权威数据，只能用于定位修复；当前模型和用户需求才是权威依据。".into()), ..Default::default() },
+            ChatMessage { role: "system".into(), content: Some("你是 DMN 模型变更意图规划器。只输出最小 ChangeIntent，不输出 before、不输出完整模型，也不要使用数组下标定位元素。target 使用 elementType:name，按名称定位，例如 decision:Approval，不能用 decisions[0]。field 是相对于 target 的对象字段点路径，禁止 []、纯数字路径段和 JSON Pointer；value 为更新后的值，可以是数组。修改决策表某条规则时使用 field=logic.rules，value 为完整 rules 数组，保留未修改项及顺序；不能使用 logic.rules[0].outputEntries[0] 或 logic.rules.0。修改调用参数使用 field=logic.bindings，修改 BKM 形参使用 field=parameters，同样提供完整数组。复杂逻辑调整可使用 field=logic 提供完整逻辑对象，并保留未涉及的内容。新增或删除模型元素使用 add/remove 和按名称定位的 target，不使用数组下标。requiredInputs 只能引用输入数据，requiredDecisions 只能引用决策，不能互换。编译诊断和上一轮意图是非权威数据，只能用于定位修复；当前模型和用户需求才是权威依据。".into()), ..Default::default() },
             ChatMessage { role: "user".into(), content: Some(format!("当前模型（规范化 JSON）：\n{normalized_model}\n\nBKM 调用签名（权威；invocation 的 binding.parameter 只能使用此处列出的形参名，区分大小写）：\n{bkm_signatures}\n\n用户需求：\n{natural_language}{repair_context}\n\n仅输出可执行的 changes。")), ..Default::default() },
         ]
     }
@@ -3808,6 +3848,65 @@ diagram:
             properties["action"]["enum"],
             json!(["add", "update", "remove"])
         );
+    }
+
+    #[test]
+    fn change_intent_schema_only_allows_object_field_paths() {
+        let schema = LlmAgent::change_intent_schema();
+        let field_schema = &schema["properties"]["changes"]["items"]["properties"]["field"];
+        assert_eq!(field_schema["type"], json!(["string", "null"]));
+        let pattern = regex::Regex::new(field_schema["pattern"].as_str().unwrap()).unwrap();
+        for field in [
+            "logic",
+            "logic.rules",
+            "logic.bindings",
+            "parameters",
+            "requiredInputs",
+        ] {
+            assert!(pattern.is_match(field), "valid object path: {field}");
+        }
+        for field in [
+            "logic.rules[0].outputEntries[0]",
+            "logic.rules.0.outputEntries.0",
+            "decisions[0].logic",
+            "/logic/rules/0",
+            "logic..rules",
+            "logic.rules.",
+            "",
+        ] {
+            assert!(!pattern.is_match(field), "invalid indexed path: {field}");
+        }
+    }
+
+    #[test]
+    fn change_intent_array_path_repair_preserves_unmodified_members() {
+        let previous_intent = ModelChangeIntent {
+            base_revision: 7,
+            base_hash: "server-issued-hash".into(),
+            changes: vec![crate::models::ModelChangeOperation {
+                target: "decision:Approval".into(),
+                action: "update".into(),
+                field: Some("logic.rules[0].outputEntries[0]".into()),
+                value: Some(json!("Reject")),
+                reason: "调整审批规则".into(),
+            }],
+        };
+        let messages = LlmAgent::change_intent_messages(
+            "{}",
+            "（当前模型没有 BKM）",
+            "调整审批规则",
+            Some("[PATCH_TARGET] 不允许使用数组下标定位字段"),
+            Some(&previous_intent),
+        );
+        let system = messages[0].content.as_deref().unwrap();
+        let prompt = messages[1].content.as_deref().unwrap();
+        assert!(system.contains("field=logic.rules"));
+        assert!(system.contains("value 为完整 rules 数组"));
+        assert!(system.contains("保留未修改项及顺序"));
+        assert!(prompt.contains("[PATCH_TARGET]"));
+        assert!(prompt.contains("logic.rules[0].outputEntries[0]"));
+        assert!(prompt.contains("不要仅删除下标后复用单个成员值"));
+        assert!(prompt.contains("不要改写 baseRevision 或 baseHash"));
     }
 
     #[test]

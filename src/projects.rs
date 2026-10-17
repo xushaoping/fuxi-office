@@ -1880,7 +1880,7 @@ fn normalize_intent_field(path: &str, element_type: &str, element: &str) -> Stri
     if !collection.is_empty() {
         let prefix = format!("{collection}[");
         if let Some(end) = value.find(']') {
-            if value.starts_with(&prefix) {
+            if value.starts_with(&prefix) && &value[prefix.len()..end] == element {
                 value = value[end + 1..].trim_start_matches('.').to_string();
             }
         }
@@ -1926,8 +1926,12 @@ fn parse_intent_path(path: &str) -> Result<Vec<&str>, ProjectApiError> {
         ));
     }
     let segments = path.split('.').map(str::trim).collect::<Vec<_>>();
-    if segments.iter().any(|segment| segment.is_empty()) {
-        return Err(ProjectApiError::patch_target("ChangeIntent 字段路径无效"));
+    if segments.iter().any(|segment| {
+        segment.is_empty() || segment.chars().all(|character| character.is_ascii_digit())
+    }) {
+        return Err(ProjectApiError::patch_target(format!(
+            "ChangeIntent 字段路径无效：{path}；只允许对象字段，不允许数字路径段或数组下标"
+        )));
     }
     Ok(segments)
 }
@@ -2103,18 +2107,14 @@ fn apply_change_intent(
                     .filter(|value| !value.trim().is_empty())
                     .ok_or_else(|| ProjectApiError::patch_target("update 必须指定 field"))?;
                 let field = normalize_intent_field(field, element_type, element);
-                if field.contains('[') {
-                    return Err(ProjectApiError::patch_target(
-                        "不允许使用数组下标定位字段，请使用元素级变更或重新生成意图",
-                    ));
+                if field.contains(['[', ']']) {
+                    return Err(ProjectApiError::patch_target(format!(
+                        "不允许使用数组下标定位字段：target={}，field={field}。请按元素名称定位 target，使用对象字段更新；例如 field=logic.rules 或 logic.bindings，value 必须为调整后的完整数组，保留未修改项及顺序。请重新生成意图，不要仅删除下标后复用单个成员值",
+                        change.target,
+                    )));
                 }
-                let root_field = field
-                    .split('.')
-                    .next()
-                    .unwrap_or(field.as_str())
-                    .split('[')
-                    .next()
-                    .unwrap_or(field.as_str());
+                let segments = parse_intent_path(&field)?;
+                let root_field = segments[0];
                 if !is_allowed_intent_field(element_type, root_field) {
                     return Err(ProjectApiError::patch_target("不允许修改该字段"));
                 }
@@ -6313,19 +6313,89 @@ decisions:
             "name: Approval\ndecisions:\n  - name: Result\n    logic:\n      type: literalExpression\n      expression: '1'\n",
         )
         .unwrap();
+        for field in [
+            "logic.rules[0]",
+            "logic.rules[0].outputEntries[0]",
+            "logic.rules.0.outputEntries.0",
+            "decisions[0].logic.expression",
+            "logic.rules]",
+        ] {
+            let intent = ModelChangeIntent {
+                base_revision: 1,
+                base_hash: String::new(),
+                changes: vec![crate::models::ModelChangeOperation {
+                    target: "decision:Result".into(),
+                    action: "update".into(),
+                    field: Some(field.into()),
+                    value: Some(json!("x")),
+                    reason: String::new(),
+                }],
+            };
+            let error = apply_change_intent(&base, &intent).unwrap_err();
+            assert_eq!(error.code, "PATCH_TARGET");
+            assert!(error.message.contains(field), "{}", error.message);
+            if field.contains('[') {
+                assert!(error.message.contains("target=decision:Result"));
+                assert!(error.message.contains("完整数组"));
+                assert!(error.message.contains("保留未修改项及顺序"));
+            }
+        }
+    }
+
+    #[test]
+    fn change_intent_updates_complete_rule_array_and_preserves_other_rules() {
+        let base = nl_dsl::parse_definitions(
+            r#"
+name: Approval
+inputs:
+  - name: Age
+    typeRef: number
+decisions:
+  - name: Result
+    typeRef: string
+    requiredInputs: [Age]
+    logic:
+      type: decisionTable
+      hitPolicy: FIRST
+      inputs:
+        - expression: Age
+          typeRef: number
+      outputs:
+        - name: result
+          typeRef: string
+      rules:
+        - inputEntries: [">= 18"]
+          outputEntries: ['"Approve"']
+        - inputEntries: ["-"]
+          outputEntries: ['"Reject"']
+"#,
+        )
+        .unwrap();
+        let original = serde_json::to_value(&base).unwrap();
+        let mut rules = original["decisions"][0]["logic"]["rules"].clone();
+        rules[0]["inputEntries"][0] = json!(">= 21");
         let intent = ModelChangeIntent {
             base_revision: 1,
             base_hash: String::new(),
             changes: vec![crate::models::ModelChangeOperation {
                 target: "decision:Result".into(),
                 action: "update".into(),
-                field: Some("logic.rules[0]".into()),
-                value: Some(json!("x")),
-                reason: String::new(),
+                field: Some("logic.rules".into()),
+                value: Some(rules.clone()),
+                reason: "提高门槛，保留其他规则".into(),
             }],
         };
-        let error = apply_change_intent(&base, &intent).unwrap_err();
-        assert_eq!(error.code, "PATCH_TARGET");
+        let updated = apply_change_intent(&base, &intent).unwrap();
+        let updated_document = serde_json::to_value(&updated).unwrap();
+        assert_eq!(updated_document["decisions"][0]["logic"]["rules"], rules);
+        assert_eq!(
+            updated_document["decisions"][0]["logic"]["rules"][1],
+            original["decisions"][0]["logic"]["rules"][1]
+        );
+        assert_eq!(updated_document["inputs"], original["inputs"]);
+        assert_eq!(serde_json::to_value(&base).unwrap(), original);
+        nl_dsl::validate(&updated).unwrap();
+        canonical_dmn_xml(&updated).expect("whole-array update should compile to DMN");
     }
 
     #[test]

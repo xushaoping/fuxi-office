@@ -12,7 +12,7 @@ use crate::models::{
 };
 #[cfg(target_family = "wasm")]
 use crate::workflow::{
-    AnalyzeRequirementRequest, ClarificationAnswer, CreateDecisionPlanRequest,
+    AnalyzeRequirementRequest, ClarificationAnswer, ConfirmDecisionPlanRequest, CreateDecisionPlanRequest,
     DecisionWorkflowState,
 };
 #[cfg(target_family = "wasm")]
@@ -98,10 +98,8 @@ use tokio_stream::{StreamExt as _, wrappers::ReceiverStream};
 pub struct LoginPayload {
     pub username: String,
     pub password: String,
-    #[serde(rename = "captchaId")]
-    pub captcha_id: String,
-    #[serde(rename = "captchaCode")]
-    pub captcha_code: String,
+    #[serde(rename = "hcaptchaToken")]
+    pub hcaptcha_token: String,
 }
 
 #[cfg(target_family = "wasm")]
@@ -112,10 +110,9 @@ pub struct LoginResponse {
 
 #[cfg(target_family = "wasm")]
 #[derive(Debug, Deserialize)]
-pub struct CaptchaResponse {
-    #[serde(rename = "captchaId")]
-    pub captcha_id: String,
-    pub image: String,
+pub struct HcaptchaConfigResponse {
+    #[serde(rename = "siteKey")]
+    pub site_key: String,
 }
 
 #[cfg(not(target_family = "wasm"))]
@@ -147,6 +144,8 @@ struct DmnInputsAnalysis {
 #[derive(Deserialize, Clone)]
 struct GenerateRequest {
     text: String,
+    #[serde(default, rename = "workflowUpdatedAt")]
+    workflow_updated_at: Option<chrono::DateTime<chrono::Utc>>,
     #[serde(default, rename = "projectId")]
     project_id: Option<i64>,
     /// 已有的 DSL YAML（增量修改模式），可选
@@ -239,6 +238,12 @@ fn validate_generate_request(req: &GenerateRequest) -> Result<(), (StatusCode, J
             Json(json!({ "ok": false, "error": "已有 DSL 不能超过 200000 字节" })),
         ));
     }
+    if req.workflow_updated_at.is_none() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(json!({"ok": false, "error": "缺少已确认方案的 workflowUpdatedAt，请重新加载工作流"})),
+        ));
+    }
     Ok(())
 }
 
@@ -247,7 +252,7 @@ fn validate_change_intent_request(req: &GenerateRequest) -> Result<(), (StatusCo
     validate_generate_request(req)?;
     if req
         .repair_attempt
-        .is_some_and(|attempt| !(0..=2).contains(&attempt))
+        .is_some_and(|attempt| !(0..=crate::workflow::MAX_MODEL_CHANGE_REPAIRS).contains(&attempt))
     {
         return Err((
             StatusCode::BAD_REQUEST,
@@ -511,51 +516,62 @@ async fn health() -> Json<Value> {
     }))
 }
 
-// 登录：成功返回 JWT token，失败（密码错误/网络错误）返回 None
+// 登录：成功返回 JWT token，失败时保留服务端返回的诊断信息。
 #[cfg(target_family = "wasm")]
 pub async fn login(
     username: &str,
     password: &str,
-    captcha_id: &str,
-    captcha_code: &str,
-) -> Option<String> {
-    let url = api_url("/api/login")?;
+    hcaptcha_token: &str,
+) -> Result<String, String> {
+    let url = api_url("/api/login").ok_or_else(|| "无法确定登录接口地址".to_string())?;
     let res = reqwest::Client::new()
         .post(url)
         .json(&LoginPayload {
             username: username.to_string(),
             password: password.to_string(),
-            captcha_id: captcha_id.to_string(),
-            captcha_code: captcha_code.to_string(),
+            hcaptcha_token: hcaptcha_token.to_string(),
         })
         .send()
         .await
-        .ok()?;
+        .map_err(|error| format!("登录请求失败：{error}"))?;
     if !res.status().is_success() {
-        return None;
+        let status = res.status();
+        let body = res.json::<serde_json::Value>().await.ok();
+        return Err(body
+            .and_then(|body| {
+                body.get("error")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_owned)
+            })
+            .unwrap_or_else(|| format!("登录失败（HTTP {}）", status.as_u16())));
     }
-    let data: LoginResponse = res.json().await.ok()?;
-    Some(data.token)
+    let data: LoginResponse = res
+        .json()
+        .await
+        .map_err(|error| format!("登录响应解析失败：{error}"))?;
+    Ok(data.token)
 }
 
 #[cfg(target_family = "wasm")]
-pub async fn captcha() -> Result<CaptchaResponse, String> {
-    let url = api_url("/api/captcha").ok_or_else(|| "无法确定验证码接口地址".to_string())?;
+pub async fn hcaptcha_config() -> Result<HcaptchaConfigResponse, String> {
+    let url = api_url("/api/hcaptcha-config").ok_or_else(|| "无法确定验证码配置接口地址".to_string())?;
     let response = reqwest::Client::new()
         .get(url)
         .timeout(std::time::Duration::from_secs(8))
         .send()
         .await
-        .map_err(|error| format!("验证码请求失败：{error}"))?;
+        .map_err(|error| format!("hCaptcha 配置请求失败：{error}"))?;
     let status = response.status();
     if !status.is_success() {
-        return Err(format!("验证码接口返回 HTTP {}", status.as_u16()));
+        return Err(format!("hCaptcha 配置接口返回 HTTP {}", status.as_u16()));
     }
     response
         .json()
         .await
-        .map_err(|error| format!("验证码响应解析失败：{error}"))
+        .map_err(|error| format!("hCaptcha 配置响应解析失败：{error}"))
 }
+
+#[cfg(target_family = "wasm")]
 
 // 获取当前登录用户：成功返回用户名，token 失效/网络错误返回 None
 #[cfg(target_family = "wasm")]
@@ -1156,6 +1172,7 @@ pub async fn generate_change_intent(
     project_id: i64,
     text: String,
     base_revision: i64,
+    workflow_updated_at: chrono::DateTime<chrono::Utc>,
     repair_error: Option<String>,
     repair_attempt: i32,
     previous_intent: Option<ModelChangeIntent>,
@@ -1169,6 +1186,7 @@ pub async fn generate_change_intent(
             "text": text,
             "projectId": project_id,
             "baseRevision": base_revision,
+            "workflowUpdatedAt": workflow_updated_at,
             "repairError": repair_error,
             "repairAttempt": repair_attempt,
             "previousIntent": previous_intent,
@@ -1193,6 +1211,7 @@ pub async fn generate_change_intent_stream(
     project_id: i64,
     text: String,
     base_revision: i64,
+    workflow_updated_at: chrono::DateTime<chrono::Utc>,
     repair_error: Option<String>,
     repair_attempt: i32,
     previous_intent: Option<ModelChangeIntent>,
@@ -1205,6 +1224,7 @@ pub async fn generate_change_intent_stream(
         "text": text,
         "projectId": project_id,
         "baseRevision": base_revision,
+        "workflowUpdatedAt": workflow_updated_at,
         "repairError": repair_error,
         "repairAttempt": repair_attempt,
         "previousIntent": previous_intent,
@@ -2006,12 +2026,13 @@ pub async fn create_decision_plan(
     token: &str,
     project_id: i64,
     answers: Vec<ClarificationAnswer>,
+    expected_updated_at: chrono::DateTime<chrono::Utc>,
 ) -> Result<DecisionWorkflowState, String> {
     workflow_post(
         token,
         project_id,
         "plan",
-        &CreateDecisionPlanRequest { answers },
+        &CreateDecisionPlanRequest { answers, expected_updated_at },
         "决策方案规划",
     )
     .await
@@ -2021,12 +2042,13 @@ pub async fn create_decision_plan(
 pub async fn confirm_decision_plan(
     token: &str,
     project_id: i64,
+    expected_updated_at: chrono::DateTime<chrono::Utc>,
 ) -> Result<DecisionWorkflowState, String> {
     workflow_post(
         token,
         project_id,
         "confirm",
-        &serde_json::json!({}),
+        &ConfirmDecisionPlanRequest { expected_updated_at },
         "确认决策方案",
     )
     .await
@@ -2414,6 +2436,7 @@ pub async fn run_pipeline(
     text: String,
     existing_dsl: Option<String>,
     base_version: Option<i32>,
+    workflow_updated_at: chrono::DateTime<chrono::Utc>,
     controller: web_sys::AbortController,
     mut on_event: impl FnMut(SseEvent),
 ) -> Result<(), String> {
@@ -2423,6 +2446,7 @@ pub async fn run_pipeline(
         "projectId": project_id,
         "existingDsl": existing_dsl,
         "baseVersion": base_version,
+        "workflowUpdatedAt": workflow_updated_at,
     }))
     .map_err(|e| e.to_string())?;
     let headers = web_sys::Headers::new().map_err(js_error)?;
@@ -2805,6 +2829,54 @@ fn dmn_item_value(
 }
 
 #[cfg(not(target_family = "wasm"))]
+async fn ensure_generation_snapshot(
+    db: &sqlx::PgPool,
+    request: &GenerateRequest,
+) -> Result<(), String> {
+    let current = sqlx::query_scalar::<_, bool>(
+        "SELECT EXISTS (SELECT 1 FROM decision_workflows workflow JOIN decision_projects project ON project.id = workflow.project_id WHERE workflow.project_id = $1 AND workflow.updated_at = $2 AND workflow.status = 'confirmed' AND workflow.decision_plan_json IS NOT NULL AND workflow.base_revision IS NOT DISTINCT FROM project.current_draft_version_id)",
+    )
+    .bind(request.project_id)
+    .bind(request.workflow_updated_at)
+    .fetch_one(db)
+    .await
+    .map_err(|error| {
+        eprintln!("核对生成任务工作流失败: {error}");
+        "无法核对生成任务，请刷新后重试".to_string()
+    })?;
+    if !current {
+        return Err("生成期间需求、方案或模型基线已变化，本次结果已作废，请刷新并重新确认方案".into());
+    }
+    Ok(())
+}
+
+#[cfg(not(target_family = "wasm"))]
+async fn apply_confirmed_workflow(
+    state: &AppState,
+    claims: &Claims,
+    request: &mut GenerateRequest,
+    base_revision: Option<i64>,
+) -> Result<(), Response> {
+    let project_id = request.project_id.ok_or_else(|| {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"ok": false, "error": "生成模型必须选择项目并确认决策方案"})),
+        )
+            .into_response()
+    })?;
+    request.text = crate::workflow_api::confirmed_generation_prompt(
+        state,
+        project_id,
+        &claims.sub,
+        base_revision,
+        request.workflow_updated_at,
+    )
+    .await
+    .map_err(IntoResponse::into_response)?;
+    Ok(())
+}
+
+#[cfg(not(target_family = "wasm"))]
 async fn generate_dsl(
     State(app_state): State<AppState>,
     Extension(state): Extension<Arc<LlmState>>,
@@ -2825,6 +2897,9 @@ async fn generate_dsl(
             Json(json!({"ok": false, "code": "CHANGE_INTENT_REQUIRED", "error": "已有模型的修改必须通过模型变更预览接口完成"})),
         ).into_response();
     }
+    if let Err(error) = apply_confirmed_workflow(&app_state, &claims, &mut req, None).await {
+        return error.into_response();
+    }
     let knowledge_citations = match apply_effective_knowledge(&app_state, &claims, &mut req).await {
         Ok(citations) => citations,
         Err(error) => return error.into_response(),
@@ -2837,18 +2912,27 @@ async fn generate_dsl(
             .into_response();
     };
     if wants_stream(&headers) {
-        return generate_dsl_sse(dsl_agent, req, knowledge_citations);
+        return generate_dsl_sse(dsl_agent, req, knowledge_citations, app_state.db.clone());
     }
     match dsl_agent.generate_dsl(&req.text, None).await {
-        Ok(generated) => (
-            StatusCode::OK,
-            Json(json!({
-                "ok": true,
-                "nl_dsl": generated.yaml,
-                "knowledgeCitations": knowledge_citations,
-            })),
-        )
-            .into_response(),
+        Ok(generated) => {
+            if let Err(message) = ensure_generation_snapshot(&app_state.db, &req).await {
+                return (
+                    StatusCode::CONFLICT,
+                    Json(json!({"ok": false, "error": message})),
+                )
+                    .into_response();
+            }
+            (
+                StatusCode::OK,
+                Json(json!({
+                    "ok": true,
+                    "nl_dsl": generated.yaml,
+                    "knowledgeCitations": knowledge_citations,
+                })),
+            )
+                .into_response()
+        }
         Err(e) => (
             StatusCode::BAD_GATEWAY,
             Json(json!({ "ok": false, "error": e.to_string() })),
@@ -2943,7 +3027,7 @@ async fn generate_change_intent(
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
-    let req: GenerateRequest = match parse_json_body(body).await {
+    let mut req: GenerateRequest = match parse_json_body(body).await {
         Ok(value) => value,
         Err(error) => return error.into_response(),
     };
@@ -3021,6 +3105,11 @@ async fn generate_change_intent(
             Json(json!({"ok": false, "code": "BASE_CONFLICT", "error": "模型基线版本已变化，请刷新后重试"})),
         ).into_response();
     }
+    if let Err(error) =
+        apply_confirmed_workflow(&app_state, &claims, &mut req, Some(base_revision)).await
+    {
+        return error.into_response();
+    }
     let Some(agent) = state.agent_for(LlmTask::ChangeIntent).cloned() else {
         return (
             StatusCode::SERVICE_UNAVAILABLE,
@@ -3050,6 +3139,10 @@ async fn generate_change_intent(
         .await
     {
         Ok(intent) => {
+            if let Err(message) = ensure_generation_snapshot(&app_state.db, &req).await {
+                finish_change_intent_run(&app_state.db, run_id, Err(message.clone())).await;
+                return (StatusCode::CONFLICT, Json(json!({"ok": false, "error": message}))).into_response();
+            }
             if intent.base_revision != current_revision {
                 finish_change_intent_run(
                     &app_state.db,
@@ -3114,6 +3207,11 @@ fn generate_change_intent_sse(
             .await
         {
             Ok(intent) => {
+                if let Err(message) = ensure_generation_snapshot(&db, &req).await {
+                    let _ = tx.send(StreamEvent::Finished(Err(message.clone()))).await;
+                    finish_change_intent_run(&db, run_id, Err(message)).await;
+                    return;
+                }
                 let audit_output = serde_json::to_value(&intent).unwrap_or_else(|_| json!({}));
                 let _ = tx
                     .send(StreamEvent::Step(
@@ -3144,12 +3242,17 @@ fn generate_dsl_sse(
     dsl_agent: LlmAgent,
     req: GenerateRequest,
     knowledge_citations: Vec<crate::models::KnowledgeCitation>,
+    db: sqlx::PgPool,
 ) -> Response {
     let (tx, rx) = mpsc::channel::<StreamEvent>(64);
     let text = req.text.clone();
     let tx2 = tx.clone();
     tokio::spawn(async move {
         let result = dsl_agent.generate_dsl_stream(&text, None, &tx2).await;
+        if let Err(message) = ensure_generation_snapshot(&db, &req).await {
+            let _ = tx2.send(StreamEvent::Finished(Err(message))).await;
+            return;
+        }
         let _ = tx2
             .send(StreamEvent::Finished(
                 result
@@ -3188,6 +3291,9 @@ async fn run_pipeline(
             Json(json!({"ok": false, "code": "CHANGE_INTENT_REQUIRED", "error": "已有模型的修改必须通过模型变更预览接口完成"})),
         ).into_response();
     }
+    if let Err(error) = apply_confirmed_workflow(&app_state, &claims, &mut req, None).await {
+        return error.into_response();
+    }
     let knowledge_citations = match apply_effective_knowledge(&app_state, &claims, &mut req).await {
         Ok(citations) => citations,
         Err(error) => return error.into_response(),
@@ -3200,7 +3306,7 @@ async fn run_pipeline(
             .into_response();
     };
     if wants_stream(&headers) {
-        return run_pipeline_sse(dsl_agent, req, knowledge_citations);
+        return run_pipeline_sse(dsl_agent, req, knowledge_citations, app_state.db.clone());
     }
 
     // 步骤 1: 自然语言 → DSL
@@ -3215,6 +3321,9 @@ async fn run_pipeline(
         }
     };
     let dsl_text = generated.yaml;
+    if let Err(message) = ensure_generation_snapshot(&app_state.db, &req).await {
+        return (StatusCode::CONFLICT, Json(json!({"ok": false, "error": message}))).into_response();
+    }
 
     // 步骤 2: 校验 DSL
     let defs = match nl_dsl::parse_definitions(&dsl_text) {
@@ -3266,6 +3375,7 @@ fn run_pipeline_sse(
     dsl_agent: LlmAgent,
     req: GenerateRequest,
     knowledge_citations: Vec<crate::models::KnowledgeCitation>,
+    db: sqlx::PgPool,
 ) -> Response {
     let (tx, rx) = mpsc::channel::<StreamEvent>(64);
     let text = req.text.clone();
@@ -3282,6 +3392,10 @@ fn run_pipeline_sse(
             }
         };
         let dsl_text = generated.yaml;
+        if let Err(message) = ensure_generation_snapshot(&db, &req).await {
+            let _ = tx2.send(StreamEvent::Finished(Err(message))).await;
+            return;
+        }
 
         // 步骤 2: 校验 DSL
         let _ = tx2
@@ -3571,6 +3685,7 @@ mod tests {
     fn request(text: String, existing_dsl: Option<String>) -> GenerateRequest {
         GenerateRequest {
             text,
+            workflow_updated_at: Some(chrono::Utc::now()),
             project_id: None,
             existing_dsl,
             base_version: None,
@@ -3579,6 +3694,20 @@ mod tests {
             repair_attempt: None,
             previous_intent: None,
         }
+    }
+
+    #[test]
+    fn generation_requires_explicit_workflow_snapshot() {
+        let mut payload = request("按确认方案生成模型".into(), None);
+        payload.workflow_updated_at = None;
+        let error = validate_generate_request(&payload).unwrap_err();
+        assert_eq!(error.0, StatusCode::BAD_REQUEST);
+        assert!(
+            error.1.0["error"]
+                .as_str()
+                .unwrap()
+                .contains("workflowUpdatedAt")
+        );
     }
 
     #[test]

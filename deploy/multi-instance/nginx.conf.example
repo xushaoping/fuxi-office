@@ -1,0 +1,119 @@
+# Shared reverse proxy for multiple Fuxi app instances.
+# Mirrors nginx.conf: HTTP and HTTPS both proxy to the app, with the same
+# Upgrade headers and timeouts. Point each hostname to a loopback port from
+# docker-compose.multi.yml instead of the Docker service name `app:3000`.
+#
+# Suggested layout on the server:
+#   /etc/nginx/nginx.conf            this file, or include it from http {}
+#   /etc/nginx/ssl/<host>_bundle.crt
+#   /etc/nginx/ssl/<host>.key
+#
+# After editing:
+#   nginx -t && systemctl reload nginx
+
+user nginx;
+worker_processes auto;
+error_log /var/log/nginx/error.log warn;
+pid /var/run/nginx.pid;
+
+events {
+    worker_connections 1024;
+}
+
+http {
+    upstream fuxi_app_a {
+        server 127.0.0.1:3101;
+    }
+
+    upstream fuxi_app_b {
+        server 127.0.0.1:3102;
+    }
+
+    server {
+        listen 80;
+        server_name app-a.example.com;
+        client_max_body_size 10M;
+
+        location / {
+            proxy_pass http://fuxi_app_a;
+            proxy_http_version 1.1;
+            proxy_set_header Upgrade $http_upgrade;
+            proxy_set_header Connection "upgrade";
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
+            proxy_read_timeout 300s;
+            proxy_connect_timeout 75s;
+        }
+    }
+
+    # HTTPS server
+    server {
+        listen 443 ssl http2;
+        server_name app-a.example.com;
+        client_max_body_size 10M;
+
+        ssl_certificate /etc/nginx/ssl/app-a.example.com_bundle.crt;
+        ssl_certificate_key /etc/nginx/ssl/app-a.example.com.key;
+        ssl_protocols TLSv1.2 TLSv1.3;
+        ssl_ciphers HIGH:!aNULL:!MD5;
+
+        location / {
+            proxy_pass http://fuxi_app_a;
+            proxy_http_version 1.1;
+            proxy_set_header Upgrade $http_upgrade;
+            proxy_set_header Connection "upgrade";
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
+            proxy_read_timeout 300s;
+            proxy_connect_timeout 75s;
+        }
+    }
+
+    server {
+        listen 80;
+        server_name app-b.example.com;
+        client_max_body_size 10M;
+
+        location / {
+            proxy_pass http://fuxi_app_b;
+            proxy_http_version 1.1;
+            proxy_set_header Upgrade $http_upgrade;
+            proxy_set_header Connection "upgrade";
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
+            proxy_read_timeout 300s;
+            proxy_connect_timeout 75s;
+        }
+    }
+
+    # HTTPS server
+    server {
+        listen 443 ssl http2;
+        server_name app-b.example.com;
+        client_max_body_size 10M;
+
+        ssl_certificate /etc/nginx/ssl/app-b.example.com_bundle.crt;
+        ssl_certificate_key /etc/nginx/ssl/app-b.example.com.key;
+        ssl_protocols TLSv1.2 TLSv1.3;
+        ssl_ciphers HIGH:!aNULL:!MD5;
+
+        location / {
+            proxy_pass http://fuxi_app_b;
+            proxy_http_version 1.1;
+            proxy_set_header Upgrade $http_upgrade;
+            proxy_set_header Connection "upgrade";
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
+            proxy_read_timeout 300s;
+            proxy_connect_timeout 75s;
+        }
+    }
+}

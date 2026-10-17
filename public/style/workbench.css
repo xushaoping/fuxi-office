@@ -1,0 +1,1406 @@
+.app-shell.workbench-shell {
+    --bg: #f5f7fa;
+    --surface: #fafbfc;
+    --surface-raised: #ffffff;
+    --surface-soft: #f0f5ff;
+    --border: #e8ecf2;
+    --border-strong: #d2d9e3;
+    --text: #1d2939;
+    --text-muted: #667085;
+    --text-faint: #707c91;
+    --accent: #1677ff;
+    --accent-strong: #0958d9;
+    --accent-ink: #ffffff;
+    --success: #389e0d;
+    --warning: #ad6800;
+    --danger: #cf1322;
+    --radius: 8px;
+    --shadow: 0 4px 16px rgb(16 24 40 / 5%);
+    --topbar-bg: var(--surface-raised);
+    --topbar-text: var(--text);
+    --topbar-muted: var(--text-muted);
+    --topbar-border: var(--border);
+    --topbar-control-border: var(--border-strong);
+    --topbar-control-hover: var(--surface-soft);
+    --topbar-primary-bg: var(--accent);
+    --topbar-primary-text: var(--accent-ink);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+}
+
+.app-shell.workbench-shell.theme-dark {
+    --bg: #10141c;
+    --surface: #171d28;
+    --surface-raised: #1c2330;
+    --surface-soft: #202f48;
+    --border: #2c3545;
+    --border-strong: #465269;
+    --text: #edf1f7;
+    --text-muted: #a5b0c2;
+    --text-faint: #96a3b9;
+    --accent: #69aaff;
+    --accent-strong: #91caff;
+    --accent-ink: #101b2c;
+    --success: #95de64;
+    --warning: #ffd666;
+    --danger: #ff7875;
+    --shadow: 0 4px 16px rgb(0 0 0 / 18%);
+}
+
+.app-shell.workbench-shell .wb-icon {
+    display: inline-block;
+    flex: 0 0 auto;
+    width: 18px;
+    height: 18px;
+    vertical-align: middle;
+}
+
+.app-shell.workbench-shell .topbar {
+    align-items: center;
+    min-height: 68px;
+    padding: 10px 24px;
+    background: var(--surface-raised);
+}
+
+.app-shell.workbench-shell .brand-lockup {
+    gap: 12px;
+}
+
+.app-shell.workbench-shell .brand-mark {
+    width: 40px;
+    height: 40px;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    background: var(--surface-raised);
+}
+
+.app-shell.workbench-shell .brand-lockup .eyebrow {
+    margin: 0 0 4px;
+    color: var(--text-faint);
+    font-size: 9px;
+    letter-spacing: 1.6px;
+}
+
+.app-shell.workbench-shell .brand-lockup h1 {
+    margin: 0;
+    color: var(--text);
+    font-size: 17px;
+    font-weight: 650;
+    letter-spacing: .5px;
+}
+
+.app-shell.workbench-shell .topbar-actions {
+    gap: 12px;
+}
+
+.app-shell.workbench-shell .button,
+.app-shell.workbench-shell .theme-toggle {
+    min-height: 34px;
+    border: 1px solid var(--border-strong);
+    border-radius: 6px;
+    background: var(--surface-raised);
+    color: var(--text);
+    font-size: 13px;
+    font-weight: 500;
+    box-shadow: none;
+    transition: border-color 160ms ease, background 160ms ease, color 160ms ease;
+}
+
+.app-shell.workbench-shell .button:hover:not(:disabled),
+.app-shell.workbench-shell .theme-toggle:hover {
+    border-color: var(--accent);
+    background: var(--surface-soft);
+    color: var(--accent);
+    transform: none;
+}
+
+.app-shell.workbench-shell .button-primary {
+    border-color: var(--accent);
+    background: var(--accent);
+    color: var(--accent-ink);
+}
+
+.app-shell.workbench-shell .button-primary:hover:not(:disabled) {
+    border-color: var(--accent-strong);
+    background: var(--accent-strong);
+    color: var(--accent-ink);
+}
+
+.app-shell.workbench-shell .button-danger {
+    border-color: color-mix(in srgb, var(--danger) 35%, var(--border));
+    color: var(--danger);
+}
+
+.app-shell.workbench-shell .button-quiet {
+    border-color: var(--border);
+    background: transparent;
+    color: var(--text-muted);
+}
+
+.app-shell.workbench-shell .button:disabled {
+    opacity: .5;
+    cursor: not-allowed;
+}
+
+.app-shell.workbench-shell .run-status {
+    padding: 5px 10px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--surface);
+    font-size: 12px;
+}
+
+.app-shell.workbench-shell .user-menu-trigger {
+    min-height: 36px;
+    border-color: transparent;
+    background: transparent;
+}
+
+.app-shell.workbench-shell .user-avatar {
+    border-color: color-mix(in srgb, var(--accent) 20%, var(--border));
+    background: var(--surface-soft);
+    color: var(--accent);
+}
+
+.app-shell.workbench-shell .project-bar {
+    grid-template-columns: minmax(210px, 1fr) minmax(300px, 1.3fr) minmax(160px, .9fr);
+    gap: 24px;
+    padding: 14px 24px;
+    background: var(--surface-raised);
+}
+
+.app-shell.workbench-shell .project-current {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    min-width: 0;
+}
+
+.app-shell.workbench-shell .wb-project-icon {
+    display: grid;
+    flex: 0 0 auto;
+    width: 42px;
+    height: 42px;
+    place-items: center;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--surface);
+    color: var(--accent);
+}
+
+.app-shell.workbench-shell .wb-project-copy {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    min-width: 0;
+    gap: 4px 8px;
+}
+
+.app-shell.workbench-shell .wb-project-copy > .toolbar-label {
+    flex-basis: 100%;
+    font-size: 11px;
+    color: var(--text-faint);
+}
+
+.app-shell.workbench-shell .wb-project-copy > strong {
+    overflow: hidden;
+    max-width: 100%;
+    color: var(--text);
+    font-size: 14px;
+    font-weight: 600;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.app-shell.workbench-shell .project-actions {
+    display: grid;
+    grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr);
+    gap: 12px;
+}
+
+:is(.app-shell.workbench-shell, .project-management-page) .wb-select-field {
+    display: grid;
+    min-width: 0;
+    gap: 5px;
+    color: var(--text-muted);
+    font-size: 11px;
+}
+
+.app-shell.workbench-shell .wb-select-field.project-select,
+.app-shell.workbench-shell .wb-select-field.version-select {
+    width: 100%;
+    min-height: 0;
+    height: auto;
+    margin: 0;
+    padding: 0;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    font: inherit;
+}
+
+:is(.app-shell.workbench-shell, .project-management-page) .wb-select-label {
+    color: var(--text-muted);
+    font-size: 11px;
+}
+
+:is(.app-shell.workbench-shell, .project-management-page) .wb-select {
+    position: relative;
+    min-width: 0;
+}
+
+:is(.app-shell.workbench-shell, .project-management-page) .wb-select-trigger {
+    appearance: none;
+    -webkit-appearance: none;
+    box-sizing: border-box;
+    display: flex;
+    width: 100%;
+    min-width: 0;
+    min-height: 34px;
+    height: 34px;
+    margin: 0;
+    padding: 6px 10px;
+    border: 1px solid var(--border-strong);
+    border-radius: 6px;
+    background: var(--surface-raised);
+    color: var(--text);
+    font-size: 12px;
+    font-family: inherit;
+    font-weight: 400;
+    line-height: 1.35;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    text-align: left;
+    cursor: pointer;
+    box-shadow: none;
+}
+
+:is(.app-shell.workbench-shell, .project-management-page) .wb-select-trigger:hover:not(:disabled),
+:is(.app-shell.workbench-shell, .project-management-page) .wb-select.is-open .wb-select-trigger {
+    border-color: var(--accent);
+}
+
+:is(.app-shell.workbench-shell, .project-management-page) .wb-select-trigger:focus-visible {
+    border-color: var(--accent);
+    outline: 2px solid color-mix(in srgb, var(--accent) 14%, transparent);
+    outline-offset: 1px;
+}
+
+:is(.app-shell.workbench-shell, .project-management-page) .wb-select-trigger:disabled {
+    cursor: not-allowed;
+    opacity: 0.58;
+}
+
+:is(.app-shell.workbench-shell, .project-management-page) .wb-select-value {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+:is(.app-shell.workbench-shell, .project-management-page) .wb-select-value.is-placeholder {
+    color: var(--text-muted);
+}
+
+:is(.app-shell.workbench-shell, .project-management-page) .wb-select-chevron {
+    width: 7px;
+    height: 7px;
+    flex: 0 0 auto;
+    border-right: 1.5px solid currentColor;
+    border-bottom: 1.5px solid currentColor;
+    transform: rotate(45deg) translateY(-2px);
+    transition: transform 160ms ease;
+}
+
+:is(.app-shell.workbench-shell, .project-management-page) .wb-select.is-open .wb-select-chevron {
+    transform: rotate(225deg) translate(-1px, -1px);
+}
+
+:is(.app-shell.workbench-shell, .project-management-page) .wb-select-menu {
+    position: absolute;
+    z-index: 30;
+    top: calc(100% + 5px);
+    right: 0;
+    left: 0;
+    max-height: 260px;
+    overflow-y: auto;
+    padding: 4px;
+    border: 1px solid var(--border-strong);
+    border-radius: 8px;
+    background: var(--surface-raised);
+    box-shadow: 0 12px 30px rgb(15 23 42 / 16%);
+    opacity: 0;
+    visibility: hidden;
+    pointer-events: none;
+    transform: translateY(-4px);
+    transition: opacity 140ms ease, transform 140ms ease, visibility 140ms ease;
+}
+
+:is(.app-shell.workbench-shell, .project-management-page) .wb-select-menu.is-open {
+    opacity: 1;
+    visibility: visible;
+    pointer-events: auto;
+    transform: translateY(0);
+}
+
+:is(.app-shell.workbench-shell, .project-management-page) .wb-select-option {
+    display: flex;
+    width: 100%;
+    min-width: 0;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 7px 9px;
+    border: 0;
+    border-radius: 5px;
+    background: transparent;
+    color: var(--text);
+    font-size: 12px;
+    text-align: left;
+    cursor: pointer;
+}
+
+:is(.app-shell.workbench-shell, .project-management-page) .wb-select-option:hover,
+:is(.app-shell.workbench-shell, .project-management-page) .wb-select-option.is-selected {
+    background: color-mix(in srgb, var(--accent) 10%, var(--surface-raised));
+}
+
+:is(.app-shell.workbench-shell, .project-management-page) .wb-select-check {
+    color: var(--accent);
+}
+
+:is(.app-shell.workbench-shell, .project-management-page) .wb-select-empty {
+    padding: 8px 9px;
+    color: var(--text-muted);
+}
+
+.project-management-page .wb-select-field {
+    align-content: start;
+    gap: 6px;
+}
+
+.project-management-page .wb-select-label {
+    font-weight: 700;
+}
+
+.app-shell.workbench-shell .wb-date-field {
+    display: grid;
+    align-content: start;
+    min-width: 0;
+    gap: 5px;
+    color: var(--text-muted);
+    font-size: 11px;
+}
+
+.app-shell.workbench-shell .wb-date-picker {
+    position: relative;
+    min-width: 0;
+}
+
+.app-shell.workbench-shell .wb-date-trigger svg {
+    flex-shrink: 0;
+    color: var(--text-muted);
+}
+
+.app-shell.workbench-shell .wb-date-trigger[aria-expanded="true"] {
+    border-color: var(--accent);
+}
+
+.app-shell.workbench-shell .wb-date-panel {
+    position: absolute;
+    z-index: 35;
+    top: calc(100% + 5px);
+    left: 0;
+    box-sizing: border-box;
+    width: min(264px, calc(100vw - 64px));
+    padding: 10px;
+    border: 1px solid var(--border-strong);
+    border-radius: 8px;
+    color: var(--text);
+    background: var(--surface-raised);
+    box-shadow: 0 12px 30px rgb(15 23 42 / 16%);
+    font-size: 12px;
+}
+
+.app-shell.workbench-shell .wb-calendar-header,
+.app-shell.workbench-shell .wb-calendar-footer {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+}
+
+.app-shell.workbench-shell .wb-calendar-weekdays,
+.app-shell.workbench-shell .wb-calendar-days {
+    display: grid;
+    grid-template-columns: repeat(7, minmax(0, 1fr));
+    gap: 2px;
+    text-align: center;
+}
+
+.app-shell.workbench-shell .wb-calendar-weekdays {
+    margin: 8px 0 4px;
+    color: var(--text-faint);
+    line-height: 26px;
+}
+
+.app-shell.workbench-shell :is(.wb-calendar-header, .wb-calendar-days, .wb-calendar-footer) button {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 0;
+    min-height: 30px;
+    padding: 4px 6px;
+    border: 1px solid transparent;
+    border-radius: 5px;
+    color: var(--text);
+    background: transparent;
+    font: inherit;
+    cursor: pointer;
+}
+
+.app-shell.workbench-shell :is(.wb-calendar-header, .wb-calendar-days, .wb-calendar-footer) button:hover {
+    background: color-mix(in srgb, var(--accent) 10%, var(--surface-raised));
+}
+
+.app-shell.workbench-shell :is(.wb-calendar-header, .wb-calendar-days, .wb-calendar-footer) button:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: -2px;
+}
+
+.app-shell.workbench-shell .wb-calendar-days button[aria-current="date"] {
+    border-color: var(--accent);
+    color: var(--accent);
+}
+
+.app-shell.workbench-shell .wb-calendar-days button.is-selected {
+    color: var(--on-accent, white);
+    background: var(--accent);
+}
+
+.app-shell.workbench-shell .wb-calendar-footer {
+    margin-top: 8px;
+    padding-top: 6px;
+    border-top: 1px solid var(--border);
+}
+
+.app-shell.workbench-shell .wb-calendar-footer button {
+    color: var(--accent);
+}
+
+.app-shell.workbench-shell .project-status {
+    grid-column: auto;
+    justify-items: start;
+    align-items: center;
+    height: 100%;
+    padding-left: 20px;
+    border-left: 1px solid var(--border);
+    color: var(--text-muted);
+    text-align: left;
+    font-size: 11px;
+    line-height: 1.7;
+}
+
+.app-shell.workbench-shell .wb-tag {
+    display: inline-flex;
+    align-items: center;
+    width: fit-content;
+    padding: 2px 7px;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    background: var(--surface);
+    color: var(--text-muted);
+    font-size: 11px;
+    font-weight: 400;
+    line-height: 1.6;
+    white-space: nowrap;
+}
+
+.app-shell.workbench-shell .wb-tag-primary {
+    border-color: color-mix(in srgb, var(--accent) 24%, var(--border));
+    background: var(--surface-soft);
+    color: var(--accent);
+}
+
+.app-shell.workbench-shell .wb-tag-warning {
+    border-color: color-mix(in srgb, var(--warning) 35%, var(--border));
+    background: color-mix(in srgb, var(--warning) 8%, var(--surface-raised));
+    color: var(--warning);
+}
+
+.app-shell.workbench-shell .wb-tabs {
+    gap: 8px;
+    min-height: 50px;
+    padding: 0 24px;
+    background: var(--surface-raised);
+}
+
+.app-shell.workbench-shell .workspace-view-tab {
+    gap: 7px;
+    min-height: 50px;
+    padding: 0 12px;
+    color: var(--text-muted);
+    font-size: 13px;
+    font-weight: 500;
+}
+
+.app-shell.workbench-shell .workspace-view-tab.is-active {
+    border-bottom-color: var(--accent);
+    background: transparent;
+    color: var(--accent);
+}
+
+.app-shell.workbench-shell .workspace-view-tab:hover:not(:disabled) {
+    background: var(--surface-soft);
+    color: var(--accent);
+}
+
+.app-shell.workbench-shell .workspace-view-tab:disabled {
+    color: var(--text-faint);
+    opacity: .55;
+    cursor: not-allowed;
+}
+
+.app-shell.workbench-shell .wb-tab-count {
+    min-width: 19px;
+    padding: 0 5px;
+    border: 0;
+    border-radius: 4px;
+    background: var(--bg);
+    color: inherit;
+    font-size: 10px;
+    font-variant-numeric: tabular-nums;
+    line-height: 19px;
+}
+
+.app-shell.workbench-shell .workspace-view-tab.is-active .wb-tab-count {
+    background: var(--surface-soft);
+}
+
+.app-shell.workbench-shell .wb-overview {
+    padding: 10px 24px;
+}
+
+.app-shell.workbench-shell .wb-overview-heading {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: space-between;
+    align-items: center;
+    gap: 8px 20px;
+}
+
+.app-shell.workbench-shell .wb-overview-context {
+    display: flex;
+    flex: 1 1 240px;
+    flex-wrap: wrap;
+    align-items: center;
+    min-width: 0;
+    gap: 6px 12px;
+}
+
+.app-shell.workbench-shell .wb-breadcrumb {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+    flex: 0 1 auto;
+    color: var(--text-faint);
+    font-size: 11px;
+}
+
+.app-shell.workbench-shell .wb-breadcrumb > span {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.app-shell.workbench-shell .wb-breadcrumb > span:first-child,
+.app-shell.workbench-shell .wb-breadcrumb .wb-icon {
+    flex-shrink: 0;
+}
+
+.app-shell.workbench-shell .wb-overview-project {
+    color: var(--text-muted);
+}
+
+.app-shell.workbench-shell .wb-breadcrumb .wb-icon {
+    width: 11px;
+    height: 11px;
+}
+
+.app-shell.workbench-shell .wb-overview-status {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+}
+
+.app-shell.workbench-shell .wb-statistics {
+    display: grid;
+    flex: 0 0 auto;
+    grid-template-columns: repeat(3, auto);
+    gap: 16px;
+}
+
+.app-shell.workbench-shell .wb-statistic {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+    padding: 2px 0;
+}
+
+.app-shell.workbench-shell .wb-statistic + .wb-statistic {
+    padding-left: 16px;
+    border-left: 1px solid var(--border);
+}
+
+.app-shell.workbench-shell .wb-statistic-icon {
+    display: flex;
+    color: var(--accent);
+}
+
+.app-shell.workbench-shell .wb-statistic-icon .wb-icon {
+    width: 15px;
+    height: 15px;
+}
+
+.app-shell.workbench-shell .wb-statistic > div {
+    display: flex;
+    align-items: baseline;
+    gap: 6px;
+}
+
+.app-shell.workbench-shell .wb-statistic-label {
+    color: var(--text-muted);
+    font-size: 11px;
+    white-space: nowrap;
+}
+
+.app-shell.workbench-shell .wb-statistic-value {
+    color: var(--text);
+    font-size: 14px;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+    line-height: 1.5;
+}
+
+.app-shell.workbench-shell > .model-workspace {
+    width: calc(100% - 48px);
+    margin: 0 24px 16px;
+    padding: 0;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    background: var(--surface-raised);
+    box-shadow: var(--shadow);
+}
+
+.app-shell.workbench-shell .discovery-workspace > .workflow-stage-panel {
+    padding: 20px;
+    border: 0;
+    border-radius: 0;
+    background: var(--surface-raised);
+}
+
+.app-shell.workbench-shell .workflow-heading {
+    gap: 16px;
+    padding-bottom: 16px;
+    border-bottom: 1px solid var(--border);
+}
+
+.app-shell.workbench-shell .workflow-heading strong,
+.app-shell.workbench-shell .panel-heading h2 {
+    color: var(--text);
+    font-size: 15px;
+    font-weight: 600;
+}
+
+.app-shell.workbench-shell .workflow-heading-description {
+    margin-top: 4px;
+    font-size: 12px;
+}
+
+.app-shell.workbench-shell .yaml-kicker,
+.app-shell.workbench-shell .panel-heading .eyebrow {
+    color: var(--text-faint);
+    font-size: 9px;
+    font-weight: 500;
+    letter-spacing: 1.4px;
+}
+
+.app-shell.workbench-shell .workflow-requirement-input,
+.app-shell.workbench-shell .composer {
+    border: 1px solid var(--border-strong);
+    border-radius: 8px;
+    background: var(--surface-raised);
+    color: var(--text);
+    font-size: 14px;
+    line-height: 1.8;
+    box-shadow: none;
+}
+
+.app-shell.workbench-shell .workflow-requirement-input:focus,
+.app-shell.workbench-shell .composer:focus {
+    border-color: var(--accent);
+    outline: 2px solid color-mix(in srgb, var(--accent) 14%, transparent);
+    outline-offset: 1px;
+}
+
+.app-shell.workbench-shell .workflow-stage-panel .workflow-actions {
+    padding-top: 12px;
+    padding-bottom: 12px;
+    background: var(--surface-raised);
+    box-shadow: none;
+}
+
+.app-shell.workbench-shell .conversation-heading,
+.app-shell.workbench-shell .inspector-heading,
+.app-shell.workbench-shell .composer-wrap {
+    background: var(--surface-raised);
+    box-shadow: none;
+}
+
+.app-shell.workbench-shell .workflow-field-grid > section,
+.app-shell.workbench-shell .workflow-context-grid > section,
+.app-shell.workbench-shell .workflow-brief > div {
+    border-color: var(--border);
+    border-radius: 8px;
+    background: var(--surface);
+}
+
+.app-shell.workbench-shell :is(.analysis-result, .analysis-card, .analysis-summary-copy, .analysis-field-copy) {
+    min-width: 0;
+}
+
+.app-shell.workbench-shell .workflow-chain-context {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 6px 16px;
+    margin-bottom: 14px;
+    color: var(--text-muted);
+    font-size: 12px;
+    line-height: 1.6;
+}
+
+.app-shell.workbench-shell .workflow-chain-context strong {
+    color: var(--text);
+    font-weight: 600;
+}
+
+.app-shell.workbench-shell .workflow-stale-notice {
+    margin-bottom: 14px;
+    padding: 10px 14px;
+    border: 1px solid color-mix(in srgb, var(--warning) 28%, var(--border));
+    border-radius: 6px;
+    color: var(--text);
+    background: color-mix(in srgb, var(--warning) 6%, var(--surface));
+    font-size: 13px;
+    line-height: 1.7;
+}
+
+.app-shell.workbench-shell .workflow-action-hint {
+    color: var(--danger);
+    font-size: 12px;
+}
+
+.app-shell.workbench-shell .workflow-origin {
+    margin-bottom: 14px;
+    color: var(--text-muted);
+    font-size: 12px;
+    line-height: 1.7;
+}
+
+.app-shell.workbench-shell .workflow-origin summary {
+    cursor: pointer;
+}
+
+.app-shell.workbench-shell .workflow-origin p {
+    max-height: 180px;
+    overflow: auto;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+}
+
+.app-shell.workbench-shell .analysis-result {
+    display: grid;
+    gap: 18px;
+    color: var(--text);
+    font-size: 13px;
+    line-height: 1.7;
+    overflow-wrap: anywhere;
+}
+
+.app-shell.workbench-shell .analysis-business-summary {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(220px, .36fr);
+    gap: 24px;
+    padding: 22px 24px;
+    border: 1px solid color-mix(in srgb, var(--accent) 20%, var(--border));
+    border-radius: 10px;
+    background: color-mix(in srgb, var(--accent) 5%, var(--surface-raised));
+}
+
+.app-shell.workbench-shell .analysis-summary-copy > .analysis-section-label {
+    display: block;
+    color: var(--accent);
+    font-size: 12px;
+    font-weight: 600;
+}
+
+.app-shell.workbench-shell .analysis-summary-copy h2 {
+    margin: 6px 0 10px;
+    font-size: 22px;
+    line-height: 1.5;
+    letter-spacing: 0;
+}
+
+.app-shell.workbench-shell :is(.analysis-summary-copy > p, .analysis-section-description, .analysis-empty) {
+    margin: 0;
+    color: var(--text-muted);
+    font-size: 13px;
+    line-height: 1.7;
+}
+
+.app-shell.workbench-shell .analysis-summary-facts {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px 20px;
+    margin-top: 16px;
+    color: var(--text-muted);
+    font-size: 12px;
+}
+
+.app-shell.workbench-shell .analysis-risk {
+    display: grid;
+    align-content: center;
+    gap: 7px;
+    padding-left: 22px;
+    border-left: 1px solid var(--border);
+}
+
+.app-shell.workbench-shell .analysis-risk > span {
+    color: var(--text-muted);
+    font-size: 12px;
+}
+
+.app-shell.workbench-shell .analysis-risk strong {
+    color: var(--text);
+    font-size: 14px;
+}
+
+.app-shell.workbench-shell .analysis-risk-high strong { color: var(--danger); }
+.app-shell.workbench-shell .analysis-risk-medium strong { color: var(--warning); }
+
+.app-shell.workbench-shell .analysis-risk small {
+    color: var(--text-muted);
+    font-size: 12px;
+    line-height: 1.65;
+}
+
+.app-shell.workbench-shell .analysis-priority-grid {
+    display: grid;
+    grid-template-columns: minmax(0, 1.6fr) minmax(260px, 1fr);
+    gap: 18px;
+    align-items: start;
+}
+
+.app-shell.workbench-shell .analysis-information-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 18px;
+    align-items: start;
+}
+
+.app-shell.workbench-shell :is(.analysis-card, .analysis-questions) {
+    padding: 18px 20px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--surface-raised);
+}
+
+.app-shell.workbench-shell .analysis-card-heading {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 6px 12px;
+    margin-bottom: 8px;
+}
+
+.app-shell.workbench-shell .analysis-card-heading h3 {
+    margin: 0;
+    color: var(--text);
+    font-size: 15px;
+    line-height: 1.6;
+}
+
+.app-shell.workbench-shell .analysis-card-heading > span {
+    color: var(--text-muted);
+    font-size: 12px;
+}
+
+.app-shell.workbench-shell .analysis-rules .analysis-card-heading > span {
+    padding: 2px 8px;
+    border-radius: 4px;
+    background: var(--surface-soft);
+    color: var(--accent);
+}
+
+.app-shell.workbench-shell :is(.analysis-rule-list, .analysis-assumption-list) {
+    display: grid;
+    gap: 10px;
+    margin: 14px 0 0;
+    padding-left: 24px;
+}
+
+.app-shell.workbench-shell .analysis-rule-list li::marker {
+    color: var(--accent);
+    font-weight: 700;
+}
+
+.app-shell.workbench-shell .analysis-attention {
+    border-top: 3px solid var(--warning);
+    background: color-mix(in srgb, var(--warning) 4%, var(--surface-raised));
+}
+
+.app-shell.workbench-shell .analysis-question-hint {
+    margin: 14px 0 0;
+    padding-top: 12px;
+    border-top: 1px solid var(--border);
+    font-size: 13px;
+}
+
+.app-shell.workbench-shell .analysis-empty { margin-top: 12px; }
+
+.app-shell.workbench-shell .analysis-field-row {
+    display: flex;
+    align-items: start;
+    justify-content: space-between;
+    gap: 12px;
+    margin-top: 12px;
+    padding-top: 12px;
+    border-top: 1px solid var(--border);
+}
+
+.app-shell.workbench-shell .analysis-field-title {
+    display: flex;
+    align-items: baseline;
+    flex-wrap: wrap;
+    gap: 6px 10px;
+}
+
+.app-shell.workbench-shell .analysis-field-title strong { font-size: 14px; }
+
+.app-shell.workbench-shell :is(.analysis-field-title > span, .analysis-field-meta) {
+    color: var(--text-muted);
+    font-size: 12px;
+}
+
+.app-shell.workbench-shell .analysis-field-copy p {
+    margin: 5px 0 0;
+    color: var(--text-muted);
+    font-size: 13px;
+}
+
+.app-shell.workbench-shell .analysis-field-meta {
+    display: grid;
+    flex: 0 0 auto;
+    gap: 5px;
+    text-align: right;
+}
+
+.app-shell.workbench-shell .analysis-field-meta .is-required { color: var(--accent); }
+
+.app-shell.workbench-shell .analysis-details {
+    min-width: 0;
+    padding: 14px 18px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--surface);
+}
+
+.app-shell.workbench-shell .analysis-details > summary {
+    color: var(--text);
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+}
+
+.app-shell.workbench-shell .analysis-details > summary > span {
+    display: inline-block;
+    margin-left: 12px;
+    color: var(--text-muted);
+    font-size: 12px;
+    font-weight: 400;
+}
+
+.app-shell.workbench-shell .analysis-details[open] > summary { margin-bottom: 14px; }
+
+.app-shell.workbench-shell .analysis-terms {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 14px 24px;
+    margin: 0;
+}
+
+.app-shell.workbench-shell .analysis-terms dt { font-weight: 600; }
+.app-shell.workbench-shell .analysis-terms dd { margin: 4px 0 0; color: var(--text-muted); }
+
+.app-shell.workbench-shell .analysis-technical-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 16px;
+}
+
+.app-shell.workbench-shell .analysis-technical-grid h4 { margin: 12px 0; font-size: 13px; }
+
+.app-shell.workbench-shell .analysis-technical-grid section > div {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(0, .6fr);
+    gap: 10px;
+    padding: 8px 0;
+    border-top: 1px solid var(--border);
+    overflow-wrap: anywhere;
+}
+
+.app-shell.workbench-shell .analysis-technical-grid code { color: var(--text-muted); font-size: 12px; }
+.app-shell.workbench-shell .analysis-questions .clarification-list { gap: 12px; margin-top: 16px; }
+
+.app-shell.workbench-shell .analysis-questions {
+    scroll-margin-top: 16px;
+    border-color: color-mix(in srgb, var(--warning) 48%, var(--border));
+    border-top: 3px solid var(--warning);
+    background: color-mix(in srgb, var(--warning) 5%, var(--surface-raised));
+    box-shadow: 0 8px 20px color-mix(in srgb, var(--warning) 8%, transparent);
+}
+
+.app-shell.workbench-shell .analysis-questions .analysis-card-heading h3 {
+    color: var(--text);
+}
+
+.app-shell.workbench-shell .analysis-questions .analysis-card-heading > span {
+    padding: 3px 9px;
+    border: 1px solid color-mix(in srgb, var(--warning) 40%, var(--border));
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--warning) 10%, var(--surface));
+    color: var(--warning);
+    font-size: 12px;
+    font-weight: 650;
+}
+
+.app-shell.workbench-shell .analysis-questions .analysis-section-description {
+    margin: 0;
+    color: var(--text-muted);
+    font-size: 13px;
+    line-height: 1.7;
+}
+
+.app-shell.workbench-shell .analysis-questions .clarification-item {
+    gap: 8px 20px;
+    padding: 14px 16px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--surface);
+}
+
+.app-shell.workbench-shell .analysis-questions .clarification-item.is-required {
+    border-color: color-mix(in srgb, var(--accent) 52%, var(--border));
+    border-left: 3px solid var(--accent);
+    background: color-mix(in srgb, var(--accent) 5%, var(--surface));
+}
+
+.app-shell.workbench-shell .analysis-questions .analysis-question-title {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 8px;
+    font-size: 14px;
+    font-weight: 600;
+}
+
+.app-shell.workbench-shell .analysis-question-title b {
+    color: var(--text-muted);
+    font-size: 12px;
+    font-weight: 400;
+}
+
+.app-shell.workbench-shell .analysis-question-title .analysis-question-required {
+    padding: 2px 7px;
+    border: 1px solid color-mix(in srgb, var(--accent) 48%, var(--border));
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--accent) 12%, var(--surface-raised));
+    color: var(--accent-strong);
+    font-size: 11px;
+    font-weight: 700;
+}
+
+.app-shell.workbench-shell .analysis-question-title .analysis-question-optional {
+    padding: 2px 7px;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    color: var(--text-faint);
+    font-size: 11px;
+    font-weight: 500;
+}
+.app-shell.workbench-shell .analysis-questions .clarification-item > small { color: var(--text-muted); font-size: 12px; line-height: 1.7; }
+.app-shell.workbench-shell .analysis-questions .clarification-item :is(input, .wb-select-trigger) { font-size: 13px; }
+.app-shell.workbench-shell .clarification-select .wb-select-label { display: none; }
+.app-shell.workbench-shell .analysis-requirement-details .workflow-requirement-input { min-height: 120px; }
+
+@media (max-width: 1000px) {
+    .app-shell.workbench-shell :is(.analysis-business-summary, .analysis-priority-grid) { grid-template-columns: minmax(0, 1fr); }
+    .app-shell.workbench-shell .analysis-risk { padding: 14px 0 0; border-left: 0; border-top: 1px solid var(--border); }
+}
+
+@media (max-width: 760px) {
+    .app-shell.workbench-shell :is(.analysis-information-grid, .analysis-terms, .analysis-technical-grid) { grid-template-columns: minmax(0, 1fr); }
+    .app-shell.workbench-shell :is(.analysis-business-summary, .analysis-card, .analysis-questions) { padding: 16px; }
+    .app-shell.workbench-shell .analysis-summary-copy h2 { font-size: 19px; }
+    .app-shell.workbench-shell .analysis-questions .clarification-item { grid-template-columns: minmax(0, 1fr); }
+    .app-shell.workbench-shell .analysis-questions .clarification-item :is(input, .clarification-select) { grid-column: 1; grid-row: auto; }
+}
+
+.app-shell.workbench-shell > :is(.collaboration-panel, .resource-library-page, .published-services-panel, .decision-analytics-panel) {
+    width: calc(100% - 48px);
+    margin: 0 24px 16px;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    background: var(--surface-raised);
+    box-shadow: var(--shadow);
+}
+
+.app-shell.workbench-shell .footer-note {
+    padding: 8px 24px 14px;
+    border: 0;
+    color: var(--text-faint);
+    background: var(--bg);
+    font-size: 11px;
+    text-align: center;
+}
+
+@media (max-width: 1180px) {
+    .app-shell.workbench-shell .project-bar {
+        grid-template-columns: minmax(200px, 1fr) minmax(300px, 1.4fr);
+        gap: 12px 24px;
+    }
+
+    .app-shell.workbench-shell .project-status {
+        grid-column: 1 / -1;
+        padding-left: 0;
+        border-left: 0;
+    }
+
+    .app-shell.workbench-shell .wb-statistic-icon {
+        display: none;
+    }
+
+    .app-shell.workbench-shell .wb-tabs {
+        gap: 0;
+    }
+}
+
+@media (max-width: 760px) {
+    .app-shell.workbench-shell .topbar {
+        flex-wrap: wrap;
+        gap: 12px;
+        padding: 12px 16px;
+    }
+
+    .app-shell.workbench-shell .topbar-actions {
+        justify-content: flex-end;
+        flex: 1 1 auto;
+        gap: 8px;
+    }
+
+    .app-shell.workbench-shell .brand-lockup h1 {
+        font-size: 15px;
+    }
+
+    .app-shell.workbench-shell .project-bar {
+        grid-template-columns: minmax(0, 1fr);
+        gap: 12px;
+        padding: 14px 16px;
+    }
+
+    .app-shell.workbench-shell .project-actions {
+        grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    }
+
+    .app-shell.workbench-shell .wb-tabs {
+        padding: 0 10px;
+    }
+
+    .app-shell.workbench-shell .workspace-view-tab {
+        min-width: max-content;
+        padding: 0 10px;
+        font-size: 12px;
+    }
+
+    .app-shell.workbench-shell .workspace-view-tab > .wb-icon {
+        display: none;
+    }
+
+    .app-shell.workbench-shell .wb-overview {
+        padding: 8px 16px;
+    }
+
+    .app-shell.workbench-shell .wb-overview-heading {
+        flex-direction: column;
+        align-items: stretch;
+        gap: 8px;
+    }
+
+    .app-shell.workbench-shell .wb-overview-context {
+        flex-basis: auto;
+    }
+
+    .app-shell.workbench-shell .wb-statistics {
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 8px;
+    }
+
+    .app-shell.workbench-shell .wb-statistic + .wb-statistic {
+        padding-left: 8px;
+    }
+
+    .app-shell.workbench-shell > .model-workspace,
+    .app-shell.workbench-shell > :is(.collaboration-panel, .resource-library-page, .published-services-panel, .decision-analytics-panel) {
+        width: calc(100% - 32px);
+        margin: 0 16px 16px;
+    }
+
+    .app-shell.workbench-shell .discovery-workspace > .workflow-stage-panel {
+        padding: 16px;
+    }
+
+    .app-shell.workbench-shell .footer-note {
+        padding: 4px 16px 16px;
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .app-shell.workbench-shell,
+    .app-shell.workbench-shell .button,
+    .app-shell.workbench-shell .theme-toggle {
+        transition: none;
+    }
+}
+
+@media (min-width: 1101px) {
+    .app-shell.workbench-shell:has(> .wb-overview.is-model-overview) > .model-workspace {
+        margin-bottom: 8px;
+    }
+
+    .app-shell.workbench-shell:has(> .wb-overview.is-model-overview) .inspector-column {
+        grid-template-rows: 104px minmax(0, 1fr);
+    }
+
+    .app-shell.workbench-shell:has(> .wb-overview.is-model-overview) .timeline-panel > .panel-heading {
+        padding: 8px 12px;
+    }
+
+    .app-shell.workbench-shell:has(> .wb-overview.is-model-overview) .timeline-panel > .timeline {
+        grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+        gap: 5px;
+        padding: 6px 10px 8px;
+    }
+
+    .app-shell.workbench-shell:has(> .wb-overview.is-model-overview) .timeline-panel .agent-activity {
+        padding: 6px 8px;
+        font-size: 11px;
+    }
+
+    .app-shell.workbench-shell:has(> .wb-overview.is-model-overview) .timeline-panel .timeline-item {
+        grid-template-columns: 16px minmax(0, 1fr);
+        gap: 6px;
+        min-height: 36px;
+        padding: 6px 7px;
+        font-size: 10px;
+    }
+
+    .app-shell.workbench-shell:has(> .wb-overview.is-model-overview) .artifacts-panel {
+        grid-template-rows: 48px minmax(0, 1fr);
+    }
+
+    .app-shell.workbench-shell:has(> .wb-overview.is-model-overview) .artifacts-panel > .panel-heading {
+        padding: 8px 12px;
+    }
+
+    .app-shell.workbench-shell:has(> .wb-overview.is-model-overview) .artifact-workbench {
+        grid-template-rows: 34px minmax(0, 1fr);
+    }
+
+    .app-shell.workbench-shell:has(> .wb-overview.is-model-overview) .artifact-tabs {
+        padding: 4px 10px 0;
+    }
+
+    .app-shell.workbench-shell:has(> .wb-overview.is-model-overview) .artifact-tab {
+        min-height: 30px;
+        padding: 0 10px;
+    }
+
+    .app-shell.workbench-shell:has(> .wb-overview.is-model-overview) .artifact-tab-content > :is(.artifact-block, .artifact-panel) {
+        padding: 10px 12px;
+    }
+
+    .app-shell.workbench-shell:has(> .wb-overview.is-model-overview) .artifact-tab-content > .yaml-artifact {
+        grid-template-rows: auto auto minmax(0, 1fr);
+        gap: 7px;
+    }
+
+    .app-shell.workbench-shell:has(> .wb-overview.is-model-overview) .artifact-tab-content > .yaml-artifact:has(.yaml-sync-status) {
+        grid-template-rows: auto auto auto minmax(0, 1fr);
+    }
+
+    .app-shell.workbench-shell:has(> .wb-overview.is-model-overview) .yaml-view-tabs {
+        gap: 1px;
+        padding: 2px;
+    }
+
+    .app-shell.workbench-shell:has(> .wb-overview.is-model-overview) .yaml-view-tab {
+        min-height: 25px;
+        padding: 0 8px;
+    }
+
+    .app-shell.workbench-shell:has(> .wb-overview.is-model-overview) .yaml-model-view,
+    .app-shell.workbench-shell:has(> .wb-overview.is-model-overview) .yaml-structure-view,
+    .app-shell.workbench-shell:has(> .wb-overview.is-model-overview) .yaml-graph-panel,
+    .app-shell.workbench-shell:has(> .wb-overview.is-model-overview) .yaml-navigator {
+        gap: 9px;
+    }
+
+    .app-shell.workbench-shell:has(> .wb-overview.is-model-overview) .yaml-overview {
+        gap: 10px;
+        padding: 10px;
+        grid-template-columns: minmax(0, 1fr) minmax(168px, 228px);
+    }
+
+    .app-shell.workbench-shell:has(> .wb-overview.is-model-overview) .yaml-stat-grid {
+        gap: 5px;
+    }
+
+    .app-shell.workbench-shell:has(> .wb-overview.is-model-overview) .yaml-stat-grid div {
+        min-height: 44px;
+        padding: 6px 8px;
+    }
+
+    .app-shell.workbench-shell:has(> .wb-overview.is-model-overview) .yaml-stat-grid strong {
+        font-size: 16px;
+    }
+
+    .app-shell.workbench-shell:has(> .wb-overview.is-model-overview) .yaml-catalog-grid,
+    .app-shell.workbench-shell:has(> .wb-overview.is-model-overview) .yaml-decision-list {
+        gap: 7px;
+    }
+
+    .app-shell.workbench-shell:has(> .wb-overview.is-model-overview) .yaml-navigator-list {
+        gap: 4px;
+    }
+
+    .app-shell.workbench-shell:has(> .wb-overview.is-model-overview) .yaml-nav-item {
+        min-height: 25px;
+        padding: 0 7px;
+    }
+}

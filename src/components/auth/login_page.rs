@@ -1,12 +1,96 @@
 use gloo_storage::{LocalStorage, Storage};
+use js_sys::{Function, Object, Promise, Reflect};
 use leptos::logging::{log, warn};
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 use leptos_router::hooks::use_navigate;
+use wasm_bindgen::{JsCast, JsValue, closure::Closure};
+use wasm_bindgen_futures::JsFuture;
 
 use super::auth_guard::{TOKEN_KEY, auth_token};
 use crate::api;
 use crate::state::AppState;
+
+async fn wait_for_hcaptcha() -> Result<JsValue, String> {
+    for _ in 0..50 {
+        if let Some(window) = web_sys::window()
+            && let Ok(hcaptcha) = Reflect::get(window.as_ref(), &JsValue::from_str("hcaptcha"))
+            && !hcaptcha.is_undefined()
+            && !hcaptcha.is_null()
+        {
+            return Ok(hcaptcha);
+        }
+        let promise = Promise::new(&mut |resolve, _reject| {
+            let callback = Closure::once_into_js(move || {
+                let _ = resolve.call0(&JsValue::UNDEFINED);
+            });
+            if let Some(window) = web_sys::window() {
+                let _ = window.set_timeout_with_callback_and_timeout_and_arguments_0(
+                    callback.unchecked_ref(),
+                    100,
+                );
+            }
+        });
+        JsFuture::from(promise)
+            .await
+            .map_err(|_| "hCaptcha 加载失败".to_string())?;
+    }
+    Err("hCaptcha 加载超时，请刷新页面重试".to_string())
+}
+
+fn render_hcaptcha(
+    hcaptcha: &JsValue,
+    container: &web_sys::HtmlDivElement,
+    site_key: &str,
+    token: RwSignal<String>,
+    error: RwSignal<Option<String>>,
+) -> Result<JsValue, String> {
+    let render = Reflect::get(hcaptcha, &JsValue::from_str("render"))
+        .map_err(|_| "hCaptcha 接口不可用".to_string())?
+        .dyn_into::<Function>()
+        .map_err(|_| "hCaptcha 渲染接口不可用".to_string())?;
+    let options = Object::new();
+    Reflect::set(
+        &options,
+        &JsValue::from_str("sitekey"),
+        &JsValue::from_str(site_key),
+    )
+    .map_err(|_| "hCaptcha 配置无效".to_string())?;
+    let callback = Closure::wrap(Box::new(move |value: JsValue| {
+        token.set(value.as_string().unwrap_or_default());
+        error.set(None);
+    }) as Box<dyn FnMut(JsValue)>);
+    Reflect::set(
+        &options,
+        &JsValue::from_str("callback"),
+        callback.as_ref().unchecked_ref(),
+    )
+    .map_err(|_| "hCaptcha 回调配置失败".to_string())?;
+    let widget_id = render
+        .call2(hcaptcha, container.as_ref(), options.as_ref())
+        .map_err(|_| "hCaptcha 渲染失败".to_string())?;
+    callback.forget();
+    Ok(widget_id)
+}
+
+fn reset_hcaptcha(widget_id: Option<JsValue>) {
+    let Some(widget_id) = widget_id else {
+        return;
+    };
+    let Some(window) = web_sys::window() else {
+        return;
+    };
+    let Ok(hcaptcha) = Reflect::get(window.as_ref(), &JsValue::from_str("hcaptcha")) else {
+        return;
+    };
+    let Ok(reset) = Reflect::get(&hcaptcha, &JsValue::from_str("reset")) else {
+        return;
+    };
+    let Ok(reset) = reset.dyn_into::<Function>() else {
+        return;
+    };
+    let _ = reset.call1(&hcaptcha, &widget_id);
+}
 
 #[component]
 pub fn LoginPage() -> impl IntoView {
@@ -17,42 +101,66 @@ pub fn LoginPage() -> impl IntoView {
     let error_msg = RwSignal::new(None::<String>);
     let is_loading = RwSignal::new(false);
     let password_visible = RwSignal::new(false);
-    let captcha_id = RwSignal::new(String::new());
-    let captcha_code = RwSignal::new(String::new());
-    let captcha_image = RwSignal::new(String::new());
-    let captcha_loading = RwSignal::new(false);
-    let captcha_error = RwSignal::new(None::<String>);
+    let hcaptcha_container = NodeRef::<leptos::html::Div>::new();
+    let hcaptcha_site_key = RwSignal::new(String::new());
+    let hcaptcha_token = RwSignal::new(String::new());
+    let hcaptcha_widget_id = RwSignal::new(None::<JsValue>);
+    let hcaptcha_loading = RwSignal::new(true);
+    let hcaptcha_error = RwSignal::new(None::<String>);
+    let hcaptcha_started = RwSignal::new(false);
     let app_state = expect_context::<AppState>();
 
-    let refresh_captcha = move || {
-        let captcha_id = captcha_id;
-        let captcha_image = captcha_image;
-        let captcha_loading = captcha_loading;
-        let captcha_error = captcha_error;
-        captcha_code.set(String::new());
-        if captcha_loading.get() {
-            return;
-        }
-        captcha_loading.set(true);
-        captcha_error.set(None);
-        spawn_local(async move {
-            match api::captcha().await {
-                Ok(data) => {
-                    captcha_id.set(data.captcha_id);
-                    captcha_image.set(data.image);
-                    captcha_loading.set(false);
+    spawn_local({
+        let hcaptcha_site_key = hcaptcha_site_key;
+        let hcaptcha_error = hcaptcha_error;
+        async move {
+            match api::hcaptcha_config().await {
+                Ok(config) if !config.site_key.trim().is_empty() => {
+                    hcaptcha_site_key.set(config.site_key);
                 }
+                Ok(_) => hcaptcha_error.set(Some("hCaptcha site key 未配置".into())),
                 Err(error) => {
-                    warn!("验证码加载失败：{error}");
-                    captcha_id.set(String::new());
-                    captcha_image.set(String::new());
-                    captcha_error.set(Some(error));
-                    captcha_loading.set(false);
+                    warn!("hCaptcha 配置加载失败：{error}");
+                    hcaptcha_error.set(Some(error));
+                    hcaptcha_loading.set(false);
                 }
             }
-        });
-    };
-    refresh_captcha();
+        }
+    });
+
+    Effect::new({
+        let hcaptcha_container = hcaptcha_container;
+        let hcaptcha_site_key = hcaptcha_site_key;
+        let hcaptcha_token = hcaptcha_token;
+        let hcaptcha_error = hcaptcha_error;
+        move |_| {
+            let site_key = hcaptcha_site_key.get();
+            let Some(container) = hcaptcha_container.get() else {
+                return;
+            };
+            if site_key.is_empty() || hcaptcha_started.get() {
+                return;
+            }
+            hcaptcha_started.set(true);
+            let hcaptcha_widget_id = hcaptcha_widget_id;
+            let hcaptcha_loading = hcaptcha_loading;
+            spawn_local(async move {
+                match wait_for_hcaptcha().await.and_then(|hcaptcha| {
+                    render_hcaptcha(
+                        &hcaptcha,
+                        &container,
+                        &site_key,
+                        hcaptcha_token,
+                        hcaptcha_error,
+                    )
+                }) {
+                    Ok(widget_id) => hcaptcha_widget_id.set(Some(widget_id)),
+                    Err(error) => hcaptcha_error.set(Some(error)),
+                }
+                hcaptcha_loading.set(false);
+            });
+        }
+    });
 
     let on_submit = move |ev: leptos::ev::SubmitEvent| {
         ev.prevent_default(); // 阻止表单默认提交导致页面刷新
@@ -65,23 +173,29 @@ pub fn LoginPage() -> impl IntoView {
 
         let username = username.get();
         let password = password.get();
-        let captcha_id_value = captcha_id.get();
-        let captcha_code_value = captcha_code.get();
+        let hcaptcha_token_value = hcaptcha_token.get();
+        if hcaptcha_token_value.is_empty() {
+            error_msg.set(Some("请先完成 hCaptcha 人机验证".into()));
+            is_loading.set(false);
+            return;
+        }
         let navigate = navigate.clone();
-        let refresh_captcha = refresh_captcha.clone();
+        let hcaptcha_widget_id = hcaptcha_widget_id;
+        let hcaptcha_token = hcaptcha_token;
 
         spawn_local(async move {
             log!("开始发送登录请求...");
-            match api::login(&username, &password, &captcha_id_value, &captcha_code_value).await {
-                Some(t) => {
+            match api::login(&username, &password, &hcaptcha_token_value).await {
+                Ok(t) => {
                     LocalStorage::set(TOKEN_KEY, t.clone()).ok();
                     token.set(Some(t));
                     navigate("/", Default::default());
                 }
-                None => {
-                    warn!("登录失败：用户名或密码错误");
-                    error_msg.set(Some("验证码错误或用户名、密码不正确，请重试".to_string()));
-                    refresh_captcha();
+                Err(error) => {
+                    warn!("登录失败：{error}");
+                    error_msg.set(Some(error));
+                    hcaptcha_token.set(String::new());
+                    reset_hcaptcha(hcaptcha_widget_id.get());
                     is_loading.set(false);
                 }
             }
@@ -145,35 +259,12 @@ pub fn LoginPage() -> impl IntoView {
                     </div>
                 </div>
                 <div class="form-group">
-                    <label for="login-captcha">"验证码"</label>
-                    <div class="auth-captcha-field">
-                        <input
-                            id="login-captcha"
-                            type="text"
-                            class="input"
-                            placeholder="输入图片中的字符"
-                            autocomplete="off"
-                            name="captchaCode"
-                            maxlength="5"
-                            required=true
-                            bind:value=captcha_code
-                            disabled=move || is_loading.get()
-                        />
-                        <button
-                            type="button"
-                            class="auth-captcha-refresh"
-                            aria-label="刷新验证码"
-                            title="看不清？点击刷新"
-                            on:click=move |_| refresh_captcha()
-                            disabled=move || is_loading.get() || captcha_loading.get()
-                        >
-                            {move || if captcha_loading.get() { "加载中..." } else if captcha_error.get().is_some() { "重新加载" } else { "换一张" }}
-                        </button>
-                    </div>
-                    {move || (!captcha_image.get().is_empty()).then(|| view! {
-                        <img class="auth-captcha-image" src=captcha_image alt="验证码图片，点击换一张" on:click=move |_| refresh_captcha() />
+                    <label for="hcaptcha-container">"人机验证"</label>
+                    <div id="hcaptcha-container" class="auth-hcaptcha-widget" node_ref=hcaptcha_container></div>
+                    {move || hcaptcha_loading.get().then(|| view! {
+                        <span class="auth-captcha-status" role="status">"正在加载人机验证..."</span>
                     })}
-                    {move || captcha_error.get().map(|error| view! {
+                    {move || hcaptcha_error.get().map(|error| view! {
                         <span class="auth-captcha-error" role="status">{error}</span>
                     })}
                 </div>
@@ -181,7 +272,7 @@ pub fn LoginPage() -> impl IntoView {
                     type="submit"
                     class="button button-primary"
                     style="width: 100%;"
-                    disabled=move || is_loading.get() || captcha_loading.get() || captcha_id.get().is_empty()
+                    disabled=move || is_loading.get() || hcaptcha_loading.get() || hcaptcha_token.get().is_empty()
                 >
                     {move || if is_loading.get() {
                         "处理中..."

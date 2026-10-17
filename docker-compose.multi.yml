@@ -1,0 +1,68 @@
+# Multiple Fuxi app instances on one host.
+# Each instance uses a unique Compose project name, APP_PORT, and data volume.
+#
+# Example:
+#   docker compose -p fuxi-app-a -f docker-compose.multi.yml --env-file deploy/multi-instance/app-a.env up -d
+#   docker compose -p fuxi-app-b -f docker-compose.multi.yml --env-file deploy/multi-instance/app-b.env up -d
+#
+# Do not include Nginx here. One shared reverse proxy should terminate HTTP/HTTPS
+# and forward each hostname to 127.0.0.1:${APP_PORT}.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: fuxi_dmn
+      POSTGRES_USER: fuxi
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD must be set}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./script/init.sql:/docker-entrypoint-initdb.d/001-init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U fuxi -d fuxi_dmn"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - internal
+
+  app:
+    image: ${FUXI_IMAGE:-fuxi-dmn:local}
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        RUST_IMAGE: ${RUST_IMAGE:-rust:1.90-bookworm}
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgres://fuxi:${DB_PASSWORD:?DB_PASSWORD must be set}@postgres:5432/fuxi_dmn
+      BIND_ADDR: 0.0.0.0:3000
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET must be set}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:?ADMIN_PASSWORD must be set}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-https://api.openai.com/v1}
+      OPENAI_MODEL: ${OPENAI_MODEL:-gpt-4o-mini}
+      RUST_LOG: ${RUST_LOG:-info}
+      APP_ENV: ${APP_ENV:-production}
+    ports:
+      - "127.0.0.1:${APP_PORT:?APP_PORT must be set}:3000"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    networks:
+      - internal
+
+volumes:
+  postgres_data:
+    driver: local
+
+networks:
+  internal:
+    driver: bridge

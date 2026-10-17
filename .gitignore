@@ -11,3 +11,6 @@ fuxi-dmn*.tar.gz
 /script/binaryen-*.tar.gz
 /script/*.swift
 .claude/
+deploy/multi-instance/*.env
+!deploy/multi-instance/*.env.example
+/backups

@@ -1,5 +1,6 @@
 use leptos::prelude::*;
 
+use crate::components::common::{SelectOption, WorkbenchSelect};
 use crate::models::{AuditEvent, ProjectMember};
 
 /// 审计事件类型分类
@@ -80,20 +81,21 @@ pub fn MemberManagementPanel(
                         disabled=member_busy
                     />
                 </label>
-                <label class="member-form-field" for="member-role">
-                    <span>"项目职责"</span>
-                    <select
-                        id="member-role"
-                        prop:value=member_role
-                        on:change=move |event| set_member_role.set(event_target_value(&event))
-                        disabled=member_busy
-                    >
-                        <option value="modeler">"建模者"</option>
-                        <option value="reviewer">"复核者"</option>
-                        <option value="approver">"审批者"</option>
-                        <option value="viewer">"查看者"</option>
-                    </select>
-                </label>
+                <WorkbenchSelect
+                    id="member-role"
+                    class="member-role-select"
+                    label="项目职责"
+                    options=Signal::derive(|| vec![
+                        SelectOption::new("modeler", "建模者"),
+                        SelectOption::new("reviewer", "复核者"),
+                        SelectOption::new("approver", "审批者"),
+                        SelectOption::new("viewer", "查看者"),
+                    ])
+                    value=member_role
+                    disabled=member_busy
+                    placeholder=Signal::derive(|| "请选择项目职责".to_string())
+                    on_change=Callback::new(move |value| set_member_role.set(value))
+                />
                 <button
                     type="button"
                     class="button button-primary"

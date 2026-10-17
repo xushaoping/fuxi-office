@@ -38,11 +38,3 @@ pub fn timeline_item_text(step: &str) -> String {
     step.trim_start_matches(['→', '✓', '⚠', '…', ' '])
         .to_string()
 }
-
-/// DMN 编译错误最大修复次数
-pub const MAX_DMN_COMPILE_REPAIRS: i32 = 2;
-
-/// 判断是否为可修复的模型变更错误
-pub fn is_repairable_model_change_error(message: &str) -> bool {
-    message.starts_with("[DMN_COMPILE]")
-}

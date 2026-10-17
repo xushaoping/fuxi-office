@@ -42,6 +42,10 @@ services:
       # JWT 密钥（生产环境必须修改！）
       JWT_SECRET: ${JWT_SECRET:?JWT_SECRET must be set}
 
+      # hCaptcha 公钥和服务端密钥
+      HCAPTCHA_SITE_KEY: ${HCAPTCHA_SITE_KEY:?HCAPTCHA_SITE_KEY must be set}
+      HCAPTCHA_SECRET: ${HCAPTCHA_SECRET:?HCAPTCHA_SECRET must be set}
+
       # 超级管理员 admin 的初始密码（生产环境必须修改！）
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:?ADMIN_PASSWORD must be set}
 
@@ -68,6 +72,8 @@ services:
     restart: unless-stopped
     depends_on:
       - app
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     ports:
       - "80:80"
       - "443:443"

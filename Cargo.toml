@@ -28,7 +28,7 @@ regex = "1.13.0"
 leptos = { version = "0.8.20", features = ["csr", "nightly"], optional = true }
 # rsproxy 镜像中 leptos_router 0.8.x 最新为 0.8.15（无 0.8.20），与 leptos 0.8.20 兼容
 leptos_router = { version = "0.8.15", optional = true }
-wasm-bindgen = { version = "=0.2.127", optional = true }
+wasm-bindgen = { version = "=0.2.129", optional = true }
 console_error_panic_hook = { version = "0.1", optional = true }
 # 浏览器 API：reqwest 在 wasm 上要求绝对 URL，需用 window.location.origin 动态拼接
 web-sys = { version = "0.3", features = ["Window", "Location", "Navigator", "Clipboard", "AbortController", "AbortSignal", "Headers", "Request", "RequestInit", "Response", "ReadableStream", "ReadableStreamDefaultReader", "TextDecoder", "TextDecodeOptions", "Event", "BeforeUnloadEvent", "Element", "HtmlElement"], optional = true }

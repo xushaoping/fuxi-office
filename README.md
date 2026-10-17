@@ -8,11 +8,11 @@
 
 账号2：fuxi/admin1234
 
-## 🎉 最新更新 - v1.0.1
+## 🎉 最新更新 - v0.0.2
 
 ### 🔒 安全加固
-- ✅ **内存泄漏修复** - 后台自动清理过期验证码和频率限制记录
-- ✅ **竞态条件修复** - 验证码验证改为原子操作，消除 TOCTOU 漏洞
+- ✅ **hCaptcha 人机验证** - 登录由服务端校验 hCaptcha token，不再使用图片验证码
+- ✅ **多层频率限制** - 登录和 hCaptcha 校验接口具备频率限制保护
 - ✅ **时钟攻击防护** - 使用单调时钟，不受系统时间调整影响
 - ✅ **多层频率限制** - 三重防护（获取/验证/登录）防止暴力破解
 - ✅ **完整审计日志** - 记录所有登录、验证失败和安全事件
@@ -25,7 +25,7 @@
 - ✅ **视觉规范统一** - 全局统一色彩、间距、圆角、阴影系统
 
 **安全等级提升**: ⭐⭐⭐☆☆ → ⭐⭐⭐⭐☆  
-**详细信息**: 查看 [v1.0.1 发布说明](RELEASE_v1.0.1.md)
+**详细信息**: 查看 [v0.0.2 发布说明](RELEASE_v1.0.1.md)
 
 ---
 
@@ -186,6 +186,10 @@ JWT_SECRET=<随机且保密的 JWT 密钥>
 # 超级管理员 admin 的初始密码（至少 6 位；生产环境必须显式设置）
 ADMIN_PASSWORD=<admin 初始密码>
 
+# hCaptcha 配置（从 hCaptcha 控制台获取）
+HCAPTCHA_SITE_KEY=<hCaptcha 站点密钥>
+HCAPTCHA_SECRET=<hCaptcha 服务端密钥>
+
 # 后端监听地址，未设置时为 127.0.0.1:3000
 BIND_ADDR=127.0.0.1:3000
 
@@ -287,7 +291,12 @@ psql -U <管理员> -d fuxi_dmn -v app_user=fuxi -f script/019_user_roles.sql
 
 # 修复决策服务调用凭证表权限（已有数据库必须执行）
 psql -U <管理员> -d fuxi_dmn -v app_user=fuxi -f script/020_decision_service_api_keys_permissions.sql
+
+# 需求分析、原始需求留存与模型变更基线（已有数据库必须执行）
+psql -U <管理员> -d fuxi_dmn -f script/021_workflow_model_baseline.sql
 ```
+
+新增与修改模型统一采用“需求分析 → 规划并确认方案 → 生成 DSL → 编译 DMN → 预览并确认保存”。修改时分析与规划同时参考当前草稿 DSL 和原始业务需求；不再直接将自由文本提交给模型变更生成器。调整需求、澄清回答或切换模型基线后，必须重新分析或规划并确认。链路与接口约束见 `docs/decision-workflow.md`。
 
 **权限问题修复**：
 
@@ -720,7 +729,30 @@ curl http://127.0.0.1:3000/api/health
 docker compose --env-file .env ps
 ```
 
-`DB_PASSWORD`、`JWT_SECRET` 和 `ADMIN_PASSWORD` 是必需配置；`OPENAI_API_KEY` 仅在使用智能建模时需要。数据库初始化脚本只会在首次创建 `postgres_data` 卷时自动执行，已有数据库升级请按上面的增量 SQL 顺序执行。停止服务时使用 `docker compose --env-file .env down`；不要使用 `down -v`，除非确认要删除数据库卷。
+`DB_PASSWORD`、`JWT_SECRET`、`ADMIN_PASSWORD`、`HCAPTCHA_SITE_KEY` 和 `HCAPTCHA_SECRET` 是必需配置；`OPENAI_API_KEY` 仅在使用智能建模时需要。数据库初始化脚本只会在首次创建 `postgres_data` 卷时自动执行，已有数据库升级请按上面的增量 SQL 顺序执行。停止服务时使用 `docker compose --env-file .env down`；不要使用 `down -v`，除非确认要删除数据库卷。
+
+### 多实例部署
+
+如果要在一台服务器上运行多个相互隔离的 Fuxi App，不要复制默认 `docker-compose.yml`。该文件使用固定容器名和 `80/443` 端口，多套同时启动会冲突。
+
+请使用：
+
+- `docker-compose.multi.yml`：每个实例独立 App、PostgreSQL 和数据卷
+- `deploy/multi-instance/*.env.example`：实例端口、域名和密钥模板
+- `deploy/multi-instance/nginx.conf.example`：统一反向代理
+- `script/multi-instance.sh`：构建镜像、启动、备份和生成 Nginx 片段
+
+```bash
+cp deploy/multi-instance/app-a.env.example deploy/multi-instance/app-a.env
+cp deploy/multi-instance/app-b.env.example deploy/multi-instance/app-b.env
+script/multi-instance.sh build
+script/multi-instance.sh up app-a
+script/multi-instance.sh up app-b
+curl http://127.0.0.1:3101/api/health
+curl http://127.0.0.1:3102/api/health
+```
+
+完整步骤见 [多实例部署说明](deploy/multi-instance/README.md)。
 
 如果 Docker Hub 不可访问，可使用能访问的 Rust 1.90 镜像构建：
 
@@ -939,6 +971,8 @@ sudo -u postgres psql -v app_user=fuxi -f /tmp/fuxi-init.sql
 DATABASE_URL=postgres://fuxi:<数据库密码>@127.0.0.1:5432/fuxi_dmn
 ADMIN_PASSWORD=<管理员初始密码，至少6位>
 JWT_SECRET=<至少32位随机字符串>
+HCAPTCHA_SITE_KEY=<hCaptcha 站点密钥>
+HCAPTCHA_SECRET=<hCaptcha 服务端密钥>
 APP_ENV=production
 BIND_ADDR=127.0.0.1:3000
 OPENAI_API_KEY=<兼容接口密钥>
@@ -1106,8 +1140,6 @@ cargo test --lib
 - [知识库示例](docs/knowledge-base-examples.md) - 知识库录入和建模关联
 - [平台设计方案](docs/intelligent-decision-platform-design.md) - 整体架构和设计理念
 - [v1.0.1 发布说明](RELEASE_v1.0.1.md) - 最新版本安全加固和页面优化 🆕
-- [验证码安全修复报告](CAPTCHA_FIXES_IMPLEMENTED.md) - 详细技术实施报告 🆕
-- [验证码故障排查指南](CAPTCHA_TROUBLESHOOTING.md) - 问题诊断和解决方案 🆕
 - [贡献指南](CONTRIBUTING.md) - 开发环境、提交和测试要求
 - [安全策略](SECURITY.md) - 漏洞报告和敏感信息处理
 - [行为准则](CODE_OF_CONDUCT.md)

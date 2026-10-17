@@ -23,16 +23,23 @@ use crate::nl_dsl::agent::{LlmAgent, StreamEvent};
 use crate::project_access::{self, ProjectPermission};
 use crate::types::{AppState, Claims};
 use crate::workflow::{
-    AnalyzeRequirementRequest, Clarification, ClarificationAnswer, CreateDecisionPlanRequest,
-    DecisionPlan, DecisionWorkflowState, RequirementAnalysis,
+    AnalyzeRequirementRequest, Clarification, ClarificationAnswer, ConfirmDecisionPlanRequest,
+    CreateDecisionPlanRequest, DecisionPlan, DecisionWorkflowState, RequirementAnalysis,
 };
 
-struct WorkflowApiError {
+pub(crate) struct WorkflowApiError {
     status: StatusCode,
     message: String,
 }
 
 impl WorkflowApiError {
+    fn conflict(message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::CONFLICT,
+            message: message.into(),
+        }
+    }
+
     fn bad_request(message: impl Into<String>) -> Self {
         Self {
             status: StatusCode::BAD_REQUEST,
@@ -93,8 +100,10 @@ impl IntoResponse for WorkflowApiError {
 #[derive(sqlx::FromRow)]
 struct WorkflowRow {
     project_id: i64,
+    base_revision: Option<i64>,
     status: String,
     requirement_text: String,
+    original_requirement_text: Option<String>,
     decision_brief_json: Value,
     clarifications_json: Value,
     answers_json: Value,
@@ -107,8 +116,10 @@ impl WorkflowRow {
     fn into_state(self) -> Result<DecisionWorkflowState, WorkflowApiError> {
         Ok(DecisionWorkflowState {
             project_id: self.project_id,
+            base_revision: self.base_revision,
             status: self.status,
             requirement_text: self.requirement_text,
+            original_requirement_text: self.original_requirement_text,
             brief: parse_saved(self.decision_brief_json, "需求摘要")?,
             clarifications: parse_saved(self.clarifications_json, "澄清问题")?,
             answers: parse_saved(self.answers_json, "澄清回答")?,
@@ -170,6 +181,8 @@ async fn save_requirement_analysis(
     user_id: &str,
     requirement: &str,
     analysis: &RequirementAnalysis,
+    base_revision: Option<i64>,
+    previous: Option<&DecisionWorkflowState>,
 ) -> Result<DecisionWorkflowState, WorkflowApiError> {
     validate_analysis(analysis)?;
     let status = if analysis.clarifications.is_empty() {
@@ -177,26 +190,38 @@ async fn save_requirement_analysis(
     } else {
         "clarification"
     };
-    sqlx::query(
-        r#"INSERT INTO decision_workflows (
+    let result = sqlx::query(
+        r#"INSERT INTO decision_workflows AS workflow (
             project_id, status, requirement_text, decision_brief_json,
-            clarifications_json, answers_json, decision_plan_json, confirmed_at, updated_at
-        ) VALUES ($1, $2, $3, $4, $5, '[]'::JSONB, NULL, NULL, NOW())
+            clarifications_json, answers_json, decision_plan_json, confirmed_at, updated_at, base_revision, original_requirement_text
+        ) SELECT $1, $2, $3, $4, $5, '[]'::JSONB, NULL, NULL, NOW(), $6, $8
+          FROM decision_projects project WHERE project.id = $1
+            AND project.current_draft_version_id IS NOT DISTINCT FROM $6
         ON CONFLICT (project_id) DO UPDATE SET
             status = EXCLUDED.status, requirement_text = EXCLUDED.requirement_text,
             decision_brief_json = EXCLUDED.decision_brief_json,
             clarifications_json = EXCLUDED.clarifications_json,
             answers_json = '[]'::JSONB, decision_plan_json = NULL,
-            confirmed_at = NULL, updated_at = NOW()"#,
+            confirmed_at = NULL, updated_at = NOW(), base_revision = EXCLUDED.base_revision,
+            original_requirement_text = EXCLUDED.original_requirement_text
+        WHERE workflow.updated_at = $7"#,
     )
     .bind(project_id)
     .bind(status)
     .bind(requirement)
     .bind(serde_json::to_value(&analysis.brief).unwrap_or(Value::Null))
     .bind(serde_json::to_value(&analysis.clarifications).unwrap_or(Value::Array(vec![])))
+    .bind(base_revision)
+    .bind(previous.map(|workflow| workflow.updated_at))
+    .bind(requirement_origin(requirement, base_revision, previous))
     .execute(&state.db)
     .await
     .map_err(|error| WorkflowApiError::database("保存需求分析", error))?;
+    if result.rows_affected() == 0 {
+        return Err(WorkflowApiError::conflict(
+            "需求或模型基线已变化，本次分析未覆盖已有结果，请刷新后重新分析",
+        ));
+    }
     load_workflow(state, project_id, user_id)
         .await?
         .ok_or_else(WorkflowApiError::not_found)
@@ -285,7 +310,8 @@ async fn load_workflow(
 ) -> Result<Option<DecisionWorkflowState>, WorkflowApiError> {
     sqlx::query_as::<_, WorkflowRow>(
         r#"
-        SELECT workflow.project_id, workflow.status, workflow.requirement_text,
+        SELECT workflow.project_id, workflow.base_revision, workflow.status, workflow.requirement_text,
+               workflow.original_requirement_text,
                workflow.decision_brief_json, workflow.clarifications_json,
                workflow.answers_json, workflow.decision_plan_json,
                workflow.confirmed_at, workflow.updated_at
@@ -364,6 +390,90 @@ async fn get_workflow(
     Ok(Json(load_workflow(&state, project_id, &claims.sub).await?))
 }
 
+async fn model_baseline(
+    state: &AppState,
+    project_id: i64,
+) -> Result<(Option<i64>, Option<String>), WorkflowApiError> {
+    let baseline = sqlx::query_as::<_, (Option<i64>, Option<String>)>(
+        "SELECT project.current_draft_version_id, artifact.dsl_yaml FROM decision_projects project LEFT JOIN decision_artifacts artifact ON artifact.version_id = project.current_draft_version_id WHERE project.id = $1",
+    )
+    .bind(project_id)
+    .fetch_optional(&state.db)
+    .await
+    .map_err(|error| WorkflowApiError::database("读取需求分析模型基线", error))?
+    .ok_or_else(WorkflowApiError::not_found)?;
+    if baseline.0.is_some()
+        && baseline
+            .1
+            .as_deref()
+            .is_none_or(|dsl| dsl.trim().is_empty())
+    {
+        return Err(WorkflowApiError::bad_request(
+            "当前草稿缺少 DSL，无法分析变更范围",
+        ));
+    }
+    Ok(baseline)
+}
+
+fn original_requirement(workflow: &DecisionWorkflowState) -> Option<&str> {
+    workflow.original_requirement_text.as_deref().or_else(|| {
+        workflow
+            .base_revision
+            .is_none()
+            .then_some(workflow.requirement_text.as_str())
+    })
+}
+
+fn requirement_origin(
+    requirement: &str,
+    base_revision: Option<i64>,
+    previous: Option<&DecisionWorkflowState>,
+) -> Option<String> {
+    if base_revision.is_none() {
+        return Some(requirement.to_string());
+    }
+    previous.and_then(original_requirement).map(str::to_string)
+}
+
+fn analysis_model_context(
+    existing_dsl: Option<&str>,
+    previous: Option<&DecisionWorkflowState>,
+) -> Option<String> {
+    existing_dsl.map(|dsl| json!({
+        "currentDsl": dsl,
+        "originalRequirement": previous.and_then(original_requirement),
+        "latestRequirement": previous.map(|workflow| &workflow.requirement_text),
+        "changePolicy": "结合原始需求和当前模型理解本次需求；明确新增、调整与保留的业务规则，未提出变更的规则必须保留，不得重建或删减整个模型。原始需求仅为业务背景，当前 DSL 是已生效规则基线，本次需求优先，不得将历史规则恢复或覆盖本次调整。",
+    }).to_string())
+}
+
+pub(crate) async fn confirmed_generation_prompt(
+    state: &AppState,
+    project_id: i64,
+    username: &str,
+    base_revision: Option<i64>,
+    expected_updated_at: Option<DateTime<Utc>>,
+) -> Result<String, WorkflowApiError> {
+    ensure_model_permission(state, project_id, username).await?;
+    let (current_revision, _) = model_baseline(state, project_id).await?;
+    if current_revision != base_revision {
+        return Err(WorkflowApiError::conflict(
+            "当前模型基线已变化，请刷新后重新分析",
+        ));
+    }
+    let workflow = load_workflow(state, project_id, username)
+        .await?
+        .ok_or_else(|| WorkflowApiError::bad_request("请先分析业务需求并规划方案"))?;
+    if Some(workflow.updated_at) != expected_updated_at {
+        return Err(WorkflowApiError::conflict(
+            "方案已变化，请刷新并核对已确认方案后生成模型",
+        ));
+    }
+    workflow
+        .generation_prompt(base_revision)
+        .map_err(WorkflowApiError::conflict)
+}
+
 async fn analyze_requirement(
     State(state): State<AppState>,
     Extension(llm_state): Extension<Arc<LlmState>>,
@@ -378,6 +488,9 @@ async fn analyze_requirement(
         ));
     }
     ensure_model_permission(&state, project_id, &claims.sub).await?;
+    let previous = load_workflow(&state, project_id, &claims.sub).await?;
+    let (base_revision, existing_dsl) = model_baseline(&state, project_id).await?;
+    let model_context = analysis_model_context(existing_dsl.as_deref(), previous.as_ref());
     let knowledge_sources = effective_project_sources(&state.db, project_id, &claims.sub)
         .await
         .map_err(|error| WorkflowApiError::database("读取项目有效知识", error))?;
@@ -399,7 +512,7 @@ async fn analyze_requirement(
     )
     .await?;
     let analysis = match agent
-        .analyze_requirement(requirement, Some(&knowledge_text))
+        .analyze_requirement(requirement, Some(&knowledge_text), model_context.as_deref())
         .await
     {
         Ok(analysis) => analysis,
@@ -419,9 +532,17 @@ async fn analyze_requirement(
         Ok(serde_json::to_value(&analysis).unwrap_or(Value::Null)),
     )
     .await?;
-    save_requirement_analysis(&state, project_id, &claims.sub, requirement, &analysis)
-        .await
-        .map(Json)
+    save_requirement_analysis(
+        &state,
+        project_id,
+        &claims.sub,
+        requirement,
+        &analysis,
+        base_revision,
+        previous.as_ref(),
+    )
+    .await
+    .map(Json)
 }
 
 async fn analyze_requirement_stream(
@@ -439,6 +560,15 @@ async fn analyze_requirement_stream(
     if let Err(error) = ensure_model_permission(&state, project_id, &claims.sub).await {
         return error.into_response();
     }
+    let previous = match load_workflow(&state, project_id, &claims.sub).await {
+        Ok(workflow) => workflow,
+        Err(error) => return error.into_response(),
+    };
+    let (base_revision, existing_dsl) = match model_baseline(&state, project_id).await {
+        Ok(baseline) => baseline,
+        Err(error) => return error.into_response(),
+    };
+    let model_context = analysis_model_context(existing_dsl.as_deref(), previous.as_ref());
     let knowledge_sources = match effective_project_sources(&state.db, project_id, &claims.sub)
         .await
     {
@@ -467,7 +597,12 @@ async fn analyze_requirement_stream(
     let user_id = claims.sub.clone();
     tokio::spawn(async move {
         let result = agent
-            .analyze_requirement_stream(&requirement, Some(&knowledge_text), &tx2)
+            .analyze_requirement_stream(
+                &requirement,
+                Some(&knowledge_text),
+                model_context.as_deref(),
+                &tx2,
+            )
             .await;
         let event = match result {
             Ok(analysis) => match save_requirement_analysis(
@@ -476,6 +611,8 @@ async fn analyze_requirement_stream(
                 &user_id,
                 &requirement,
                 &analysis,
+                base_revision,
+                previous.as_ref(),
             )
             .await
             {
@@ -531,6 +668,22 @@ async fn create_plan(
     let workflow = load_workflow(&state, project_id, &claims.sub)
         .await?
         .ok_or_else(WorkflowApiError::not_found)?;
+    let (base_revision, existing_dsl) = model_baseline(&state, project_id).await?;
+    if workflow.base_revision != base_revision || workflow.updated_at != payload.expected_updated_at
+    {
+        return Err(WorkflowApiError::conflict(
+            "需求或模型基线已变化，请刷新并重新分析后规划",
+        ));
+    }
+    if !matches!(
+        workflow.status.as_str(),
+        "analyzed" | "clarification" | "planned"
+    ) {
+        return Err(WorkflowApiError::bad_request(
+            "已确认方案如需调整，请先重新分析业务需求",
+        ));
+    }
+    let model_context = analysis_model_context(existing_dsl.as_deref(), Some(&workflow));
     validate_answers(&workflow.clarifications, &payload.answers)?;
     let knowledge_sources = effective_project_sources(&state.db, project_id, &claims.sub)
         .await
@@ -554,7 +707,12 @@ async fn create_plan(
     )
     .await?;
     let plan = match agent
-        .plan_decision_model(&workflow.brief, &payload.answers, Some(&knowledge_text))
+        .plan_decision_model(
+            &workflow.brief,
+            &payload.answers,
+            Some(&knowledge_text),
+            model_context.as_deref(),
+        )
         .await
     {
         Ok(plan) => plan,
@@ -574,20 +732,30 @@ async fn create_plan(
         Ok(serde_json::to_value(&plan).unwrap_or(Value::Null)),
     )
     .await?;
-    sqlx::query(
+    let result = sqlx::query(
         r#"
         UPDATE decision_workflows workflow
         SET status = 'planned', answers_json = $1, decision_plan_json = $2,
             confirmed_at = NULL, updated_at = NOW()
         WHERE workflow.project_id = $3
+          AND workflow.updated_at = $4
+          AND workflow.status IN ('analyzed', 'clarification', 'planned')
+          AND EXISTS (SELECT 1 FROM decision_projects project WHERE project.id = $3
+              AND project.current_draft_version_id IS NOT DISTINCT FROM workflow.base_revision)
         "#,
     )
     .bind(serde_json::to_value(&payload.answers).unwrap_or(Value::Array(vec![])))
     .bind(serde_json::to_value(&plan).unwrap_or(Value::Null))
     .bind(project_id)
+    .bind(workflow.updated_at)
     .execute(&state.db)
     .await
     .map_err(|error| WorkflowApiError::database("保存决策方案", error))?;
+    if result.rows_affected() == 0 {
+        return Err(WorkflowApiError::conflict(
+            "规划期间需求或模型已变化，旧方案未保存，请刷新后重试",
+        ));
+    }
     load_workflow(&state, project_id, &claims.sub)
         .await?
         .map(Json)
@@ -598,6 +766,7 @@ async fn confirm_plan(
     State(state): State<AppState>,
     Extension(claims): Extension<Claims>,
     Path(project_id): Path<i64>,
+    Json(payload): Json<ConfirmDecisionPlanRequest>,
 ) -> Result<Json<DecisionWorkflowState>, WorkflowApiError> {
     ensure_model_permission(&state, project_id, &claims.sub).await?;
     let result = sqlx::query(
@@ -606,15 +775,19 @@ async fn confirm_plan(
         SET status = 'confirmed', confirmed_at = NOW(), updated_at = NOW()
         WHERE workflow.project_id = $1 AND workflow.status = 'planned'
           AND workflow.decision_plan_json IS NOT NULL
+          AND workflow.updated_at = $2
+          AND EXISTS (SELECT 1 FROM decision_projects project WHERE project.id = $1
+              AND project.current_draft_version_id IS NOT DISTINCT FROM workflow.base_revision)
         "#,
     )
     .bind(project_id)
+    .bind(payload.expected_updated_at)
     .execute(&state.db)
     .await
     .map_err(|error| WorkflowApiError::database("确认决策方案", error))?;
     if result.rows_affected() == 0 {
-        return Err(WorkflowApiError::bad_request(
-            "只有已生成的决策方案可以确认",
+        return Err(WorkflowApiError::conflict(
+            "方案或模型基线已变化，请刷新后重新核对方案",
         ));
     }
     load_workflow(&state, project_id, &claims.sub)
@@ -646,6 +819,70 @@ pub fn routes(llm_state: Arc<LlmState>) -> Router<AppState> {
 mod tests {
     use super::*;
     use crate::workflow::{DecisionBrief, DecisionField, PlannedDecision};
+
+    fn workflow(base_revision: Option<i64>) -> DecisionWorkflowState {
+        DecisionWorkflowState {
+            project_id: 1,
+            base_revision,
+            status: "analyzed".into(),
+            requirement_text: "本次将订单门槛调整为 500 元".into(),
+            original_requirement_text: Some("订单满 300 元享受优惠".into()),
+            brief: DecisionBrief::default(),
+            clarifications: Vec::new(),
+            answers: Vec::new(),
+            plan: None,
+            confirmed_at: None,
+            updated_at: Utc::now(),
+        }
+    }
+
+    #[test]
+    fn modification_context_includes_original_requirement_and_current_dsl() {
+        let state = workflow(Some(42));
+        let context: Value = serde_json::from_str(
+            &analysis_model_context(Some("current model"), Some(&state)).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(context["currentDsl"], "current model");
+        assert_eq!(context["originalRequirement"], "订单满 300 元享受优惠");
+        assert_eq!(context["latestRequirement"], state.requirement_text);
+        assert!(analysis_model_context(None, Some(&state)).is_none());
+    }
+
+    #[test]
+    fn original_requirement_survives_reanalysis_and_later_model_revisions() {
+        let mut state = workflow(Some(42));
+        for revision in [42, 43] {
+            state.original_requirement_text =
+                requirement_origin("再次修改门槛", Some(revision), Some(&state));
+            state.requirement_text = "再次修改门槛".into();
+            assert_eq!(
+                state.original_requirement_text.as_deref(),
+                Some("订单满 300 元享受优惠")
+            );
+        }
+        assert_eq!(
+            requirement_origin("初始需求", None, None).as_deref(),
+            Some("初始需求")
+        );
+        assert_eq!(
+            requirement_origin("重新分析新建需求", None, Some(&state)).as_deref(),
+            Some("重新分析新建需求")
+        );
+    }
+
+    #[test]
+    fn imported_model_does_not_treat_change_instructions_as_original_requirement() {
+        assert!(requirement_origin("修改导入模型", Some(42), None).is_none());
+        let mut state = workflow(Some(42));
+        state.original_requirement_text = None;
+        assert!(requirement_origin("再次修改", Some(42), Some(&state)).is_none());
+        state.base_revision = None;
+        assert_eq!(
+            requirement_origin("修改旧工作流", Some(42), Some(&state)),
+            Some(state.requirement_text)
+        );
+    }
 
     #[test]
     fn required_clarifications_must_be_answered() {

@@ -4,6 +4,7 @@ use leptos_router::hooks::use_navigate;
 
 use crate::api;
 use crate::components::auth::auth_token;
+use crate::components::common::{SelectOption, WorkbenchSelect};
 use crate::models::{CreateDecisionProject, DecisionProject};
 use crate::state::AppState;
 
@@ -185,7 +186,18 @@ pub fn ProjectManagementPage() -> impl IntoView {
                         </div>
                         <div class="admin-form-grid management-form-grid">
                             <label><span>"项目名称"</span><input maxlength="120" placeholder="输入项目名称" prop:value=name on:input=move |event| name.set(event_target_value(&event)) /></label>
-                            <label><span>"风险等级"</span><select prop:value=risk_level on:change=move |event| risk_level.set(event_target_value(&event))><option value="low">"低风险"</option><option value="medium">"中风险"</option><option value="high">"高风险"</option></select></label>
+                            <WorkbenchSelect
+                                label="风险等级"
+                                options=Signal::derive(|| vec![
+                                    SelectOption::new("low", "低风险"),
+                                    SelectOption::new("medium", "中风险"),
+                                    SelectOption::new("high", "高风险"),
+                                ])
+                                value=risk_level
+                                disabled=busy
+                                placeholder=Signal::derive(|| "请选择风险等级".to_string())
+                                on_change=Callback::new(move |value| risk_level.set(value))
+                            />
                             <label class="management-form-wide"><span>"项目说明"</span><textarea maxlength="4000" rows="5" placeholder="补充项目用途、边界和责任说明" prop:value=description on:input=move |event| description.set(event_target_value(&event))></textarea></label>
                         </div>
                         <div class="project-management-form-actions">

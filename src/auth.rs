@@ -9,7 +9,11 @@ use chrono::{Duration, Utc};
 use hmac::{Hmac, Mac};
 use jsonwebtoken::{DecodingKey, EncodingKey, Header, Validation, decode, encode};
 use sha2::Sha256;
-use std::{collections::HashMap, net::{IpAddr, SocketAddr}, sync::Mutex};
+use std::{
+    collections::HashMap,
+    net::{IpAddr, SocketAddr},
+    sync::Mutex,
+};
 use uuid::Uuid;
 
 // 引入加密和数据库模块
@@ -73,7 +77,7 @@ fn database_failure(operation: &str, error: &sqlx::Error) -> (StatusCode, String
 
 const CAPTCHA_ALPHABET: &[u8] = b"23456789ABCDEFGHJKLMNPQRSTUVWXYZ";
 const CAPTCHA_TTL_SECONDS: u64 = 120;
-const CAPTCHA_LENGTH: usize = 5;  // 临时恢复为5位，等前端适配后改为6
+const CAPTCHA_LENGTH: usize = 5;
 const CAPTCHA_MAX_ATTEMPTS: u8 = 5;
 const CAPTCHA_MAX_ENTRIES: usize = 10_000;
 const RATE_LIMIT_WINDOW_SECONDS: u64 = 60;
@@ -82,7 +86,46 @@ const CAPTCHA_VERIFY_LIMIT: u16 = 30;
 const LOGIN_LIMIT: u16 = 10;
 const RATE_LIMIT_MAX_KEYS: usize = 10_000;
 const RATE_LIMIT_RETRY_AFTER_SECONDS: u64 = 60;
+const HCAPTCHA_VERIFY_URL: &str = "https://api.hcaptcha.com/siteverify";
 type HmacSha256 = Hmac<Sha256>;
+
+#[derive(Debug, serde::Deserialize)]
+struct HcaptchaVerificationResponse {
+    success: bool,
+    #[serde(default)]
+    error_codes: Vec<String>,
+}
+
+async fn verify_hcaptcha(
+    secret: &str,
+    site_key: &str,
+    token: &str,
+    client_key: &str,
+) -> Result<bool, String> {
+    let mut form = vec![("secret", secret), ("sitekey", site_key), ("response", token)];
+    if client_key.parse::<IpAddr>().is_ok() {
+        form.push(("remoteip", client_key));
+    }
+    let response = reqwest::Client::new()
+        .post(HCAPTCHA_VERIFY_URL)
+        .form(&form)
+        .timeout(std::time::Duration::from_secs(8))
+        .send()
+        .await
+        .map_err(|error| format!("hCaptcha 校验请求失败：{error}"))?;
+    let status = response.status();
+    if !status.is_success() {
+        return Err(format!("hCaptcha 校验服务返回 HTTP {}", status.as_u16()));
+    }
+    let result = response
+        .json::<HcaptchaVerificationResponse>()
+        .await
+        .map_err(|error| format!("hCaptcha 校验响应无效：{error}"))?;
+    if !result.success && !result.error_codes.is_empty() {
+        eprintln!("hCaptcha 校验未通过：{}", result.error_codes.join(","));
+    }
+    Ok(result.success)
+}
 
 fn captcha_glyph(character: char) -> [&'static str; 7] {
     match character {
@@ -206,7 +249,11 @@ fn captcha_answer_digest(secret: &str, captcha_id: &str, captcha_code: &str) -> 
 }
 
 fn captcha_client_binding(secret: &str, client_key: &str) -> [u8; 32] {
-    hmac_digest(secret, b"fuxi-dmn:captcha-client:v1:", client_key.as_bytes())
+    hmac_digest(
+        secret,
+        b"fuxi-dmn:captcha-client:v1:",
+        client_key.as_bytes(),
+    )
 }
 
 fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
@@ -222,7 +269,10 @@ fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
 
 fn forwarded_client_ip(headers: &HeaderMap) -> Option<IpAddr> {
     for header_name in ["x-forwarded-for", "x-real-ip"] {
-        let Some(value) = headers.get(header_name).and_then(|value| value.to_str().ok()) else {
+        let Some(value) = headers
+            .get(header_name)
+            .and_then(|value| value.to_str().ok())
+        else {
             continue;
         };
         if let Some(ip) = value
@@ -258,9 +308,7 @@ fn allow_rate_limit(
     };
 
     // 清理过期窗口
-    limits.retain(|_, window| {
-        window.created_at.elapsed().as_secs() <= RATE_LIMIT_WINDOW_SECONDS
-    });
+    limits.retain(|_, window| window.created_at.elapsed().as_secs() <= RATE_LIMIT_WINDOW_SECONDS);
 
     if let Some(window) = limits.get_mut(key) {
         if window.count >= max_requests {
@@ -290,7 +338,11 @@ fn allow_rate_limit(
     true
 }
 
-fn no_store_json(status: StatusCode, body: serde_json::Value, retry_after: Option<u64>) -> Response {
+fn no_store_json(
+    status: StatusCode,
+    body: serde_json::Value,
+    retry_after: Option<u64>,
+) -> Response {
     let mut headers = HeaderMap::new();
     headers.insert(
         header::CACHE_CONTROL,
@@ -313,19 +365,16 @@ fn consume_captcha(
     client_key: &str,
 ) -> bool {
     let Ok(mut captchas) = captchas.lock() else {
-        eprintln!("[调试] consume_captcha: 无法获取锁");
         return false;
     };
 
     // 一次性取出挑战，避免 TOCTOU 竞态条件
     let Some(mut challenge) = captchas.remove(captcha_id) else {
-        eprintln!("[调试] consume_captcha: 验证码ID不存在: {}", captcha_id);
         return false;
     };
 
     // 检查是否过期
     if challenge.is_expired() {
-        eprintln!("[调试] consume_captcha: 验证码已过期");
         return false; // 已过期，不放回
     }
 
@@ -337,19 +386,11 @@ fn consume_captcha(
     let answer_match = constant_time_eq(&challenge.answer_digest, &expected_answer);
     let binding_match = constant_time_eq(&challenge.client_binding, &expected_binding);
 
-    eprintln!(
-        "[调试] consume_captcha: 验证码='{}', 尝试次数={}, 答案匹配={}, 客户端匹配={}",
-        captcha_code, challenge.attempts, answer_match, binding_match
-    );
-
     let valid = challenge.attempts <= CAPTCHA_MAX_ATTEMPTS && answer_match && binding_match;
 
     // 如果验证失败且未超过最大尝试次数，放回队列
     if !valid && challenge.attempts < CAPTCHA_MAX_ATTEMPTS {
         captchas.insert(captcha_id.to_string(), challenge);
-        eprintln!("[调试] consume_captcha: 验证失败，已放回队列");
-    } else if !valid {
-        eprintln!("[调试] consume_captcha: 验证失败，已超过最大尝试次数");
     }
 
     valid
@@ -364,11 +405,7 @@ pub(crate) async fn captcha(
     let peer_addr = Some(addr);
     let client_key = client_key(&headers, peer_addr, state.trust_proxy_headers);
 
-    if !allow_rate_limit(
-        &state.captcha_rate_limits,
-        &client_key,
-        CAPTCHA_ISSUE_LIMIT,
-    ) {
+    if !allow_rate_limit(&state.captcha_rate_limits, &client_key, CAPTCHA_ISSUE_LIMIT) {
         return no_store_json(
             StatusCode::TOO_MANY_REQUESTS,
             serde_json::json!({"error": "验证码请求过于频繁，请稍后再试"}),
@@ -381,8 +418,6 @@ pub(crate) async fn captcha(
     let code: String = (0..CAPTCHA_LENGTH)
         .map(|index| CAPTCHA_ALPHABET[(bytes[index] as usize) % CAPTCHA_ALPHABET.len()] as char)
         .collect();
-
-    eprintln!("[调试] captcha: 生成验证码 ID={}, code={}, client_key={}", id, code, client_key);
 
     let mut glyphs = String::new();
     for (index, character) in code.chars().enumerate() {
@@ -428,9 +463,7 @@ pub(crate) async fn captcha(
     };
 
     // 清理过期和同客户端的旧验证码
-    captchas.retain(|_, existing| {
-        !existing.is_expired() && existing.client_binding != binding
-    });
+    captchas.retain(|_, existing| !existing.is_expired() && existing.client_binding != binding);
 
     if captchas.len() >= CAPTCHA_MAX_ENTRIES {
         if let Some(oldest_key) = captchas
@@ -451,6 +484,14 @@ pub(crate) async fn captcha(
             "image": image,
             "expiresIn": CAPTCHA_TTL_SECONDS,
         }),
+        None,
+    )
+}
+
+pub(crate) async fn hcaptcha_config(State(state): State<AppState>) -> impl IntoResponse {
+    no_store_json(
+        StatusCode::OK,
+        serde_json::json!({"siteKey": state.hcaptcha_site_key}),
         None,
     )
 }
@@ -478,7 +519,11 @@ pub(crate) async fn login(
     }
 
     // 验证码验证频率限制
-    if !allow_rate_limit(&state.captcha_verify_limits, &client_key, CAPTCHA_VERIFY_LIMIT) {
+    if !allow_rate_limit(
+        &state.captcha_verify_limits,
+        &client_key,
+        CAPTCHA_VERIFY_LIMIT,
+    ) {
         eprintln!(
             "[安全警告] 验证码验证频率超限 - 客户端: {}, 用户名: {}",
             client_key, payload.username
@@ -490,22 +535,52 @@ pub(crate) async fn login(
         );
     }
 
-    let valid_captcha = consume_captcha(
-        &state.captchas,
-        &state.jwt_secret,
-        &payload.captcha_id,
-        &payload.captcha_code,
-        &client_key,
-    );
-
-    if !valid_captcha {
+    let hcaptcha_token = payload.hcaptcha_token.trim();
+    if hcaptcha_token.is_empty() {
         eprintln!(
-            "[审计] 验证码验证失败 - 客户端: {}, 用户名: {}, 验证码ID: {}",
-            client_key, payload.username, payload.captcha_id
+            "[审计] hCaptcha token 缺失 - 客户端: {}, 用户名: {}",
+            client_key, payload.username
         );
         return no_store_json(
-            StatusCode::UNAUTHORIZED,
-            serde_json::json!({"error": "用户名、密码或验证码不正确"}),
+            StatusCode::BAD_REQUEST,
+            serde_json::json!({"error": "请先完成 hCaptcha 验证"}),
+            None,
+        );
+    }
+
+    if hcaptcha_token.len() > 4096 {
+        return no_store_json(
+            StatusCode::BAD_REQUEST,
+            serde_json::json!({"error": "hCaptcha 验证信息无效，请重试"}),
+            None,
+        );
+    }
+    let valid_hcaptcha = match verify_hcaptcha(
+        &state.hcaptcha_secret,
+        &state.hcaptcha_site_key,
+        hcaptcha_token,
+        &client_key,
+    )
+    .await
+    {
+        Ok(valid) => valid,
+        Err(error) => {
+            eprintln!("[错误] hCaptcha 校验失败 - 客户端: {}, 错误: {}", client_key, error);
+            return no_store_json(
+                StatusCode::SERVICE_UNAVAILABLE,
+                serde_json::json!({"error": "验证码服务暂不可用，请稍后重试"}),
+                None,
+            );
+        }
+    };
+    if !valid_hcaptcha {
+        eprintln!(
+            "[审计] hCaptcha 验证失败 - 客户端: {}, 用户名: {}",
+            client_key, payload.username
+        );
+        return no_store_json(
+            StatusCode::BAD_REQUEST,
+            serde_json::json!({"error": "hCaptcha 验证未通过，请重试"}),
             None,
         );
     }
@@ -848,8 +923,20 @@ mod tests {
                 client_binding: captcha_client_binding("test-secret", "test-client"),
             },
         )]));
-        assert!(consume_captcha(&store, "test-secret", "challenge", " ab3k9 ", "test-client"));
-        assert!(!consume_captcha(&store, "test-secret", "challenge", "AB3K9", "test-client"));
+        assert!(consume_captcha(
+            &store,
+            "test-secret",
+            "challenge",
+            " ab3k9 ",
+            "test-client"
+        ));
+        assert!(!consume_captcha(
+            &store,
+            "test-secret",
+            "challenge",
+            "AB3K9",
+            "test-client"
+        ));
     }
 
     #[test]
@@ -864,7 +951,13 @@ mod tests {
                 client_binding: captcha_client_binding("test-secret", "test-client"),
             },
         )]));
-        assert!(!consume_captcha(&store, "test-secret", "expired", "AB123", "test-client"));
+        assert!(!consume_captcha(
+            &store,
+            "test-secret",
+            "expired",
+            "AB123",
+            "test-client"
+        ));
     }
 
     #[test]
@@ -880,8 +973,20 @@ mod tests {
             },
         )]));
         // 不同客户端尝试使用验证码应该失败
-        assert!(!consume_captcha(&store, "test-secret", "challenge", "ABC12", "client-2"));
+        assert!(!consume_captcha(
+            &store,
+            "test-secret",
+            "challenge",
+            "ABC12",
+            "client-2"
+        ));
         // 正确的客户端应该成功
-        assert!(consume_captcha(&store, "test-secret", "challenge", "ABC12", "client-1"));
+        assert!(consume_captcha(
+            &store,
+            "test-secret",
+            "challenge",
+            "ABC12",
+            "client-1"
+        ));
     }
 }

@@ -5,6 +5,8 @@ BEGIN;
 
 CREATE TABLE IF NOT EXISTS decision_workflows (
     project_id BIGINT PRIMARY KEY REFERENCES decision_projects(id) ON DELETE CASCADE,
+    base_revision BIGINT,
+    original_requirement_text TEXT,
     status VARCHAR(24) NOT NULL
         CHECK (status IN ('analyzed', 'clarification', 'planned', 'confirmed')),
     requirement_text TEXT NOT NULL,

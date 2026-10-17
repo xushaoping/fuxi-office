@@ -2,6 +2,7 @@ use gloo_storage::Storage;
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 use serde_yaml::Value as YamlValue;
+use std::collections::HashSet;
 use wasm_bindgen::{JsCast, closure::Closure};
 use wasm_bindgen_futures::JsFuture;
 
@@ -13,6 +14,7 @@ use crate::components::workspace::{
     yaml_graph_edge_path, yaml_graph_height, yaml_graph_knowledge_points, yaml_graph_label,
     yaml_joined_list, yaml_list, yaml_map, yaml_text,
 };
+use crate::components::yaml_structure::{visible_paths, yaml_paths};
 
 #[component]
 fn Artifact(
@@ -747,77 +749,6 @@ fn YamlArtifact(
     }
 }
 
-fn yaml_kind(value: &YamlValue) -> &'static str {
-    match value {
-        YamlValue::Mapping(_) => "对象",
-        YamlValue::Sequence(_) => "数组",
-        YamlValue::String(_) => "字符串",
-        YamlValue::Number(_) => "数字",
-        YamlValue::Bool(_) => "布尔值",
-        YamlValue::Null => "空值",
-        YamlValue::Tagged(_) => "值",
-    }
-}
-
-fn yaml_preview(value: &YamlValue) -> String {
-    match value {
-        YamlValue::Mapping(map) => format!("{} 个字段", map.len()),
-        YamlValue::Sequence(items) => format!("{} 项", items.len()),
-        _ => yaml_text(Some(value)),
-    }
-}
-
-#[derive(Clone)]
-struct YamlPathEntry {
-    path: String,
-    kind: String,
-    preview: String,
-    depth: usize,
-}
-
-fn collect_yaml_paths(
-    value: &YamlValue,
-    path: &str,
-    depth: usize,
-    output: &mut Vec<YamlPathEntry>,
-) {
-    if depth > 3 {
-        return;
-    }
-    match value {
-        YamlValue::Mapping(map) => {
-            for (key, child) in map {
-                let key = yaml_text(Some(key));
-                let child_path = if path.is_empty() {
-                    key
-                } else {
-                    format!("{path}.{key}")
-                };
-                output.push(YamlPathEntry {
-                    path: child_path.clone(),
-                    kind: yaml_kind(child).into(),
-                    preview: yaml_preview(child),
-                    depth: depth + 1,
-                });
-                collect_yaml_paths(child, &child_path, depth + 1, output);
-            }
-        }
-        YamlValue::Sequence(items) => {
-            for (index, child) in items.iter().enumerate() {
-                let child_path = format!("{path}[{index}]");
-                output.push(YamlPathEntry {
-                    path: child_path.clone(),
-                    kind: yaml_kind(child).into(),
-                    preview: yaml_preview(child),
-                    depth: depth + 1,
-                });
-                collect_yaml_paths(child, &child_path, depth + 1, output);
-            }
-        }
-        _ => {}
-    }
-}
-
 #[component]
 fn YamlModelView(summary: Memo<YamlSummary>) -> impl IntoView {
     let selected = RwSignal::new(None::<String>);
@@ -1129,42 +1060,92 @@ fn YamlDataCatalog(summary: Memo<YamlSummary>) -> impl IntoView {
 #[component]
 fn YamlStructureView(summary: Memo<YamlSummary>) -> impl IntoView {
     let query = RwSignal::new(String::new());
-    let entries = move || {
-        let query_value = query.get().to_lowercase();
-        let mut all = Vec::new();
-        if let Some(raw) = summary.get().raw.as_ref() {
-            collect_yaml_paths(raw, "", 0, &mut all);
-        }
-        if query_value.trim().is_empty() {
-            all
-        } else {
-            all.into_iter()
-                .filter(|entry| {
-                    entry.path.to_lowercase().contains(&query_value)
-                        || entry.preview.to_lowercase().contains(&query_value)
-                })
-                .collect()
-        }
+    let roots_open = RwSignal::new(true);
+    let expand_all = RwSignal::new(false);
+    let toggled = RwSignal::new(HashSet::<String>::new());
+    let entries = Memo::new(move |_| {
+        summary
+            .get()
+            .raw
+            .as_ref()
+            .map(yaml_paths)
+            .unwrap_or_default()
+    });
+    let visible = move || {
+        visible_paths(
+            &entries.get(),
+            &query.get(),
+            roots_open.get(),
+            expand_all.get(),
+            &toggled.get(),
+        )
     };
 
     view! {
-        <div class="yaml-structure-view">
-            <input
-                type="search"
-                class="yaml-structure-search"
-                placeholder="搜索路径..."
-                prop:value=query
-                on:input=move |event| query.set(event_target_value(&event))
-            />
+        <div class="yaml-structure-view yaml-view-content">
+            <div class="yaml-structure-toolbar">
+                <span>{move || format!("{} 个节点", entries.get().len())}</span>
+                <div class="yaml-structure-controls">
+                    <input
+                        type="search"
+                        class="yaml-tree-search"
+                        aria-label="搜索 YAML 节点"
+                        placeholder="搜索路径或内容..."
+                        prop:value=query
+                        on:input=move |event| query.set(event_target_value(&event))
+                    />
+                    <button type="button" class="yaml-tree-copy" on:click=move |_| {
+                        roots_open.set(true);
+                        expand_all.set(true);
+                        toggled.set(HashSet::new());
+                    }>"全部展开"</button>
+                    <button type="button" class="yaml-tree-copy" on:click=move |_| {
+                        roots_open.set(false);
+                        expand_all.set(false);
+                        toggled.set(HashSet::new());
+                    }>"全部收起"</button>
+                </div>
+            </div>
+            <Show when=move || summary.get().error.is_some()>
+                <div class="yaml-source-error">{move || summary.get().error.unwrap_or_default()}</div>
+            </Show>
+            <Show when=move || summary.get().error.is_none() && entries.get().is_empty()>
+                <p class="yaml-empty-copy">"暂无可展示的 YAML 节点"</p>
+            </Show>
             <div class="yaml-structure-list">
-                <For each=entries key=|entry| entry.path.clone() let:entry>
-                    <div class="yaml-structure-entry" style=format!("padding-left: {}px", entry.depth * 16)>
-                        <code class="yaml-path">{entry.path.clone()}</code>
-                        <span class="yaml-type">{entry.kind}</span>
-                        <span class="yaml-preview">{entry.preview}</span>
+                <For each=visible key=|entry| entry.path.clone() let:entry>
+                    <div class="yaml-tree-row" style=format!("--yaml-depth: {}", entry.depth.saturating_sub(1)) title=entry.path.clone()>
+                        {if entry.branch {
+                            let path = entry.path.clone();
+                            let path_for_click = path.clone();
+                            let path_for_state = path.clone();
+                            let path_for_indicator = path.clone();
+                            let depth = entry.depth;
+                            view! {
+                                <button type="button" class="yaml-tree-caret" aria-label=format!("展开或收起 {path}")
+                                    disabled=move || !query.get().trim().is_empty()
+                                    aria-expanded=move || {
+                                        let default_open = expand_all.get() || (depth == 1 && roots_open.get());
+                                        !query.get().trim().is_empty() || default_open != toggled.get().contains(&path_for_state)
+                                    }
+                                    on:click=move |_| {
+                                        toggled.update(|paths| {
+                                            if !paths.insert(path_for_click.clone()) { paths.remove(&path_for_click); }
+                                        });
+                                    }>
+                                    {move || if !query.get().trim().is_empty() || (expand_all.get() || (depth == 1 && roots_open.get())) != toggled.get().contains(&path_for_indicator) { "▾" } else { "▸" }}
+                                </button>
+                            }.into_any()
+                        } else { view! { <span class="yaml-tree-caret-spacer" aria-hidden="true"></span> }.into_any() }}
+                        <code class="yaml-tree-label">{entry.label}</code>
+                        <span class="yaml-tree-kind">{entry.kind}</span>
+                        <span class="yaml-tree-preview">{entry.preview}</span>
                     </div>
                 </For>
             </div>
+            <Show when=move || !query.get().trim().is_empty() && !entries.get().is_empty() && visible().is_empty()>
+                <p class="yaml-empty-copy">"未找到匹配的节点"</p>
+            </Show>
         </div>
     }
 }

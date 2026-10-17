@@ -10,6 +10,8 @@ use std::{
 pub(crate) struct AppState {
     pub(crate) db: PgPool,
     pub(crate) jwt_secret: String,
+    pub(crate) hcaptcha_secret: String,
+    pub(crate) hcaptcha_site_key: String,
     pub(crate) captchas: Arc<Mutex<HashMap<String, CaptchaChallenge>>>,
     pub(crate) captcha_rate_limits: Arc<Mutex<HashMap<String, RateLimitWindow>>>,
     pub(crate) login_rate_limits: Arc<Mutex<HashMap<String, RateLimitWindow>>>,
@@ -53,10 +55,8 @@ pub struct Claims {
 pub(crate) struct AuthPayload {
     pub username: String,
     pub password: String,
-    #[serde(rename = "captchaId")]
-    pub captcha_id: String,
-    #[serde(rename = "captchaCode")]
-    pub captcha_code: String,
+    #[serde(rename = "hcaptchaToken")]
+    pub hcaptcha_token: String,
 }
 
 #[derive(Debug, Serialize)]

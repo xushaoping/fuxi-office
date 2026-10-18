@@ -4,9 +4,9 @@
 
 线上演示：[https://fuxioffice.cn/](https://fuxioffice.cn/)
 
-账号1：admin/admin1234
+账号1：admin/admin123
 
-账号2：fuxi/admin1234
+账号2：fuxi/admin123
 
 ## 🎉 最新更新 - v0.0.2
 

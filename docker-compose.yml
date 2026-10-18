@@ -28,6 +28,8 @@ services:
       context: .
       dockerfile: Dockerfile
       args:
+        DEBIAN_MIRROR: ${DEBIAN_MIRROR:-http://deb.debian.org/debian}
+        DEBIAN_SECURITY_MIRROR: ${DEBIAN_SECURITY_MIRROR:-http://deb.debian.org/debian-security}
         RUST_IMAGE: ${RUST_IMAGE:-rust:1.90-slim-bookworm}
         BINARYEN_ARCHIVE: ${BINARYEN_ARCHIVE:-binaryen-version_132-x86_64-linux.tar.gz}
         BINARYEN_SHA256: ${BINARYEN_SHA256:-195ddc94f9bc89f45abdabb0b9eea86023d727ba90eac8b35b80f2544fc30572}
@@ -75,7 +77,8 @@ services:
     container_name: fuxi-nginx
     restart: unless-stopped
     depends_on:
-      - app
+      app:
+        condition: service_healthy
     extra_hosts:
       - "host.docker.internal:host-gateway"
     ports:

@@ -1,10 +1,15 @@
 # ==================== 构建阶段 ====================
 # The Rust image can be overridden for environments with a local or regional
 # registry mirror, but the default is the public Docker Hub image.
+ARG DEBIAN_MIRROR=http://deb.debian.org/debian
+ARG DEBIAN_SECURITY_MIRROR=http://deb.debian.org/debian-security
 ARG RUST_IMAGE=rust:1.90-slim-bookworm
 FROM ${RUST_IMAGE} AS builder
 
-# 使用国内镜像加速（可选，国内服务器推荐）
+ARG DEBIAN_MIRROR
+ARG DEBIAN_SECURITY_MIRROR
+
+# 可通过 DEBIAN_MIRROR 和 DEBIAN_SECURITY_MIRROR 切换到可访问的区域镜像。
 ARG RUSTUP_DIST_SERVER=https://rsproxy.cn
 ARG RUSTUP_UPDATE_ROOT=https://rsproxy.cn/rustup
 ARG RUST_TOOLCHAIN=1.90
@@ -25,6 +30,15 @@ RUN mkdir -p /usr/local/cargo && \
 # 安装系统依赖
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
+    rm -rf /var/lib/apt/lists/* && \
+    for source in /etc/apt/sources.list.d/debian.sources /etc/apt/sources.list; do \
+        if [ -f "$source" ]; then \
+            sed -i \
+                -e "s#https\\?://deb.debian.org/debian-security#${DEBIAN_SECURITY_MIRROR}#g" \
+                -e "s#https\\?://deb.debian.org/debian#${DEBIAN_MIRROR}#g" \
+                "$source"; \
+        fi; \
+    done && \
     apt-get update && apt-get install -y \
     --no-install-recommends \
     ca-certificates \
@@ -51,7 +65,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
     rustup run "${RUST_TOOLCHAIN}" rustc --version && \
     cargo +${RUST_TOOLCHAIN} install cargo-leptos --version 0.3.7 --locked
 
-ARG WASM_BINDGEN_VERSION=0.2.127
+ARG WASM_BINDGEN_VERSION=0.2.129
 RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
     --mount=type=cache,target=/usr/local/cargo/git,sharing=locked \
     cargo +${RUST_TOOLCHAIN} install wasm-bindgen-cli --version "${WASM_BINDGEN_VERSION}" --locked && \
@@ -102,8 +116,23 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
 # ==================== 运行阶段 ====================
 FROM debian:bookworm-slim
 
+ARG DEBIAN_MIRROR
+ARG DEBIAN_SECURITY_MIRROR
+
 # 安装运行时依赖
-RUN apt-get update && apt-get install -y \
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt,sharing=locked \
+    rm -rf /var/lib/apt/lists/* && \
+    for source in /etc/apt/sources.list.d/debian.sources /etc/apt/sources.list; do \
+        if [ -f "$source" ]; then \
+            sed -i \
+                -e "s#https\\?://deb.debian.org/debian-security#${DEBIAN_SECURITY_MIRROR}#g" \
+                -e "s#https\\?://deb.debian.org/debian#${DEBIAN_MIRROR}#g" \
+                "$source"; \
+        fi; \
+    done && \
+    apt-get update && apt-get install -y \
+    --no-install-recommends \
     ca-certificates \
     curl \
     libssl3 \

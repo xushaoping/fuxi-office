@@ -11,8 +11,9 @@
 ## 🎉 最新更新 - v0.0.2
 
 ### 🔒 安全加固
-- ✅ **hCaptcha 人机验证** - 登录由服务端校验 hCaptcha token，不再使用图片验证码
-- ✅ **多层频率限制** - 登录和 hCaptcha 校验接口具备频率限制保护
+- ✅ **同源算术验证码** - 算术表达式由应用服务端生成和校验，不依赖海外脚本或第三方接口
+- ✅ **浏览器本地工作量证明** - 每次验证码绑定一次性挑战，降低脚本批量撞库和验证码接口滥用
+- ✅ **多层频率限制** - 验证码获取、验证和登录接口具备频率限制保护
 - ✅ **时钟攻击防护** - 使用单调时钟，不受系统时间调整影响
 - ✅ **多层频率限制** - 三重防护（获取/验证/登录）防止暴力破解
 - ✅ **完整审计日志** - 记录所有登录、验证失败和安全事件
@@ -186,12 +187,14 @@ JWT_SECRET=<随机且保密的 JWT 密钥>
 # 超级管理员 admin 的初始密码（至少 6 位；生产环境必须显式设置）
 ADMIN_PASSWORD=<admin 初始密码>
 
-# hCaptcha 配置（从 hCaptcha 控制台获取）
-HCAPTCHA_SITE_KEY=<hCaptcha 站点密钥>
-HCAPTCHA_SECRET=<hCaptcha 服务端密钥>
-
 # 后端监听地址，未设置时为 127.0.0.1:3000
 BIND_ADDR=127.0.0.1:3000
+
+# 仅在应用位于可信 Nginx/Caddy 之后时开启，用于验证码绑定和限流识别真实客户端 IP
+TRUST_PROXY_HEADERS=false
+
+# 浏览器无感工作量证明基础难度，建议 12-16；默认 14，连续登录失败时最多自适应增加 2 级
+CAPTCHA_POW_DIFFICULTY=14
 
 # 环境标识。开发环境的数据库错误会返回详细原因；生产环境仅返回通用错误
 APP_ENV=development
@@ -729,7 +732,13 @@ curl http://127.0.0.1:3000/api/health
 docker compose --env-file .env ps
 ```
 
-`DB_PASSWORD`、`JWT_SECRET`、`ADMIN_PASSWORD`、`HCAPTCHA_SITE_KEY` 和 `HCAPTCHA_SECRET` 是必需配置；`OPENAI_API_KEY` 仅在使用智能建模时需要。数据库初始化脚本只会在首次创建 `postgres_data` 卷时自动执行，已有数据库升级请按上面的增量 SQL 顺序执行。停止服务时使用 `docker compose --env-file .env down`；不要使用 `down -v`，除非确认要删除数据库卷。
+`DB_PASSWORD`、`JWT_SECRET` 和 `ADMIN_PASSWORD` 是必需配置；登录验证码由应用自身生成，不需要配置第三方验证码密钥；`OPENAI_API_KEY` 仅在使用智能建模时需要。数据库初始化脚本只会在首次创建 `postgres_data` 卷时自动执行，已有数据库升级请按上面的增量 SQL 顺序执行。停止服务时使用 `docker compose --env-file .env down`；不要使用 `down -v`，除非确认要删除数据库卷。
+
+登录页只请求同源的 `/api/captcha`，验证码图片由应用服务端生成，浏览器和服务端都不需要访问 hCaptcha、Google reCAPTCHA 或其他海外验证码域名。默认 Compose 配置只将应用绑定到宿主机回环地址，由 Nginx 对外提供入口。验证码状态默认保存在当前应用进程内；如果同一域名后面部署多个应用副本，应让同一用户的 `/api/captcha` 与 `/api/login` 保持会话亲和，或将 `AppState.captchas` 改为 Redis 等共享存储。
+
+如果使用仓库内的 Nginx 配置，生产环境应设置 `TRUST_PROXY_HEADERS=true`；应用端口必须只对 Nginx 或内网开放，不能在公网直接暴露并同时信任外部提交的 `X-Forwarded-For`。
+
+验证码接口还会为每次挑战签发一次性工作量证明参数，浏览器在本地计算后随登录请求提交。`CAPTCHA_POW_DIFFICULTY` 控制基础难度，建议保持 `12` 到 `16`；同一客户端连续登录失败时会最多增加 2 级，正常用户不会承担额外计算成本。多实例部署时应保持所有应用副本的基础配置一致。
 
 ### 多实例部署
 
@@ -971,8 +980,8 @@ sudo -u postgres psql -v app_user=fuxi -f /tmp/fuxi-init.sql
 DATABASE_URL=postgres://fuxi:<数据库密码>@127.0.0.1:5432/fuxi_dmn
 ADMIN_PASSWORD=<管理员初始密码，至少6位>
 JWT_SECRET=<至少32位随机字符串>
-HCAPTCHA_SITE_KEY=<hCaptcha 站点密钥>
-HCAPTCHA_SECRET=<hCaptcha 服务端密钥>
+TRUST_PROXY_HEADERS=true
+CAPTCHA_POW_DIFFICULTY=14
 APP_ENV=production
 BIND_ADDR=127.0.0.1:3000
 OPENAI_API_KEY=<兼容接口密钥>

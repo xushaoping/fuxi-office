@@ -1,4 +1,4 @@
-@import url("/style/workbench.css?v=20261017-clarification-select");
+@import url("/style/workbench.css?v=20261019-admin-select");
 
 /* Shared interaction primitives (frontend UX optimization). */
 .loading-container {
@@ -5940,6 +5940,73 @@ h3 {
     font-weight: 600;
 }
 
+.auth-field-label {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.auth-help {
+    position: relative;
+    display: inline-grid;
+    place-items: center;
+    width: 20px;
+    height: 20px;
+    padding: 0;
+    border: 0;
+    border-radius: 50%;
+    background: transparent;
+    color: var(--text-muted);
+    cursor: help;
+}
+
+.auth-help svg {
+    width: 22px;
+    height: 22px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.8;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+}
+
+.auth-help:hover,
+.auth-help:focus-visible {
+    background: var(--surface-soft);
+    color: var(--accent);
+    outline: none;
+}
+
+.auth-tooltip {
+    position: absolute;
+    z-index: 20;
+    top: calc(100% + 8px);
+    left: 0;
+    width: min(300px, calc(100vw - 64px));
+    padding: 9px 11px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--surface-raised);
+    box-shadow: var(--shadow);
+    color: var(--text);
+    font-size: 12px;
+    font-weight: 400;
+    line-height: 1.5;
+    text-align: left;
+    opacity: 0;
+    visibility: hidden;
+    transform: translateY(-3px);
+    transition: opacity 140ms ease, transform 140ms ease, visibility 140ms ease;
+    pointer-events: none;
+}
+
+.auth-help:hover .auth-tooltip,
+.auth-help:focus-visible .auth-tooltip {
+    opacity: 1;
+    visibility: visible;
+    transform: translateY(0);
+}
+
 .auth-password-field {
     display: flex;
     align-items: center;
@@ -5963,7 +6030,7 @@ h3 {
 }
 
 .auth-captcha-refresh {
-    min-width: 82px;
+    min-width: 56px;
     padding: 0 12px;
     border: 1px solid var(--border);
     border-radius: 7px;
@@ -5995,10 +6062,6 @@ h3 {
     color: var(--danger);
     font-size: 12px;
     line-height: 1.4;
-}
-
-.auth-hcaptcha-widget {
-    min-height: 78px;
 }
 
 .auth-captcha-status {
@@ -6233,9 +6296,7 @@ h3 {
 }
 
 .admin-form-grid input,
-.admin-form-grid select,
-.admin-form-grid textarea,
-.admin-user-role select {
+.admin-form-grid textarea {
     min-height: 34px;
     width: 100%;
     padding: 0 9px;
@@ -6252,9 +6313,7 @@ h3 {
     resize: vertical;
 }
 
-.admin-form-grid input:focus,
-.admin-form-grid select:focus,
-.admin-user-role select:focus {
+.admin-form-grid input:focus {
     border-color: var(--accent);
     outline: 2px solid color-mix(in srgb, var(--accent) 16%, transparent);
     outline-offset: 1px;
@@ -6470,15 +6529,38 @@ h3 {
     justify-content: flex-end;
 }
 
-.admin-user-role select {
+.admin-form-role-select {
+    min-width: 0;
+}
+
+.admin-user-role .admin-user-role-select {
+    flex: 0 0 112px;
+    width: 112px;
+    min-width: 0;
+}
+
+.admin-user-role .admin-user-role-select .wb-select-label {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    clip-path: inset(50%);
+    white-space: nowrap;
+}
+
+.admin-user-role .admin-user-role-select .wb-select-trigger {
     width: 112px;
     min-height: 28px;
+    height: 28px;
+    padding: 4px 8px;
     font-size: 11px;
 }
 
-.admin-user-role select:disabled {
-    cursor: not-allowed;
-    opacity: .65;
+.admin-user-role .admin-user-role-select .wb-select-menu {
+    min-width: 150px;
+    right: 0;
+    left: auto;
 }
 
 .admin-empty {

@@ -212,7 +212,7 @@ def build_story():
         [plain("前端", "TableCell"), plain("Leptos 0.8 CSR、WebAssembly、leptos_router", "TableCell")],
         [plain("智能体", "TableCell"), plain("OpenAI Chat Completions 兼容接口、结构化工具调用、SSE", "TableCell")],
         [plain("决策引擎", "TableCell"), plain("DMN 1.5、FEEL 词法分析、递归下降解析、解释执行", "TableCell")],
-        [plain("工程治理", "TableCell"), plain("hCaptcha、JWT、Argon2、项目级 RBAC、版本审查、审计和 Docker 部署", "TableCell")],
+        [plain("工程治理", "TableCell"), plain("同源图片验证码、JWT、Argon2、项目级 RBAC、版本审查、审计和 Docker 部署", "TableCell")],
     ]
     stack_table = Table(stack, colWidths=[27 * mm, 141 * mm])
     stack_table.setStyle(TableStyle([
@@ -236,7 +236,7 @@ def build_story():
         ("企业知识增强", "绑定术语、字段目录、制度政策和历史模型，记录引用元数据并固化版本知识快照。"),
         ("模型产物可视化", "提供 YAML 结构树、搜索、折叠和预览，并对 YAML、DSL 与 DMN/XML 源码进行语法高亮。"),
         ("DMN/FEEL 引擎", "支持决策表、字面量表达式、上下文、关系、条件、过滤器、迭代器、函数调用和服务。"),
-        ("安全与治理", "登录使用 hCaptcha 服务端校验，并提供角色权限、版本差异、风险识别、回滚草稿和审计日志。"),
+        ("安全与治理", "登录使用服务端生成的同源图片验证码，并提供角色权限、版本差异、风险识别、回滚草稿和审计日志。"),
         ("验收、发布与分析", "覆盖边界、缺失、类型错误、冲突和无命中案例，完成业务批准后发布不可变版本。"),
     ]
     story.extend([two_column_cards(feature_cards), Spacer(1, 6 * mm), p("典型应用场景", "H2F")])

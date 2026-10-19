@@ -8,7 +8,7 @@ use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use chrono::{Duration, Utc};
 use hmac::{Hmac, Mac};
 use jsonwebtoken::{DecodingKey, EncodingKey, Header, Validation, decode, encode};
-use sha2::Sha256;
+use sha2::{Digest, Sha256};
 use std::{
     collections::HashMap,
     net::{IpAddr, SocketAddr},
@@ -75,9 +75,10 @@ fn database_failure(operation: &str, error: &sqlx::Error) -> (StatusCode, String
 // 3. API 接口
 // ==========================================
 
-const CAPTCHA_ALPHABET: &[u8] = b"23456789ABCDEFGHJKLMNPQRSTUVWXYZ";
 const CAPTCHA_TTL_SECONDS: u64 = 120;
-const CAPTCHA_LENGTH: usize = 5;
+const CAPTCHA_ANSWER_MAX_LENGTH: usize = 3;
+const CAPTCHA_WIDTH: usize = 140;
+const CAPTCHA_HEIGHT: usize = 44;
 const CAPTCHA_MAX_ATTEMPTS: u8 = 5;
 const CAPTCHA_MAX_ENTRIES: usize = 10_000;
 const RATE_LIMIT_WINDOW_SECONDS: u64 = 60;
@@ -86,49 +87,16 @@ const CAPTCHA_VERIFY_LIMIT: u16 = 30;
 const LOGIN_LIMIT: u16 = 10;
 const RATE_LIMIT_MAX_KEYS: usize = 10_000;
 const RATE_LIMIT_RETRY_AFTER_SECONDS: u64 = 60;
-const HCAPTCHA_VERIFY_URL: &str = "https://api.hcaptcha.com/siteverify";
 type HmacSha256 = Hmac<Sha256>;
-
-#[derive(Debug, serde::Deserialize)]
-struct HcaptchaVerificationResponse {
-    success: bool,
-    #[serde(default)]
-    error_codes: Vec<String>,
-}
-
-async fn verify_hcaptcha(
-    secret: &str,
-    site_key: &str,
-    token: &str,
-    client_key: &str,
-) -> Result<bool, String> {
-    let mut form = vec![("secret", secret), ("sitekey", site_key), ("response", token)];
-    if client_key.parse::<IpAddr>().is_ok() {
-        form.push(("remoteip", client_key));
-    }
-    let response = reqwest::Client::new()
-        .post(HCAPTCHA_VERIFY_URL)
-        .form(&form)
-        .timeout(std::time::Duration::from_secs(8))
-        .send()
-        .await
-        .map_err(|error| format!("hCaptcha 校验请求失败：{error}"))?;
-    let status = response.status();
-    if !status.is_success() {
-        return Err(format!("hCaptcha 校验服务返回 HTTP {}", status.as_u16()));
-    }
-    let result = response
-        .json::<HcaptchaVerificationResponse>()
-        .await
-        .map_err(|error| format!("hCaptcha 校验响应无效：{error}"))?;
-    if !result.success && !result.error_codes.is_empty() {
-        eprintln!("hCaptcha 校验未通过：{}", result.error_codes.join(","));
-    }
-    Ok(result.success)
-}
 
 fn captcha_glyph(character: char) -> [&'static str; 7] {
     match character {
+        '0' => [
+            "01110", "10001", "10011", "10101", "11001", "10001", "01110",
+        ],
+        '1' => [
+            "00100", "01100", "00100", "00100", "00100", "00100", "01110",
+        ],
         '2' => [
             "11110", "00001", "00010", "00100", "01000", "10000", "11111",
         ],
@@ -153,82 +121,148 @@ fn captcha_glyph(character: char) -> [&'static str; 7] {
         '9' => [
             "01110", "10001", "10001", "01111", "00001", "00010", "11100",
         ],
-        'A' => [
-            "01110", "10001", "10001", "11111", "10001", "10001", "10001",
-        ],
-        'B' => [
-            "11110", "10001", "10001", "11110", "10001", "10001", "11110",
-        ],
-        'C' => [
-            "01111", "10000", "10000", "10000", "10000", "10000", "01111",
-        ],
-        'D' => [
-            "11110", "10001", "10001", "10001", "10001", "10001", "11110",
-        ],
-        'E' => [
-            "11111", "10000", "10000", "11110", "10000", "10000", "11111",
-        ],
-        'F' => [
-            "11111", "10000", "10000", "11110", "10000", "10000", "10000",
-        ],
-        'G' => [
-            "01111", "10000", "10000", "10111", "10001", "10001", "01111",
-        ],
-        'H' => [
-            "10001", "10001", "10001", "11111", "10001", "10001", "10001",
-        ],
-        'J' => [
-            "00111", "00010", "00010", "00010", "10010", "10010", "01100",
-        ],
-        'K' => [
-            "10001", "10010", "10100", "11000", "10100", "10010", "10001",
-        ],
-        'L' => [
-            "10000", "10000", "10000", "10000", "10000", "10000", "11111",
-        ],
-        'M' => [
-            "10001", "11011", "10101", "10101", "10001", "10001", "10001",
-        ],
-        'N' => [
-            "10001", "11001", "10101", "10011", "10001", "10001", "10001",
-        ],
-        'P' => [
-            "11110", "10001", "10001", "11110", "10000", "10000", "10000",
-        ],
-        'Q' => [
-            "01110", "10001", "10001", "10001", "10101", "10010", "01101",
-        ],
-        'R' => [
-            "11110", "10001", "10001", "11110", "10100", "10010", "10001",
-        ],
-        'S' => [
-            "01111", "10000", "10000", "01110", "00001", "00001", "11110",
-        ],
-        'T' => [
-            "11111", "00100", "00100", "00100", "00100", "00100", "00100",
-        ],
-        'U' => [
-            "10001", "10001", "10001", "10001", "10001", "10001", "01110",
-        ],
-        'V' => [
-            "10001", "10001", "10001", "10001", "10001", "01010", "00100",
-        ],
-        'W' => [
-            "10001", "10001", "10001", "10101", "10101", "11011", "10001",
-        ],
         'X' => [
             "10001", "10001", "01010", "00100", "01010", "10001", "10001",
         ],
-        'Y' => [
-            "10001", "10001", "01010", "00100", "00100", "00100", "00100",
+        '+' => [
+            "00000", "00100", "00100", "11111", "00100", "00100", "00000",
         ],
-        'Z' => [
-            "11111", "00001", "00010", "00100", "01000", "10000", "11111",
+        '-' => [
+            "00000", "00000", "00000", "11111", "00000", "00000", "00000",
         ],
-        _ => [
-            "11111", "10001", "10101", "10001", "10101", "10001", "11111",
+        '=' => [
+            "00000", "11111", "00000", "11111", "00000", "00000", "00000",
         ],
+        '?' => [
+            "01110", "10001", "00001", "00010", "00100", "00000", "00100",
+        ],
+        _ => ["00000", "00000", "00000", "00000", "00000", "00000", "00000"],
     }
+}
+
+fn random_byte() -> u8 {
+    Uuid::new_v4().as_bytes()[0]
+}
+
+fn random_index(max_exclusive: usize) -> usize {
+    debug_assert!(max_exclusive > 0 && max_exclusive <= 256);
+    let limit = 256 - (256 % max_exclusive);
+    loop {
+        let value = random_byte() as usize;
+        if value < limit {
+            return value % max_exclusive;
+        }
+    }
+}
+
+fn generate_captcha_expression() -> (String, String) {
+    let mut left = random_index(9) + 1;
+    let mut right = random_index(9) + 1;
+    let operator = match random_index(3) {
+        0 => '+',
+        1 => '-',
+        _ => 'X',
+    };
+
+    if operator == '-' && left < right {
+        std::mem::swap(&mut left, &mut right);
+    }
+
+    let answer = match operator {
+        '+' => left + right,
+        '-' => left - right,
+        'X' => left * right,
+        _ => unreachable!(),
+    };
+    (format!("{left}{operator}{right}=?"), answer.to_string())
+}
+
+fn captcha_answer_is_well_formed(answer: &str) -> bool {
+    let answer = answer.trim();
+    !answer.is_empty()
+        && answer.len() <= CAPTCHA_ANSWER_MAX_LENGTH
+        && answer.bytes().all(|character| character.is_ascii_digit())
+        && answer.parse::<u16>().is_ok()
+}
+
+fn captcha_svg(code: &str) -> String {
+    const GLYPH_COLORS: [&str; 5] = ["#25324a", "#304b68", "#28445d", "#344b62", "#263b56"];
+    const NOISE_COLORS: [&str; 3] = ["#9aaabd", "#b0bdcb", "#879bb1"];
+
+    let mut noise = String::new();
+    for _ in 0..28 {
+        let x = 2 + random_index(CAPTCHA_WIDTH - 4);
+        let y = 2 + random_index(CAPTCHA_HEIGHT - 4);
+        let radius = 1 + random_index(2);
+        let color = NOISE_COLORS[random_index(NOISE_COLORS.len())];
+        let opacity = 0.28 + random_index(18) as f32 / 100.0;
+        noise.push_str(&format!(
+            r##"<circle cx="{x}" cy="{y}" r="{radius}" fill="{color}" opacity="{opacity:.2}"/>"##
+        ));
+    }
+    for _ in 0..5 {
+        let x1 = random_index(CAPTCHA_WIDTH);
+        let y1 = random_index(CAPTCHA_HEIGHT);
+        let x2 = random_index(CAPTCHA_WIDTH);
+        let y2 = random_index(CAPTCHA_HEIGHT);
+        let color = NOISE_COLORS[random_index(NOISE_COLORS.len())];
+        let opacity = 0.28 + random_index(18) as f32 / 100.0;
+        noise.push_str(&format!(
+            r##"<path d="M{x1} {y1}L{x2} {y2}" stroke="{color}" stroke-width="1" opacity="{opacity:.2}"/>"##
+        ));
+    }
+    for _ in 0..2 {
+        let start_y = random_index(CAPTCHA_HEIGHT);
+        let control_y1 = random_index(CAPTCHA_HEIGHT);
+        let control_y2 = random_index(CAPTCHA_HEIGHT);
+        let end_y = random_index(CAPTCHA_HEIGHT);
+        let color = NOISE_COLORS[random_index(NOISE_COLORS.len())];
+        noise.push_str(&format!(
+            r##"<path d="M0 {start_y}C35 {control_y1},105 {control_y2},140 {end_y}" fill="none" stroke="{color}" stroke-width="1" stroke-dasharray="6 5" opacity="0.34"/>"##
+        ));
+    }
+
+    let mut glyphs = String::new();
+    for (index, character) in code.chars().enumerate() {
+        let x = 5 + index * 26 + random_index(5);
+        let y_offset = random_index(7) as i8 - 3;
+        let rotation = random_index(13) as i8 - 6;
+        let skew = random_index(7) as i8 - 3;
+        let color = GLYPH_COLORS[random_index(GLYPH_COLORS.len())];
+        let opacity = 0.88 + random_index(10) as f32 / 100.0;
+        let mut glyph = String::new();
+        for (row, pixels) in captcha_glyph(character).iter().enumerate() {
+            for (column, pixel) in pixels.bytes().enumerate() {
+                if pixel == b'1' {
+                    glyph.push_str(&format!(
+                        "<rect x=\"{}\" y=\"{}\" width=\"3\" height=\"3\" rx=\"1\"/>",
+                        x + column * 3,
+                        10 + row * 3
+                    ));
+                }
+            }
+        }
+        glyphs.push_str(&format!(
+            r##"<g transform="translate(0 {y_offset}) rotate({rotation} {pivot_x} 22) skewX({skew})" fill="{color}" opacity="{opacity:.2}">{glyph}</g>"##,
+            pivot_x = x + 7,
+        ));
+    }
+
+    let mut foreground_noise = String::new();
+    for _ in 0..2 {
+        let start_y = 5 + random_index(CAPTCHA_HEIGHT - 10);
+        let control_y1 = random_index(CAPTCHA_HEIGHT);
+        let control_y2 = random_index(CAPTCHA_HEIGHT);
+        let end_y = 5 + random_index(CAPTCHA_HEIGHT - 10);
+        let color = NOISE_COLORS[random_index(NOISE_COLORS.len())];
+        foreground_noise.push_str(&format!(
+            r##"<path d="M0 {start_y}C35 {control_y1},105 {control_y2},140 {end_y}" fill="none" stroke="{color}" stroke-width="1" stroke-dasharray="3 7" opacity="0.26"/>"##
+        ));
+    }
+
+    format!(
+        r##"<svg xmlns="http://www.w3.org/2000/svg" width="{CAPTCHA_WIDTH}" height="{CAPTCHA_HEIGHT}" viewBox="0 0 {CAPTCHA_WIDTH} {CAPTCHA_HEIGHT}"><rect width="{CAPTCHA_WIDTH}" height="{CAPTCHA_HEIGHT}" rx="8" fill="#eef2f7"/><g>{noise}</g><g>{glyphs}</g><g>{foreground_noise}</g></svg>"##
+    )
 }
 
 fn hmac_digest(secret: &str, domain: &[u8], value: &[u8]) -> [u8; 32] {
@@ -240,7 +274,11 @@ fn hmac_digest(secret: &str, domain: &[u8], value: &[u8]) -> [u8; 32] {
 }
 
 fn captcha_answer_digest(secret: &str, captcha_id: &str, captcha_code: &str) -> [u8; 32] {
-    let normalized_code = captcha_code.trim().to_ascii_uppercase();
+    let normalized_code = captcha_code
+        .trim()
+        .parse::<u16>()
+        .map(|answer| answer.to_string())
+        .unwrap_or_else(|_| captcha_code.trim().to_ascii_uppercase());
     let mut value = Vec::with_capacity(captcha_id.len() + normalized_code.len() + 1);
     value.extend_from_slice(captcha_id.as_bytes());
     value.push(b':');
@@ -254,6 +292,29 @@ fn captcha_client_binding(secret: &str, client_key: &str) -> [u8; 32] {
         b"fuxi-dmn:captcha-client:v1:",
         client_key.as_bytes(),
     )
+}
+
+fn captcha_work_is_valid(
+    challenge: &[u8; 16],
+    difficulty: u8,
+    nonce: &str,
+) -> bool {
+    let Ok(nonce) = nonce.parse::<u64>() else {
+        return false;
+    };
+    if difficulty == 0 || difficulty > 32 {
+        return false;
+    }
+
+    let mut hasher = Sha256::new();
+    hasher.update(challenge);
+    hasher.update(nonce.to_be_bytes());
+    let digest = hasher.finalize();
+    let full_bytes = (difficulty / 8) as usize;
+    let remaining_bits = difficulty % 8;
+
+    digest[..full_bytes].iter().all(|byte| *byte == 0)
+        && (remaining_bits == 0 || digest[full_bytes] >> (8 - remaining_bits) == 0)
 }
 
 fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
@@ -338,6 +399,24 @@ fn allow_rate_limit(
     true
 }
 
+fn rate_limit_count(limits: &Mutex<HashMap<String, RateLimitWindow>>, key: &str) -> u16 {
+    let Ok(mut limits) = limits.lock() else {
+        return 0;
+    };
+
+    limits.retain(|_, window| window.created_at.elapsed().as_secs() <= RATE_LIMIT_WINDOW_SECONDS);
+    limits.get(key).map_or(0, |window| window.count)
+}
+
+fn captcha_pow_difficulty(base: u8, login_attempts: u16) -> u8 {
+    let pressure_boost = match login_attempts {
+        0..=3 => 0,
+        4..=7 => 1,
+        _ => 2,
+    };
+    base.saturating_add(pressure_boost).clamp(8, 20)
+}
+
 fn no_store_json(
     status: StatusCode,
     body: serde_json::Value,
@@ -362,6 +441,7 @@ fn consume_captcha(
     secret: &str,
     captcha_id: &str,
     captcha_code: &str,
+    captcha_work_nonce: &str,
     client_key: &str,
 ) -> bool {
     let Ok(mut captchas) = captchas.lock() else {
@@ -378,15 +458,29 @@ fn consume_captcha(
         return false; // 已过期，不放回
     }
 
-    let expected_answer = captcha_answer_digest(secret, captcha_id, captcha_code);
     let expected_binding = captcha_client_binding(secret, client_key);
+    if !constant_time_eq(&challenge.client_binding, &expected_binding) {
+        // 不同客户端的请求不能消耗原客户端验证码的尝试次数。
+        captchas.insert(captcha_id.to_string(), challenge);
+        return false;
+    }
 
+    if captcha_work_nonce.len() > 20
+        || !captcha_work_is_valid(
+            &challenge.work_challenge,
+            challenge.work_difficulty,
+            captcha_work_nonce,
+        )
+    {
+        captchas.insert(captcha_id.to_string(), challenge);
+        return false;
+    }
+
+    let expected_answer = captcha_answer_digest(secret, captcha_id, captcha_code);
     challenge.attempts = challenge.attempts.saturating_add(1);
 
     let answer_match = constant_time_eq(&challenge.answer_digest, &expected_answer);
-    let binding_match = constant_time_eq(&challenge.client_binding, &expected_binding);
-
-    let valid = challenge.attempts <= CAPTCHA_MAX_ATTEMPTS && answer_match && binding_match;
+    let valid = challenge.attempts <= CAPTCHA_MAX_ATTEMPTS && answer_match;
 
     // 如果验证失败且未超过最大尝试次数，放回队列
     if !valid && challenge.attempts < CAPTCHA_MAX_ATTEMPTS {
@@ -414,40 +508,19 @@ pub(crate) async fn captcha(
     }
 
     let id = Uuid::new_v4().to_string();
-    let bytes = *Uuid::new_v4().as_bytes();
-    let code: String = (0..CAPTCHA_LENGTH)
-        .map(|index| CAPTCHA_ALPHABET[(bytes[index] as usize) % CAPTCHA_ALPHABET.len()] as char)
-        .collect();
-
-    let mut glyphs = String::new();
-    for (index, character) in code.chars().enumerate() {
-        let rotation = (bytes[index + 6] % 13) as i8 - 6;
-        let x = 5 + index * 21;
-        let mut glyph = String::new();
-        for (row, pixels) in captcha_glyph(character).iter().enumerate() {
-            for (column, pixel) in pixels.bytes().enumerate() {
-                if pixel == b'1' {
-                    glyph.push_str(&format!(
-                        "<rect x=\"{}\" y=\"{}\" width=\"3\" height=\"3\" rx=\"1\"/>",
-                        x + column * 3,
-                        10 + row * 3
-                    ));
-                }
-            }
-        }
-        glyphs.push_str(&format!(
-            "<g transform=\"rotate({rotation} {} 22)\">{glyph}</g>",
-            x + 7
-        ));
-    }
-
-    let svg = format!(
-        r##"<svg xmlns="http://www.w3.org/2000/svg" width="140" height="44" viewBox="0 0 140 44"><rect width="140" height="44" rx="8" fill="#eef2f7"/><path d="M8 34L132 9M5 12l125 23M22 4l8 36M82 3l-9 38" stroke="#cbd5e1" stroke-width="1"/><g fill="#25324a">{glyphs}</g></svg>"##
-    );
+    let (expression, answer) = generate_captcha_expression();
+    let svg = captcha_svg(&expression);
     let image = format!("data:image/svg+xml;base64,{}", BASE64.encode(svg));
+    let work_challenge = *Uuid::new_v4().as_bytes();
+    let work_difficulty = captcha_pow_difficulty(
+        state.captcha_pow_difficulty,
+        rate_limit_count(&state.login_rate_limits, &client_key),
+    );
     let binding = captcha_client_binding(&state.jwt_secret, &client_key);
     let challenge = CaptchaChallenge {
-        answer_digest: captcha_answer_digest(&state.jwt_secret, &id, &code),
+        answer_digest: captcha_answer_digest(&state.jwt_secret, &id, &answer),
+        work_challenge,
+        work_difficulty,
         created_at: std::time::Instant::now(),
         ttl_seconds: CAPTCHA_TTL_SECONDS,
         attempts: 0,
@@ -483,15 +556,9 @@ pub(crate) async fn captcha(
             "captchaId": id,
             "image": image,
             "expiresIn": CAPTCHA_TTL_SECONDS,
+            "workChallenge": BASE64.encode(work_challenge),
+            "workDifficulty": work_difficulty,
         }),
-        None,
-    )
-}
-
-pub(crate) async fn hcaptcha_config(State(state): State<AppState>) -> impl IntoResponse {
-    no_store_json(
-        StatusCode::OK,
-        serde_json::json!({"siteKey": state.hcaptcha_site_key}),
         None,
     )
 }
@@ -535,52 +602,46 @@ pub(crate) async fn login(
         );
     }
 
-    let hcaptcha_token = payload.hcaptcha_token.trim();
-    if hcaptcha_token.is_empty() {
+    let captcha_id = payload.captcha_id.trim();
+    let captcha_code = payload.captcha_code.trim();
+    let captcha_work_nonce = payload.captcha_work_nonce.trim();
+    if captcha_id.is_empty() || captcha_code.is_empty() || captcha_work_nonce.is_empty() {
         eprintln!(
-            "[审计] hCaptcha token 缺失 - 客户端: {}, 用户名: {}",
+            "[审计] 本地验证码缺失 - 客户端: {}, 用户名: {}",
             client_key, payload.username
         );
         return no_store_json(
             StatusCode::BAD_REQUEST,
-            serde_json::json!({"error": "请先完成 hCaptcha 验证"}),
+            serde_json::json!({"error": "请先完成验证码验证"}),
             None,
         );
     }
 
-    if hcaptcha_token.len() > 4096 {
+    if captcha_id.len() > 64
+        || !captcha_answer_is_well_formed(captcha_code)
+        || captcha_work_nonce.len() > 20
+    {
         return no_store_json(
             StatusCode::BAD_REQUEST,
-            serde_json::json!({"error": "hCaptcha 验证信息无效，请重试"}),
+            serde_json::json!({"error": "验证码信息无效，请刷新后重试"}),
             None,
         );
     }
-    let valid_hcaptcha = match verify_hcaptcha(
-        &state.hcaptcha_secret,
-        &state.hcaptcha_site_key,
-        hcaptcha_token,
+    if !consume_captcha(
+        &state.captchas,
+        &state.jwt_secret,
+        captcha_id,
+        captcha_code,
+        captcha_work_nonce,
         &client_key,
-    )
-    .await
-    {
-        Ok(valid) => valid,
-        Err(error) => {
-            eprintln!("[错误] hCaptcha 校验失败 - 客户端: {}, 错误: {}", client_key, error);
-            return no_store_json(
-                StatusCode::SERVICE_UNAVAILABLE,
-                serde_json::json!({"error": "验证码服务暂不可用，请稍后重试"}),
-                None,
-            );
-        }
-    };
-    if !valid_hcaptcha {
+    ) {
         eprintln!(
-            "[审计] hCaptcha 验证失败 - 客户端: {}, 用户名: {}",
+            "[审计] 本地验证码验证失败 - 客户端: {}, 用户名: {}",
             client_key, payload.username
         );
         return no_store_json(
             StatusCode::BAD_REQUEST,
-            serde_json::json!({"error": "hCaptcha 验证未通过，请重试"}),
+            serde_json::json!({"error": "验证码不正确或已过期，请刷新后重试"}),
             None,
         );
     }
@@ -912,11 +973,35 @@ mod tests {
     }
 
     #[test]
+    fn client_key_uses_forwarded_ip_only_when_trusted() {
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert("X-Real-IP", "203.0.113.10".parse().unwrap());
+        let peer_addr = Some("127.0.0.1:3000".parse().unwrap());
+
+        assert_eq!(
+            client_key(&headers, peer_addr, true),
+            "203.0.113.10"
+        );
+        assert_eq!(client_key(&headers, peer_addr, false), "127.0.0.1");
+    }
+
+    fn test_work_nonce() -> String {
+        let challenge = [0u8; 16];
+        (0u64..)
+            .find(|nonce| captcha_work_is_valid(&challenge, 8, &nonce.to_string()))
+            .expect("test work nonce should exist")
+            .to_string()
+    }
+
+    #[test]
     fn captcha_is_single_use_and_case_insensitive() {
+        let work_nonce = test_work_nonce();
         let store = std::sync::Mutex::new(std::collections::HashMap::from([(
             "challenge".to_string(),
             CaptchaChallenge {
                 answer_digest: captcha_answer_digest("test-secret", "challenge", "Ab3K9"),
+                work_challenge: [0u8; 16],
+                work_difficulty: 8,
                 created_at: std::time::Instant::now(),
                 ttl_seconds: 120,
                 attempts: 0,
@@ -928,6 +1013,7 @@ mod tests {
             "test-secret",
             "challenge",
             " ab3k9 ",
+            &work_nonce,
             "test-client"
         ));
         assert!(!consume_captcha(
@@ -935,6 +1021,43 @@ mod tests {
             "test-secret",
             "challenge",
             "AB3K9",
+            &work_nonce,
+            "test-client"
+        ));
+    }
+
+    #[test]
+    fn invalid_work_nonce_does_not_consume_captcha_attempt() {
+        let work_nonce = test_work_nonce();
+        let store = std::sync::Mutex::new(std::collections::HashMap::from([(
+            "challenge".to_string(),
+            CaptchaChallenge {
+                answer_digest: captcha_answer_digest("test-secret", "challenge", "ABC12"),
+                work_challenge: [0u8; 16],
+                work_difficulty: 8,
+                created_at: std::time::Instant::now(),
+                ttl_seconds: 120,
+                attempts: 0,
+                client_binding: captcha_client_binding("test-secret", "test-client"),
+            },
+        )]));
+
+        assert!(!consume_captcha(
+            &store,
+            "test-secret",
+            "challenge",
+            "WRONG",
+            "not-a-number",
+            "test-client"
+        ));
+        assert_eq!(store.lock().unwrap()["challenge"].attempts, 0);
+
+        assert!(consume_captcha(
+            &store,
+            "test-secret",
+            "challenge",
+            "ABC12",
+            &work_nonce,
             "test-client"
         ));
     }
@@ -945,6 +1068,8 @@ mod tests {
             "expired".to_string(),
             CaptchaChallenge {
                 answer_digest: captcha_answer_digest("test-secret", "expired", "AB123"),
+                work_challenge: [0u8; 16],
+                work_difficulty: 8,
                 created_at: std::time::Instant::now() - std::time::Duration::from_secs(121),
                 ttl_seconds: 120,
                 attempts: 0,
@@ -956,16 +1081,20 @@ mod tests {
             "test-secret",
             "expired",
             "AB123",
+            "0",
             "test-client"
         ));
     }
 
     #[test]
     fn captcha_bound_to_client() {
+        let work_nonce = test_work_nonce();
         let store = std::sync::Mutex::new(std::collections::HashMap::from([(
             "challenge".to_string(),
             CaptchaChallenge {
                 answer_digest: captcha_answer_digest("test-secret", "challenge", "ABC12"),
+                work_challenge: [0u8; 16],
+                work_difficulty: 8,
                 created_at: std::time::Instant::now(),
                 ttl_seconds: 120,
                 attempts: 0,
@@ -978,15 +1107,82 @@ mod tests {
             "test-secret",
             "challenge",
             "ABC12",
+            &work_nonce,
             "client-2"
         ));
+        for _ in 0..CAPTCHA_MAX_ATTEMPTS {
+            assert!(!consume_captcha(
+                &store,
+                "test-secret",
+                "challenge",
+                "WRONG",
+                &work_nonce,
+                "client-2"
+            ));
+        }
         // 正确的客户端应该成功
         assert!(consume_captcha(
             &store,
             "test-secret",
             "challenge",
             "ABC12",
+            &work_nonce,
             "client-1"
         ));
+    }
+
+    #[test]
+    fn generated_captcha_expression_has_a_valid_answer() {
+        for _ in 0..100 {
+            let (expression, answer) = generate_captcha_expression();
+            let characters: Vec<_> = expression.chars().collect();
+            assert_eq!(characters.len(), 5);
+            assert!(characters
+                .iter()
+                .all(|character| character.is_ascii_digit() || matches!(character, '+' | '-' | 'X' | '=' | '?')));
+            assert_eq!(characters[3], '=');
+            assert_eq!(characters[4], '?');
+
+            let left = characters[0].to_digit(10).unwrap();
+            let right = characters[2].to_digit(10).unwrap();
+            let expected = match characters[1] {
+                '+' => left + right,
+                '-' => left - right,
+                'X' => left * right,
+                _ => panic!("unexpected captcha operator"),
+            };
+            assert_eq!(answer, expected.to_string());
+        }
+    }
+
+    #[test]
+    fn captcha_answer_validation_accepts_numeric_input() {
+        assert!(captcha_answer_is_well_formed("0"));
+        assert!(captcha_answer_is_well_formed(" 18 "));
+        assert!(captcha_answer_is_well_formed("081"));
+        assert!(!captcha_answer_is_well_formed(""));
+        assert!(!captcha_answer_is_well_formed("1a"));
+        assert!(!captcha_answer_is_well_formed("1234"));
+    }
+
+    #[test]
+    fn captcha_pow_difficulty_adapts_to_login_pressure() {
+        assert_eq!(captcha_pow_difficulty(14, 0), 14);
+        assert_eq!(captcha_pow_difficulty(14, 4), 15);
+        assert_eq!(captcha_pow_difficulty(14, 8), 16);
+        assert_eq!(captcha_pow_difficulty(20, 10), 20);
+        assert_eq!(captcha_pow_difficulty(8, 10), 10);
+    }
+
+    #[test]
+    fn captcha_svg_contains_noise_and_all_glyphs() {
+        let svg = captcha_svg("8+3=?");
+        assert!(svg.starts_with("<svg "));
+        assert!(svg.contains("<circle "));
+        assert!(svg.contains("<path "));
+        assert!(svg.matches("<path ").count() >= 9);
+        assert!(svg.contains("<rect "));
+        assert!(svg.contains("skewX("));
+        assert!(!svg.contains("8+3=?"));
     }
 }

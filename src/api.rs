@@ -98,8 +98,12 @@ use tokio_stream::{StreamExt as _, wrappers::ReceiverStream};
 pub struct LoginPayload {
     pub username: String,
     pub password: String,
-    #[serde(rename = "hcaptchaToken")]
-    pub hcaptcha_token: String,
+    #[serde(rename = "captchaId")]
+    pub captcha_id: String,
+    #[serde(rename = "captchaCode")]
+    pub captcha_code: String,
+    #[serde(rename = "captchaWorkNonce")]
+    pub captcha_work_nonce: String,
 }
 
 #[cfg(target_family = "wasm")]
@@ -110,9 +114,16 @@ pub struct LoginResponse {
 
 #[cfg(target_family = "wasm")]
 #[derive(Debug, Deserialize)]
-pub struct HcaptchaConfigResponse {
-    #[serde(rename = "siteKey")]
-    pub site_key: String,
+pub struct CaptchaResponse {
+    #[serde(rename = "captchaId")]
+    pub captcha_id: String,
+    pub image: String,
+    #[serde(rename = "expiresIn")]
+    pub expires_in: u64,
+    #[serde(rename = "workChallenge")]
+    pub work_challenge: String,
+    #[serde(rename = "workDifficulty")]
+    pub work_difficulty: u8,
 }
 
 #[cfg(not(target_family = "wasm"))]
@@ -521,7 +532,9 @@ async fn health() -> Json<Value> {
 pub async fn login(
     username: &str,
     password: &str,
-    hcaptcha_token: &str,
+    captcha_id: &str,
+    captcha_code: &str,
+    captcha_work_nonce: &str,
 ) -> Result<String, String> {
     let url = api_url("/api/login").ok_or_else(|| "无法确定登录接口地址".to_string())?;
     let res = reqwest::Client::new()
@@ -529,7 +542,9 @@ pub async fn login(
         .json(&LoginPayload {
             username: username.to_string(),
             password: password.to_string(),
-            hcaptcha_token: hcaptcha_token.to_string(),
+            captcha_id: captcha_id.to_string(),
+            captcha_code: captcha_code.to_string(),
+            captcha_work_nonce: captcha_work_nonce.to_string(),
         })
         .send()
         .await
@@ -553,25 +568,23 @@ pub async fn login(
 }
 
 #[cfg(target_family = "wasm")]
-pub async fn hcaptcha_config() -> Result<HcaptchaConfigResponse, String> {
-    let url = api_url("/api/hcaptcha-config").ok_or_else(|| "无法确定验证码配置接口地址".to_string())?;
+pub async fn captcha() -> Result<CaptchaResponse, String> {
+    let url = api_url("/api/captcha").ok_or_else(|| "无法确定验证码接口地址".to_string())?;
     let response = reqwest::Client::new()
         .get(url)
         .timeout(std::time::Duration::from_secs(8))
         .send()
         .await
-        .map_err(|error| format!("hCaptcha 配置请求失败：{error}"))?;
+        .map_err(|error| format!("验证码请求失败：{error}"))?;
     let status = response.status();
     if !status.is_success() {
-        return Err(format!("hCaptcha 配置接口返回 HTTP {}", status.as_u16()));
+        return Err(format!("验证码接口返回 HTTP {}", status.as_u16()));
     }
     response
         .json()
         .await
-        .map_err(|error| format!("hCaptcha 配置响应解析失败：{error}"))
+        .map_err(|error| format!("验证码响应解析失败：{error}"))
 }
-
-#[cfg(target_family = "wasm")]
 
 // 获取当前登录用户：成功返回用户名，token 失效/网络错误返回 None
 #[cfg(target_family = "wasm")]

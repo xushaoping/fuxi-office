@@ -6,7 +6,7 @@ use axum::{
 };
 
 use crate::auth::{
-    auth_middleware, create_user, delete_user, ensure_admin_user, get_me, hcaptcha_config,
+    auth_middleware, captcha, create_user, delete_user, ensure_admin_user, get_me,
     list_users, login, update_user,
 };
 use crate::types::AppState;
@@ -142,25 +142,15 @@ async fn main() {
             return;
         }
     };
-    let hcaptcha_secret = match std::env::var("HCAPTCHA_SECRET") {
-        Ok(value) if !value.trim().is_empty() => value,
-        _ => {
-            eprintln!("环境变量 HCAPTCHA_SECRET 未设置（请在 .env 中配置）");
-            return;
-        }
-    };
-    let hcaptcha_site_key = match std::env::var("HCAPTCHA_SITE_KEY") {
-        Ok(value) if !value.trim().is_empty() => value,
-        _ => {
-            eprintln!("环境变量 HCAPTCHA_SITE_KEY 未设置（请在 .env 中配置）");
-            return;
-        }
-    };
+    let captcha_pow_difficulty = std::env::var("CAPTCHA_POW_DIFFICULTY")
+        .ok()
+        .and_then(|value| value.trim().parse::<u8>().ok())
+        .map(|value| value.clamp(8, 20))
+        .unwrap_or(14);
     let state = AppState {
         db: pool.clone(),
         jwt_secret,
-        hcaptcha_secret,
-        hcaptcha_site_key,
+        captcha_pow_difficulty,
         captchas: Arc::new(std::sync::Mutex::new(HashMap::new())),
         captcha_rate_limits: Arc::new(std::sync::Mutex::new(HashMap::new())),
         login_rate_limits: Arc::new(std::sync::Mutex::new(HashMap::new())),
@@ -183,6 +173,7 @@ async fn main() {
     // 1. 公开路由（不需要鉴权）：仅登录；用户由超级管理员创建
     let public_routes = Router::new()
         .route("/login", post(login))
+        .route("/captcha", get(captcha))
         .with_state(state.clone());
 
     // 2. 受保护路由：先经 auth_middleware 校验 JWT，用户名注入请求扩展供 handler 提取
@@ -228,7 +219,6 @@ async fn main() {
     //      Service 的 Router<()>，此处 Router<AppState> 不能直接用 nest_service）
     //    - 根路径由服务端返回页面外壳；fallback_service 负责其余静态资源（pkg、style 等）
     let app = Router::new()
-        .route("/api/hcaptcha-config", get(hcaptcha_config))
         .nest("/api", api_routes)
         .route("/", get(index))
         // The CSR router owns this path after the initial page load. Serving the

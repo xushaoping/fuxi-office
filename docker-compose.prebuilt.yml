@@ -35,12 +35,12 @@ services:
       # 服务监听地址
       BIND_ADDR: 0.0.0.0:3000
 
+      # 应用位于 Nginx 后面时使用真实客户端 IP 做验证码绑定和限流
+      TRUST_PROXY_HEADERS: ${TRUST_PROXY_HEADERS:-true}
+      CAPTCHA_POW_DIFFICULTY: ${CAPTCHA_POW_DIFFICULTY:-14}
+
       # JWT 密钥（生产环境必须修改！）
       JWT_SECRET: ${JWT_SECRET:?JWT_SECRET must be set}
-
-      # hCaptcha 公钥和服务端密钥
-      HCAPTCHA_SITE_KEY: ${HCAPTCHA_SITE_KEY:?HCAPTCHA_SITE_KEY must be set}
-      HCAPTCHA_SECRET: ${HCAPTCHA_SECRET:?HCAPTCHA_SECRET must be set}
 
       # 超级管理员 admin 的初始密码（生产环境必须修改！）
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:?ADMIN_PASSWORD must be set}
@@ -53,7 +53,8 @@ services:
       # 日志级别
       RUST_LOG: ${RUST_LOG:-info}
     ports:
-      - "3000:3000"
+      # 仅允许宿主机上的 Nginx 访问；避免公网直接伪造 X-Forwarded-For
+      - "127.0.0.1:3000:3000"
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:3000/api/health"]
       interval: 30s

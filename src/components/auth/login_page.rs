@@ -1,95 +1,113 @@
+use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use gloo_storage::{LocalStorage, Storage};
-use js_sys::{Function, Object, Promise, Reflect};
 use leptos::logging::{log, warn};
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 use leptos_router::hooks::use_navigate;
-use wasm_bindgen::{JsCast, JsValue, closure::Closure};
+use sha2::{Digest, Sha256};
+use wasm_bindgen::{JsCast, JsValue};
 use wasm_bindgen_futures::JsFuture;
 
 use super::auth_guard::{TOKEN_KEY, auth_token};
 use crate::api;
 use crate::state::AppState;
 
-async fn wait_for_hcaptcha() -> Result<JsValue, String> {
-    for _ in 0..50 {
-        if let Some(window) = web_sys::window()
-            && let Ok(hcaptcha) = Reflect::get(window.as_ref(), &JsValue::from_str("hcaptcha"))
-            && !hcaptcha.is_undefined()
-            && !hcaptcha.is_null()
-        {
-            return Ok(hcaptcha);
-        }
-        let promise = Promise::new(&mut |resolve, _reject| {
-            let callback = Closure::once_into_js(move || {
-                let _ = resolve.call0(&JsValue::UNDEFINED);
-            });
-            if let Some(window) = web_sys::window() {
-                let _ = window.set_timeout_with_callback_and_timeout_and_arguments_0(
-                    callback.unchecked_ref(),
-                    100,
-                );
+fn load_captcha(
+    captcha_id: RwSignal<String>,
+    captcha_image: RwSignal<String>,
+    captcha_code: RwSignal<String>,
+    captcha_work_nonce: RwSignal<String>,
+    captcha_loading: RwSignal<bool>,
+    captcha_error: RwSignal<Option<String>>,
+) {
+    captcha_loading.set(true);
+    captcha_error.set(None);
+    captcha_id.set(String::new());
+    captcha_image.set(String::new());
+    captcha_code.set(String::new());
+    captcha_work_nonce.set(String::new());
+    spawn_local(async move {
+        match api::captcha().await {
+            Ok(captcha) => {
+                let challenge_id = captcha.captcha_id.clone();
+                captcha_id.set(challenge_id.clone());
+                captcha_image.set(captcha.image);
+                let captcha_id_for_expiration = captcha_id;
+                let captcha_code_for_expiration = captcha_code;
+                let captcha_work_nonce_for_expiration = captcha_work_nonce;
+                let captcha_error_for_expiration = captcha_error;
+                let challenge_id_for_expiration = challenge_id.clone();
+                spawn_local(async move {
+                    wait_for_browser(captcha.expires_in.saturating_mul(1000)).await;
+                    if captcha_id_for_expiration.get_untracked() == challenge_id_for_expiration {
+                        captcha_id_for_expiration.set(String::new());
+                        captcha_code_for_expiration.set(String::new());
+                        captcha_work_nonce_for_expiration.set(String::new());
+                        captcha_error_for_expiration
+                            .set(Some("验证码已过期，请刷新后重试".to_string()));
+                    }
+                });
+                match solve_captcha_pow(&captcha.work_challenge, captcha.work_difficulty).await {
+                    Ok(nonce) => {
+                        if captcha_id.get_untracked() == challenge_id {
+                            captcha_work_nonce.set(nonce);
+                        }
+                    }
+                    Err(error) => {
+                        warn!("验证码工作量证明失败：{error}");
+                        captcha_error.set(Some(error));
+                    }
+                }
             }
-        });
-        JsFuture::from(promise)
-            .await
-            .map_err(|_| "hCaptcha 加载失败".to_string())?;
+            Err(error) => {
+                warn!("验证码加载失败：{error}");
+                captcha_error.set(Some(error));
+            }
+        }
+        captcha_loading.set(false);
+    });
+}
+
+async fn wait_for_browser(milliseconds: u64) {
+    let promise = js_sys::Promise::new(&mut |resolve, _reject| {
+        let Some(window) = web_sys::window() else {
+            let _ = resolve.call0(&JsValue::NULL);
+            return;
+        };
+        let _ = window.set_timeout_with_callback_and_timeout_and_arguments_0(
+            resolve.unchecked_ref(),
+            milliseconds.min(i32::MAX as u64) as i32,
+        );
+    });
+    let _ = JsFuture::from(promise).await;
+}
+
+async fn solve_captcha_pow(challenge: &str, difficulty: u8) -> Result<String, String> {
+    let challenge = BASE64
+        .decode(challenge)
+        .map_err(|_| "验证码挑战数据无效，请刷新页面重试".to_string())?;
+    if challenge.len() != 16 || difficulty == 0 || difficulty > 32 {
+        return Err("验证码挑战参数无效，请刷新页面重试".to_string());
     }
-    Err("hCaptcha 加载超时，请刷新页面重试".to_string())
-}
 
-fn render_hcaptcha(
-    hcaptcha: &JsValue,
-    container: &web_sys::HtmlDivElement,
-    site_key: &str,
-    token: RwSignal<String>,
-    error: RwSignal<Option<String>>,
-) -> Result<JsValue, String> {
-    let render = Reflect::get(hcaptcha, &JsValue::from_str("render"))
-        .map_err(|_| "hCaptcha 接口不可用".to_string())?
-        .dyn_into::<Function>()
-        .map_err(|_| "hCaptcha 渲染接口不可用".to_string())?;
-    let options = Object::new();
-    Reflect::set(
-        &options,
-        &JsValue::from_str("sitekey"),
-        &JsValue::from_str(site_key),
-    )
-    .map_err(|_| "hCaptcha 配置无效".to_string())?;
-    let callback = Closure::wrap(Box::new(move |value: JsValue| {
-        token.set(value.as_string().unwrap_or_default());
-        error.set(None);
-    }) as Box<dyn FnMut(JsValue)>);
-    Reflect::set(
-        &options,
-        &JsValue::from_str("callback"),
-        callback.as_ref().unchecked_ref(),
-    )
-    .map_err(|_| "hCaptcha 回调配置失败".to_string())?;
-    let widget_id = render
-        .call2(hcaptcha, container.as_ref(), options.as_ref())
-        .map_err(|_| "hCaptcha 渲染失败".to_string())?;
-    callback.forget();
-    Ok(widget_id)
-}
+    for nonce in 0u64.. {
+        let mut hasher = Sha256::new();
+        hasher.update(&challenge);
+        hasher.update(nonce.to_be_bytes());
+        let digest = hasher.finalize();
+        let full_bytes = (difficulty / 8) as usize;
+        let remaining_bits = difficulty % 8;
+        if digest[..full_bytes].iter().all(|byte| *byte == 0)
+            && (remaining_bits == 0 || digest[full_bytes] >> (8 - remaining_bits) == 0)
+        {
+            return Ok(nonce.to_string());
+        }
+        if nonce % 2048 == 2047 {
+            wait_for_browser(0).await;
+        }
+    }
 
-fn reset_hcaptcha(widget_id: Option<JsValue>) {
-    let Some(widget_id) = widget_id else {
-        return;
-    };
-    let Some(window) = web_sys::window() else {
-        return;
-    };
-    let Ok(hcaptcha) = Reflect::get(window.as_ref(), &JsValue::from_str("hcaptcha")) else {
-        return;
-    };
-    let Ok(reset) = Reflect::get(&hcaptcha, &JsValue::from_str("reset")) else {
-        return;
-    };
-    let Ok(reset) = reset.dyn_into::<Function>() else {
-        return;
-    };
-    let _ = reset.call1(&hcaptcha, &widget_id);
+    unreachable!("u64 nonce space exhausted")
 }
 
 #[component]
@@ -101,66 +119,22 @@ pub fn LoginPage() -> impl IntoView {
     let error_msg = RwSignal::new(None::<String>);
     let is_loading = RwSignal::new(false);
     let password_visible = RwSignal::new(false);
-    let hcaptcha_container = NodeRef::<leptos::html::Div>::new();
-    let hcaptcha_site_key = RwSignal::new(String::new());
-    let hcaptcha_token = RwSignal::new(String::new());
-    let hcaptcha_widget_id = RwSignal::new(None::<JsValue>);
-    let hcaptcha_loading = RwSignal::new(true);
-    let hcaptcha_error = RwSignal::new(None::<String>);
-    let hcaptcha_started = RwSignal::new(false);
+    let captcha_id = RwSignal::new(String::new());
+    let captcha_image = RwSignal::new(String::new());
+    let captcha_code = RwSignal::new(String::new());
+    let captcha_work_nonce = RwSignal::new(String::new());
+    let captcha_loading = RwSignal::new(true);
+    let captcha_error = RwSignal::new(None::<String>);
     let app_state = expect_context::<AppState>();
 
-    spawn_local({
-        let hcaptcha_site_key = hcaptcha_site_key;
-        let hcaptcha_error = hcaptcha_error;
-        async move {
-            match api::hcaptcha_config().await {
-                Ok(config) if !config.site_key.trim().is_empty() => {
-                    hcaptcha_site_key.set(config.site_key);
-                }
-                Ok(_) => hcaptcha_error.set(Some("hCaptcha site key 未配置".into())),
-                Err(error) => {
-                    warn!("hCaptcha 配置加载失败：{error}");
-                    hcaptcha_error.set(Some(error));
-                    hcaptcha_loading.set(false);
-                }
-            }
-        }
-    });
-
-    Effect::new({
-        let hcaptcha_container = hcaptcha_container;
-        let hcaptcha_site_key = hcaptcha_site_key;
-        let hcaptcha_token = hcaptcha_token;
-        let hcaptcha_error = hcaptcha_error;
-        move |_| {
-            let site_key = hcaptcha_site_key.get();
-            let Some(container) = hcaptcha_container.get() else {
-                return;
-            };
-            if site_key.is_empty() || hcaptcha_started.get() {
-                return;
-            }
-            hcaptcha_started.set(true);
-            let hcaptcha_widget_id = hcaptcha_widget_id;
-            let hcaptcha_loading = hcaptcha_loading;
-            spawn_local(async move {
-                match wait_for_hcaptcha().await.and_then(|hcaptcha| {
-                    render_hcaptcha(
-                        &hcaptcha,
-                        &container,
-                        &site_key,
-                        hcaptcha_token,
-                        hcaptcha_error,
-                    )
-                }) {
-                    Ok(widget_id) => hcaptcha_widget_id.set(Some(widget_id)),
-                    Err(error) => hcaptcha_error.set(Some(error)),
-                }
-                hcaptcha_loading.set(false);
-            });
-        }
-    });
+    load_captcha(
+        captcha_id,
+        captcha_image,
+        captcha_code,
+        captcha_work_nonce,
+        captcha_loading,
+        captcha_error,
+    );
 
     let on_submit = move |ev: leptos::ev::SubmitEvent| {
         ev.prevent_default(); // 阻止表单默认提交导致页面刷新
@@ -173,19 +147,36 @@ pub fn LoginPage() -> impl IntoView {
 
         let username = username.get();
         let password = password.get();
-        let hcaptcha_token_value = hcaptcha_token.get();
-        if hcaptcha_token_value.is_empty() {
-            error_msg.set(Some("请先完成 hCaptcha 人机验证".into()));
+        let captcha_code_value = captcha_code.get();
+        let captcha_work_nonce_value = captcha_work_nonce.get();
+        if captcha_id.get().is_empty()
+            || captcha_code_value.trim().is_empty()
+            || captcha_work_nonce_value.is_empty()
+        {
+            error_msg.set(Some("请先完成验证码验证".into()));
             is_loading.set(false);
             return;
         }
         let navigate = navigate.clone();
-        let hcaptcha_widget_id = hcaptcha_widget_id;
-        let hcaptcha_token = hcaptcha_token;
+        let captcha_id_value = captcha_id.get();
+        let captcha_code = captcha_code;
+        let captcha_work_nonce = captcha_work_nonce;
+        let captcha_image = captcha_image;
+        let captcha_id = captcha_id;
+        let captcha_loading = captcha_loading;
+        let captcha_error = captcha_error;
 
         spawn_local(async move {
             log!("开始发送登录请求...");
-            match api::login(&username, &password, &hcaptcha_token_value).await {
+            match api::login(
+                &username,
+                &password,
+                &captcha_id_value,
+                &captcha_code_value,
+                &captcha_work_nonce_value,
+            )
+            .await
+            {
                 Ok(t) => {
                     LocalStorage::set(TOKEN_KEY, t.clone()).ok();
                     token.set(Some(t));
@@ -194,8 +185,14 @@ pub fn LoginPage() -> impl IntoView {
                 Err(error) => {
                     warn!("登录失败：{error}");
                     error_msg.set(Some(error));
-                    hcaptcha_token.set(String::new());
-                    reset_hcaptcha(hcaptcha_widget_id.get());
+                    load_captcha(
+                        captcha_id,
+                        captcha_image,
+                        captcha_code,
+                        captcha_work_nonce,
+                        captcha_loading,
+                        captcha_error,
+                    );
                     is_loading.set(false);
                 }
             }
@@ -221,12 +218,25 @@ pub fn LoginPage() -> impl IntoView {
             </div>
             <form on:submit=on_submit>
                 <div class="form-group">
-                    <label for="login-username">"用户名"</label>
+                    <div class="auth-field-label">
+                        <label for="login-username">"用户名"</label>
+                        <button
+                            type="button"
+                            class="auth-help"
+                        >
+                            <svg t="1792384890578" class="icon" viewBox="0 0 1024 1024" version="1.1" xmlns="http://www.w3.org/2000/svg" p-id="7996" width="200" height="200">
+                                <path d="M514.43 127.87c51.98 0 102.37 10.17 149.78 30.22 45.82 19.38 86.98 47.14 122.35 82.5 35.36 35.36 63.12 76.53 82.5 122.35 20.05 47.4 30.22 97.8 30.22 149.78s-10.17 102.37-30.22 149.78c-19.38 45.82-47.14 86.98-82.5 122.35-35.36 35.36-76.53 63.12-122.35 82.5-47.4 20.05-97.8 30.22-149.78 30.22s-102.37-10.17-149.78-30.22c-45.82-19.38-86.98-47.14-122.35-82.5-35.36-35.36-63.12-76.53-82.5-122.35-20.05-47.4-30.22-97.8-30.22-149.78s10.17-102.37 30.22-149.78c19.38-45.82 47.14-86.98 82.5-122.35 35.36-35.36 76.53-63.12 122.35-82.5 47.4-20.06 97.79-30.22 149.78-30.22m0-64c-247.89 0-448.84 200.95-448.84 448.84s200.95 448.84 448.84 448.84S963.27 760.6 963.27 512.71 762.31 63.87 514.43 63.87z" fill="#D56164" p-id="7997"></path><path d="M616.18 320.62c-27.34-23.97-63.43-37.09-101.71-37.09-38.28 0-74.37 13.21-101.71 37.09-28.44 24.88-44.12 58.33-44.12 94.15v6.92c0 4.01 3.28 7.29 7.29 7.29h43.74c4.01 0 7.29-3.28 7.29-7.29v-6.92c0-40.19 39.28-72.91 87.49-72.91 48.21 0 87.5 32.72 87.5 72.91 0 28.34-20.05 54.32-51.13 66.26-19.32 7.38-35.73 20.32-47.48 37.28-11.94 17.32-18.14 38.1-18.14 59.15v19.59c0 4.01 3.28 7.29 7.29 7.29h43.75c4.01 0 7.29-3.28 7.29-7.29v-20.69c0-17.96 11.3-34.36 28.16-40.83 53.77-20.69 88.5-68.08 88.5-120.76 0.1-35.82-15.57-69.27-44.01-94.15z m0 0M478.01 699.12c0 20.14 16.32 36.46 36.46 36.46s36.46-16.32 36.46-36.46c0-20.13-16.32-36.46-36.46-36.46-20.13 0-36.46 16.33-36.46 36.46z m0 0" fill="#2BB06E" p-id="7998"></path>
+                            </svg>
+                            <span class="auth-tooltip" role="tooltip">
+                                "平台测试账号与密码：admin/admin123 \n fuxi/admin123"
+                            </span>
+                        </button>
+                    </div>
                     <input
                         id="login-username"
                         type="text"
                         class="input"
-                        placeholder="用户名"
+                        placeholder="请输入用户名"
                         autocomplete="username"
                         name="username"
                         required=true
@@ -237,13 +247,15 @@ pub fn LoginPage() -> impl IntoView {
                     />
                 </div>
                 <div class="form-group">
-                    <label for="login-password">"密码"</label>
+                    <div class="auth-field-label">
+                        <label for="login-password">"密码"</label>
+                    </div>
                     <div class="auth-password-field">
                     <input
                         id="login-password"
                         type=move || if password_visible.get() { "text" } else { "password" }
                         class="input"
-                        placeholder="密码"
+                        placeholder="请输入密码"
                         autocomplete="current-password"
                         name="password"
                         required=true
@@ -259,12 +271,53 @@ pub fn LoginPage() -> impl IntoView {
                     </div>
                 </div>
                 <div class="form-group">
-                    <label for="hcaptcha-container">"人机验证"</label>
-                    <div id="hcaptcha-container" class="auth-hcaptcha-widget" node_ref=hcaptcha_container></div>
-                    {move || hcaptcha_loading.get().then(|| view! {
-                        <span class="auth-captcha-status" role="status">"正在加载人机验证..."</span>
+                        <label for="login-captcha-code">"登录验证"</label>
+                    <div class="auth-captcha-field">
+                        <input
+                            id="login-captcha-code"
+                            type="text"
+                            class="input"
+                            placeholder="输入算式答案"
+                            autocomplete="off"
+                            maxlength="3"
+                            required=true
+                            bind:value=captcha_code
+                            disabled=move || is_loading.get() || captcha_loading.get()
+                        />
+                        <button
+                            type="button"
+                            class="auth-captcha-refresh"
+                            disabled=move || is_loading.get() || captcha_loading.get()
+                            on:click=move |_| load_captcha(
+                                captcha_id,
+                                captcha_image,
+                                captcha_code,
+                                captcha_work_nonce,
+                                captcha_loading,
+                                captcha_error,
+                            )
+                        >"刷新"</button>
+                    </div>
+                    {move || (!captcha_image.get().is_empty()).then(|| view! {
+                        <img
+                            class="auth-captcha-image"
+                            src=move || captcha_image.get()
+                            alt="算术验证码图片，点击刷新"
+                            title="点击刷新算术验证码"
+                            on:click=move |_| load_captcha(
+                                captcha_id,
+                                captcha_image,
+                                captcha_code,
+                                captcha_work_nonce,
+                                captcha_loading,
+                                captcha_error,
+                            )
+                        />
                     })}
-                    {move || hcaptcha_error.get().map(|error| view! {
+                    {move || captcha_loading.get().then(|| view! {
+                        <span class="auth-captcha-status" role="status">"正在加载并准备本地验证..."</span>
+                    })}
+                    {move || captcha_error.get().map(|error| view! {
                         <span class="auth-captcha-error" role="status">{error}</span>
                     })}
                 </div>
@@ -272,7 +325,7 @@ pub fn LoginPage() -> impl IntoView {
                     type="submit"
                     class="button button-primary"
                     style="width: 100%;"
-                    disabled=move || is_loading.get() || hcaptcha_loading.get() || hcaptcha_token.get().is_empty()
+                    disabled=move || is_loading.get() || captcha_loading.get() || captcha_code.get().trim().is_empty() || captcha_work_nonce.get().is_empty()
                 >
                     {move || if is_loading.get() {
                         "处理中..."

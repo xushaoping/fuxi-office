@@ -41,6 +41,8 @@ services:
     environment:
       DATABASE_URL: postgres://fuxi:${DB_PASSWORD:?DB_PASSWORD must be set}@postgres:5432/fuxi_dmn
       BIND_ADDR: 0.0.0.0:3000
+      TRUST_PROXY_HEADERS: ${TRUST_PROXY_HEADERS:-true}
+      CAPTCHA_POW_DIFFICULTY: ${CAPTCHA_POW_DIFFICULTY:-14}
       JWT_SECRET: ${JWT_SECRET:?JWT_SECRET must be set}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:?ADMIN_PASSWORD must be set}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}

@@ -142,7 +142,7 @@
 }
 
 .app-shell.workbench-shell .run-status {
-    padding: 5px 10px;
+    padding: 8px 10px;
     border: 1px solid var(--border);
     border-radius: 6px;
     background: var(--surface);
@@ -217,7 +217,7 @@
     gap: 12px;
 }
 
-:is(.app-shell.workbench-shell, .project-management-page) .wb-select-field {
+:is(.app-shell.workbench-shell, .project-management-page, .admin-page) .wb-select-field {
     display: grid;
     min-width: 0;
     gap: 5px;
@@ -238,17 +238,17 @@
     font: inherit;
 }
 
-:is(.app-shell.workbench-shell, .project-management-page) .wb-select-label {
+:is(.app-shell.workbench-shell, .project-management-page, .admin-page) .wb-select-label {
     color: var(--text-muted);
     font-size: 11px;
 }
 
-:is(.app-shell.workbench-shell, .project-management-page) .wb-select {
+:is(.app-shell.workbench-shell, .project-management-page, .admin-page) .wb-select {
     position: relative;
     min-width: 0;
 }
 
-:is(.app-shell.workbench-shell, .project-management-page) .wb-select-trigger {
+:is(.app-shell.workbench-shell, .project-management-page, .admin-page) .wb-select-trigger {
     appearance: none;
     -webkit-appearance: none;
     box-sizing: border-box;
@@ -275,34 +275,34 @@
     box-shadow: none;
 }
 
-:is(.app-shell.workbench-shell, .project-management-page) .wb-select-trigger:hover:not(:disabled),
-:is(.app-shell.workbench-shell, .project-management-page) .wb-select.is-open .wb-select-trigger {
+:is(.app-shell.workbench-shell, .project-management-page, .admin-page) .wb-select-trigger:hover:not(:disabled),
+:is(.app-shell.workbench-shell, .project-management-page, .admin-page) .wb-select.is-open .wb-select-trigger {
     border-color: var(--accent);
 }
 
-:is(.app-shell.workbench-shell, .project-management-page) .wb-select-trigger:focus-visible {
+:is(.app-shell.workbench-shell, .project-management-page, .admin-page) .wb-select-trigger:focus-visible {
     border-color: var(--accent);
     outline: 2px solid color-mix(in srgb, var(--accent) 14%, transparent);
     outline-offset: 1px;
 }
 
-:is(.app-shell.workbench-shell, .project-management-page) .wb-select-trigger:disabled {
+:is(.app-shell.workbench-shell, .project-management-page, .admin-page) .wb-select-trigger:disabled {
     cursor: not-allowed;
     opacity: 0.58;
 }
 
-:is(.app-shell.workbench-shell, .project-management-page) .wb-select-value {
+:is(.app-shell.workbench-shell, .project-management-page, .admin-page) .wb-select-value {
     min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
 }
 
-:is(.app-shell.workbench-shell, .project-management-page) .wb-select-value.is-placeholder {
+:is(.app-shell.workbench-shell, .project-management-page, .admin-page) .wb-select-value.is-placeholder {
     color: var(--text-muted);
 }
 
-:is(.app-shell.workbench-shell, .project-management-page) .wb-select-chevron {
+:is(.app-shell.workbench-shell, .project-management-page, .admin-page) .wb-select-chevron {
     width: 7px;
     height: 7px;
     flex: 0 0 auto;
@@ -312,11 +312,11 @@
     transition: transform 160ms ease;
 }
 
-:is(.app-shell.workbench-shell, .project-management-page) .wb-select.is-open .wb-select-chevron {
+:is(.app-shell.workbench-shell, .project-management-page, .admin-page) .wb-select.is-open .wb-select-chevron {
     transform: rotate(225deg) translate(-1px, -1px);
 }
 
-:is(.app-shell.workbench-shell, .project-management-page) .wb-select-menu {
+:is(.app-shell.workbench-shell, .project-management-page, .admin-page) .wb-select-menu {
     position: absolute;
     z-index: 30;
     top: calc(100% + 5px);
@@ -336,14 +336,14 @@
     transition: opacity 140ms ease, transform 140ms ease, visibility 140ms ease;
 }
 
-:is(.app-shell.workbench-shell, .project-management-page) .wb-select-menu.is-open {
+:is(.app-shell.workbench-shell, .project-management-page, .admin-page) .wb-select-menu.is-open {
     opacity: 1;
     visibility: visible;
     pointer-events: auto;
     transform: translateY(0);
 }
 
-:is(.app-shell.workbench-shell, .project-management-page) .wb-select-option {
+:is(.app-shell.workbench-shell, .project-management-page, .admin-page) .wb-select-option {
     display: flex;
     width: 100%;
     min-width: 0;
@@ -360,16 +360,16 @@
     cursor: pointer;
 }
 
-:is(.app-shell.workbench-shell, .project-management-page) .wb-select-option:hover,
-:is(.app-shell.workbench-shell, .project-management-page) .wb-select-option.is-selected {
+:is(.app-shell.workbench-shell, .project-management-page, .admin-page) .wb-select-option:hover,
+:is(.app-shell.workbench-shell, .project-management-page, .admin-page) .wb-select-option.is-selected {
     background: color-mix(in srgb, var(--accent) 10%, var(--surface-raised));
 }
 
-:is(.app-shell.workbench-shell, .project-management-page) .wb-select-check {
+:is(.app-shell.workbench-shell, .project-management-page, .admin-page) .wb-select-check {
     color: var(--accent);
 }
 
-:is(.app-shell.workbench-shell, .project-management-page) .wb-select-empty {
+:is(.app-shell.workbench-shell, .project-management-page, .admin-page) .wb-select-empty {
     padding: 8px 9px;
     color: var(--text-muted);
 }

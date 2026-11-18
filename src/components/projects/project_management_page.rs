@@ -154,17 +154,19 @@ pub fn ProjectManagementPage() -> impl IntoView {
                         <strong>"伏羲智能决策建模工作台"</strong>
                     </div>
                 </div>
-                <button class="button button-quiet" on:click=move |_| {
-                    if !app_state.ui.workspace_dirty.get_untracked()
-                        || web_sys::window().is_some_and(|window| {
-                            window.confirm_with_message("当前工作台有未确认的需求或模型变更，本地草稿会保留，确定返回吗？").unwrap_or(false)
-                        })
-                    {
-                        navigate("/", Default::default());
-                    }
-                }>
-                    <span aria-hidden="true">"←"</span> "返回工作台"
-                </button>
+                <nav class="admin-topbar-actions admin-page-nav" aria-label="页面导航">
+                    <button class="button button-quiet" on:click=move |_| {
+                        if !app_state.ui.workspace_dirty.get_untracked()
+                            || web_sys::window().is_some_and(|window| {
+                                window.confirm_with_message("当前工作台有未确认的需求或模型变更，本地草稿会保留，确定返回吗？").unwrap_or(false)
+                            })
+                        {
+                            navigate("/", Default::default());
+                        }
+                    }>
+                        <span aria-hidden="true">"←"</span> "返回工作台"
+                    </button>
+                </nav>
             </header>
             <div class="admin-content">
                 <section class="admin-heading">

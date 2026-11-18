@@ -116,7 +116,7 @@ def header_footer(canvas, doc):
         canvas.line(21 * mm, 284 * mm, 189 * mm, 284 * mm)
         canvas.setFont("Fuxi", 7.5)
         canvas.setFillColor(MUTED)
-        canvas.drawString(21 * mm, 289 * mm, "伏羲智能决策工作台 · 项目介绍")
+        canvas.drawString(21 * mm, 289 * mm, "伏羲智能决策平台 · 项目介绍")
         canvas.drawRightString(189 * mm, 12 * mm, f"{doc.page}")
     canvas.restoreState()
 
@@ -129,7 +129,7 @@ def build_story():
         Image(str(LOGO), width=38 * mm, height=27.6 * mm),
         Spacer(1, 8 * mm),
         p("OPEN SOURCE · AI DECISION AUTOMATION", "CoverEyebrow"),
-        p("伏羲智能决策工作台", "CoverTitle"),
+        p("伏羲智能决策平台", "CoverTitle"),
         p("让业务规则从自然语言出发，经过结构化建模、确定性校验与人工治理，成为可执行、可解释、可审计的决策服务。", "CoverLead"),
         Spacer(1, 4 * mm),
     ])
@@ -212,7 +212,7 @@ def build_story():
         [plain("前端", "TableCell"), plain("Leptos 0.8 CSR、WebAssembly、leptos_router", "TableCell")],
         [plain("智能体", "TableCell"), plain("OpenAI Chat Completions 兼容接口、结构化工具调用、SSE", "TableCell")],
         [plain("决策引擎", "TableCell"), plain("DMN 1.5、FEEL 词法分析、递归下降解析、解释执行", "TableCell")],
-        [plain("工程治理", "TableCell"), plain("hCaptcha、JWT、Argon2、项目级 RBAC、版本审查、审计和 Docker 部署", "TableCell")],
+        [plain("工程治理", "TableCell"), plain("同源图片验证码、JWT、Argon2、项目级 RBAC、版本审查、审计和 Docker 部署", "TableCell")],
     ]
     stack_table = Table(stack, colWidths=[27 * mm, 141 * mm])
     stack_table.setStyle(TableStyle([
@@ -236,7 +236,7 @@ def build_story():
         ("企业知识增强", "绑定术语、字段目录、制度政策和历史模型，记录引用元数据并固化版本知识快照。"),
         ("模型产物可视化", "提供 YAML 结构树、搜索、折叠和预览，并对 YAML、DSL 与 DMN/XML 源码进行语法高亮。"),
         ("DMN/FEEL 引擎", "支持决策表、字面量表达式、上下文、关系、条件、过滤器、迭代器、函数调用和服务。"),
-        ("安全与治理", "登录使用 hCaptcha 服务端校验，并提供角色权限、版本差异、风险识别、回滚草稿和审计日志。"),
+        ("安全与治理", "登录使用服务端生成的同源图片验证码，并提供角色权限、版本差异、风险识别、回滚草稿和审计日志。"),
         ("验收、发布与分析", "覆盖边界、缺失、类型错误、冲突和无命中案例，完成业务批准后发布不可变版本。"),
     ]
     story.extend([two_column_cards(feature_cards), Spacer(1, 6 * mm), p("典型应用场景", "H2F")])
@@ -265,24 +265,15 @@ def build_story():
         PageBreak(),
     ])
 
-    story.extend([p("六、项目演示", "H1F"), p("在线地址", "H2F"), p('<link href="https://fuxioffice.cn/" color="#4D56C7"><b>https://fuxioffice.cn/</b></link>'), p("演示账号", "H2F")])
-    account_data = [
-        [p("角色", "TableHead"), p("用户名", "TableHead"), p("密码", "TableHead")],
-        [plain("管理员", "TableCell"), plain("admin", "TableCell"), plain("admin1234", "TableCell")],
-        [plain("普通用户", "TableCell"), plain("fuxi", "TableCell"), plain("admin1234", "TableCell")],
-    ]
-    account_table = Table(account_data, colWidths=[56 * mm, 56 * mm, 56 * mm])
-    account_table.setStyle(TableStyle([
-        ("BACKGROUND", (0, 0), (-1, 0), SLATE),
-        ("BACKGROUND", (0, 1), (-1, -1), PALE),
-        ("BOX", (0, 0), (-1, -1), 0.7, BORDER),
-        ("INNERGRID", (0, 0), (-1, -1), 0.7, BORDER),
-        ("LEFTPADDING", (0, 0), (-1, -1), 9),
-        ("RIGHTPADDING", (0, 0), (-1, -1), 9),
-        ("TOPPADDING", (0, 0), (-1, -1), 7),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 7),
-    ]))
-    story.extend([account_table, Spacer(1, 3 * mm), p("以上为公开演示账号；正式部署时请立即修改初始密码，并为不同操作者分配独立账号。", "SmallF"), p("推荐演示路径", "H2F")])
+    story.extend([
+        p("六、项目演示", "H1F"),
+        p("在线地址", "H2F"),
+        p('<link href="https://fuxioffice.cn/" color="#4D56C7"><b>https://fuxioffice.cn/</b></link>'),
+        p("访问方式", "H2F"),
+        plain("请通过演示环境页面获取当前访问方式。账号由部署管理员管理；本文档不包含共享密码。"),
+        Spacer(1, 3 * mm),
+        p("推荐演示路径", "H2F"),
+    ])
     steps = [
         ("1", "进入工作台", "打开线上地址并登录，进入项目空间；优先使用管理员账号观察完整菜单与治理能力。"),
         ("2", "需求与方案", "输入贷款审批需求，观察 Agent 完成需求分析、澄清、方案规划；分析完成后页面自动定位到待确认问题。"),
@@ -333,8 +324,8 @@ def main():
         rightMargin=21 * mm,
         topMargin=20 * mm,
         bottomMargin=18 * mm,
-        title="伏羲智能决策工作台 - 项目介绍",
-        author="伏羲智能决策工作台",
+        title="伏羲智能决策平台 - 项目介绍",
+        author="伏羲智能决策平台",
     )
     frame = Frame(doc.leftMargin, doc.bottomMargin, doc.width, doc.height, id="normal")
     doc.addPageTemplates([PageTemplate(id="all", frames=[frame], onPage=header_footer)])

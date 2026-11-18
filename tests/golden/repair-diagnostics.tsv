@@ -1,0 +1,19 @@
+# id<TAB>expected_category<TAB>diagnostic
+repair-structure-missing-01	E1	missing field 'name'
+repair-structure-duplicate-02	E1	名称重复：decision name must be unique
+repair-reference-input-01	E2	undefined input 'ApplicantAge'
+repair-reference-decision-02	E2	未定义决策 'RiskGrade'
+repair-type-feel-01	E3	FEEL type mismatch: expected number
+repair-type-incompatible-02	E3	类型不匹配：字符串不能用于数值表达式
+repair-syntax-token-01	E4	FEEL syntax error near unexpected token ')'
+repair-syntax-parse-02	E4	表达式解析失败：语法错误 at line 2
+repair-semantic-unreachable-01	E5	semantic validation: unreachable rule 'rule-4'
+repair-semantic-conflict-02	E5	规则冲突：UNIQUE policy has overlapping rules
+repair-compilation-xml-01	E6	DMN XML generation failed while compiling decision
+repair-compilation-model-02	E6	DMN 编译失败：模型核验失败
+repair-unknown-network-01	NONE	provider request timed out before completion
+repair-unknown-auth-02	NONE	upstream returned HTTP 401 unauthorized
+repair-priority-structure-01	E1	missing field 'expression'; syntax error follows in excerpt
+repair-priority-reference-02	E2	unknown reference 'RiskScore'; type mismatch follows in excerpt
+repair-priority-type-03	E3	incompatible type in expression; semantic validation failed
+repair-signature-location-01	E4	FEEL syntax error near ')' at line 2 column 8

@@ -39,8 +39,13 @@ validate_archive() {
 }
 
 if [[ -n "$archive_name" ]]; then
-    if [[ "$archive_name" != "$(basename "$archive_name")" || ! -f "/build-tools/$archive_name" ]]; then
+    if [[ "$archive_name" != "$(basename "$archive_name")" ]]; then
         printf '请将 Linux Binaryen 压缩包放在 script/ 下，BINARYEN_ARCHIVE 只填写文件名。\n' >&2
+        exit 1
+    fi
+    if [[ ! -f "/build-tools/$archive_name" ]]; then
+        printf '构建容器中找不到 Binaryen 本地包：/build-tools/%s\n' "$archive_name" >&2
+        printf '请确认文件位于项目 script/ 下，并在 .dockerignore 的 script/*.tar.gz 规则之后添加 !script/%s\n' "$archive_name" >&2
         exit 1
     fi
     cp "/build-tools/$archive_name" "$archive_path"

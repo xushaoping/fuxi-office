@@ -59,104 +59,104 @@ pub fn MemberManagementPanel(
     on_remove_member: Callback<(String, String)>,
 ) -> impl IntoView {
     view! {
-        <section class="member-management-panel" aria-label="成员管理">
+           <section class="member-management-panel" aria-label="成员管理">
 
 
 
 
- <div class="member-form">
-                <div class="member-form-heading">
-                    <strong>"添加协作者"</strong>
-                    <small>"同一账号可以承担多个职责"</small>
-                </div>
-                <label class="member-form-field" for="member-username">
-                    <span>"用户名"</span>
-                    <input
-                        id="member-username"
-                        type="text"
-                        autocomplete="username"
-                        placeholder="输入项目成员账号"
-                        prop:value=member_username
-                        on:input=move |event| set_member_username.set(event_target_value(&event))
-                        disabled=member_busy
-                    />
-                </label>
-                <WorkbenchSelect
-                    id="member-role"
-                    class="member-role-select"
-                    label="项目职责"
-                    options=Signal::derive(|| vec![
-                        SelectOption::new("modeler", "建模者"),
-                        SelectOption::new("reviewer", "复核者"),
-                        SelectOption::new("approver", "审批者"),
-                        SelectOption::new("viewer", "查看者"),
-                    ])
-                    value=member_role
-                    disabled=member_busy
-                    placeholder=Signal::derive(|| "请选择项目职责".to_string())
-                    on_change=Callback::new(move |value| set_member_role.set(value))
-                />
-                <button
-                    type="button"
-                    class="button button-primary"
-                    on:click=move |_| on_save_member.run(())
-                    disabled=move || member_busy.get() || member_username.get().trim().is_empty()
-                >
-                    {move || if member_busy.get() { "处理中..." } else { "添加成员" }}
-                </button>
-            </div>
-            <div class="member-management-heading">
-                <div>
-                    <span class="member-section-kicker">"ACCESS ROSTER"</span>
-                    <strong>"团队成员"</strong>
-                    <small>"为项目分配建模、复核、审批或只读职责"</small>
-                </div>
-                <div class="member-count" aria-label="当前成员数量">
-                    <strong>{move || members.get().len()}</strong>
-                    <span>"位成员"</span>
-                </div>
-            </div>
-            <Show
-                when=move || !members.get().is_empty()
-                fallback=move || view! {
-                    <div class="member-empty" role="status">
-                        <strong>"尚未添加协作者"</strong>
-                        <span>"从下方添加成员后，项目职责会立即显示在这里。"</span>
-                    </div>
-                }
-            >
-                <div class="member-list" role="list">
-                    <For each=move || members.get() key=|member| format!("{}:{}", member.username, member.role) let:member>
-                        <div class="member-item" role="listitem">
-                            <span class="member-avatar" aria-hidden="true">
-                                {member.username.chars().next().unwrap_or('用').to_string()}
-                            </span>
-                            <div class="member-identity">
-                                <strong>{member.username.clone()}</strong>
-                                <span class="member-role-badge">{member_role_label(&member.role)}</span>
-                            </div>
-                            <button
-                                type="button"
-                                class="button button-danger member-remove-button"
-                                title=format!("移除 {}", member.username)
-                                aria-label=format!("移除 {} 的{}职责", member.username, member_role_label(&member.role))
-                                on:click=move |_| {
-                                    on_remove_member.run((member.username.clone(), member.role.clone()))
-                                }
-                                disabled=move || member_busy.get()
-                            >"移除"</button>
-                        </div>
-                    </For>
-                </div>
-            </Show>
-            <Show when=move || member_error.get().is_some()>
-                <div class="member-error" role="alert">{move || member_error.get().unwrap_or_default()}</div>
-            </Show>
-            <Show when=move || member_status.get().is_some()>
-                <div class="member-status" role="status" aria-live="polite">{move || member_status.get().unwrap_or_default()}</div>
-            </Show>
-        </section>
-    }
+    <div class="member-form">
+                   <div class="member-form-heading">
+                       <strong>"添加协作者"</strong>
+                       <small>"同一账号可以承担多个职责"</small>
+                   </div>
+                   <label class="member-form-field" for="member-username">
+                       <span>"用户名"</span>
+                       <input
+                           id="member-username"
+                           type="text"
+                           autocomplete="username"
+                           placeholder="输入项目成员账号"
+                           prop:value=member_username
+                           on:input=move |event| set_member_username.set(event_target_value(&event))
+                           disabled=member_busy
+                       />
+                   </label>
+                   <WorkbenchSelect
+                       id="member-role"
+                       class="member-role-select"
+                       label="项目职责"
+                       options=Signal::derive(|| vec![
+                           SelectOption::new("modeler", "建模者"),
+                           SelectOption::new("reviewer", "复核者"),
+                           SelectOption::new("approver", "审批者"),
+                           SelectOption::new("viewer", "查看者"),
+                       ])
+                       value=member_role
+                       disabled=member_busy
+                       placeholder=Signal::derive(|| "请选择项目职责".to_string())
+                       on_change=Callback::new(move |value| set_member_role.set(value))
+                   />
+                   <button
+                       type="button"
+                       class="button button-primary"
+                       on:click=move |_| on_save_member.run(())
+                       disabled=move || member_busy.get() || member_username.get().trim().is_empty()
+                   >
+                       {move || if member_busy.get() { "处理中..." } else { "添加成员" }}
+                   </button>
+               </div>
+               <div class="member-management-heading">
+                   <div>
+                       <span class="member-section-kicker">"ACCESS ROSTER"</span>
+                       <strong>"团队成员"</strong>
+                       <small>"为项目分配建模、复核、审批或只读职责"</small>
+                   </div>
+                   <div class="member-count" aria-label="当前成员数量">
+                       <strong>{move || members.get().len()}</strong>
+                       <span>"位成员"</span>
+                   </div>
+               </div>
+               <Show
+                   when=move || !members.get().is_empty()
+                   fallback=move || view! {
+                       <div class="member-empty" role="status">
+                           <strong>"尚未添加协作者"</strong>
+                           <span>"从下方添加成员后，项目职责会立即显示在这里。"</span>
+                       </div>
+                   }
+               >
+                   <div class="member-list" role="list">
+                       <For each=move || members.get() key=|member| format!("{}:{}", member.username, member.role) let:member>
+                           <div class="member-item" role="listitem">
+                               <span class="member-avatar" aria-hidden="true">
+                                   {member.username.chars().next().unwrap_or('用').to_string()}
+                               </span>
+                               <div class="member-identity">
+                                   <strong>{member.username.clone()}</strong>
+                                   <span class="member-role-badge">{member_role_label(&member.role)}</span>
+                               </div>
+                               <button
+                                   type="button"
+                                   class="button button-danger member-remove-button"
+                                   title=format!("移除 {}", member.username)
+                                   aria-label=format!("移除 {} 的{}职责", member.username, member_role_label(&member.role))
+                                   on:click=move |_| {
+                                       on_remove_member.run((member.username.clone(), member.role.clone()))
+                                   }
+                                   disabled=move || member_busy.get()
+                               >"移除"</button>
+                           </div>
+                       </For>
+                   </div>
+               </Show>
+               <Show when=move || member_error.get().is_some()>
+                   <div class="member-error" role="alert">{move || member_error.get().unwrap_or_default()}</div>
+               </Show>
+               <Show when=move || member_status.get().is_some()>
+                   <div class="member-status" role="status" aria-live="polite">{move || member_status.get().unwrap_or_default()}</div>
+               </Show>
+           </section>
+       }
 }
 
 #[component]

@@ -4,14 +4,13 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>伏羲智能决策</title>
-  <link rel="stylesheet" href="/pkg/fuxi-dmn.css" />
+  <link rel="stylesheet" href="/pkg/fuxi-dmn.css?v=__FUXI_ASSET_VERSION__" />
   <link rel="icon" type="image/svg+xml" href="/images/fuxi.png" />
-  <script src="https://js.hcaptcha.com/1/api.js?render=explicit" async defer></script>
 </head>
 <body>
   <script type="module">
-    import init, { hydrate } from "/pkg/fuxi-dmn.js";
-    await init("/pkg/fuxi-dmn.wasm");
+    import init, { hydrate } from "/pkg/fuxi-dmn.js?v=__FUXI_ASSET_VERSION__";
+    await init("/pkg/fuxi-dmn.wasm?v=__FUXI_ASSET_VERSION__");
     hydrate();
   </script>
 </body>

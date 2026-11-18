@@ -1,0 +1,21 @@
+# id	finding_code	element	level	message
+failure-rate-01	HIGH_FAILURE_RATE	LoanApproval	high	近期决策运行失败率升高
+feedback-coverage-02	LOW_FEEDBACK_COVERAGE	LoanApproval	info	业务结果回填覆盖不足
+mismatch-rate-03	HIGH_MISMATCH_RATE	LoanApproval	warning	已回填样本中的业务偏差率升高
+rule-feedback-04	RULE_FEEDBACK_MISMATCH	CreditGrade	high	某规则命中样本与业务结果不一致
+rule-drift-05	RULE_HIT_DRIFT	CreditGrade	warning	该规则近期命中率明显变化
+input-drift-06	INPUT_DISTRIBUTION_DRIFT	Applicant.income	warning	数值输入分布与基线存在差异
+missingness-07	INPUT_FIELD_MISSINGNESS_DRIFT	Applicant.region	warning	输入字段缺失率较基线上升
+failure-rate-08	HIGH_FAILURE_RATE	RiskDecision	high	运行失败率超过项目设置的预警值
+feedback-coverage-09	LOW_FEEDBACK_COVERAGE	RiskDecision	info	近期运行缺少足够业务结果反馈
+mismatch-rate-10	HIGH_MISMATCH_RATE	Eligibility	warning	反馈样本提示决策结果可能需要复核
+rule-feedback-11	RULE_FEEDBACK_MISMATCH	Eligibility	warning	该规则关联的反馈结果存在偏差
+rule-drift-12	RULE_HIT_DRIFT	Eligibility	info	规则命中比例偏离近期基线
+input-drift-13	INPUT_DISTRIBUTION_DRIFT	Applicant.debtRatio	warning	输入数值分布发生变化
+missingness-14	INPUT_FIELD_MISSINGNESS_DRIFT	Applicant.employerType	info	该字段的可观测缺失比例上升
+failure-rate-15	HIGH_FAILURE_RATE	FraudReview	high	决策执行失败记录近期增加
+feedback-coverage-16	LOW_FEEDBACK_COVERAGE	FraudReview	info	业务系统反馈覆盖低于建议门槛
+mismatch-rate-17	HIGH_MISMATCH_RATE	FraudReview	warning	近期明确反馈显示输出偏差增加
+rule-feedback-18	RULE_FEEDBACK_MISMATCH	FraudRule	warning	规则命中与业务反馈之间存在不一致
+rule-drift-19	RULE_HIT_DRIFT	FraudRule	info	规则命中率相较历史窗口有变化
+input-drift-20	INPUT_DISTRIBUTION_DRIFT	Transaction.amount	warning	交易金额输入分布偏离历史窗口

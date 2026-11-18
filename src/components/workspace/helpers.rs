@@ -173,6 +173,15 @@ pub fn analytics_finding_label(code: &str) -> &'static str {
     match code {
         "NO_RECENT_RUNS" => "暂无运行数据",
         "HIGH_FAILURE_RATE" => "失败率偏高",
+        "HIGH_MISMATCH_RATE" => "总体业务偏差偏高",
+        "RULE_FEEDBACK_MISMATCH" => "规则反馈偏差偏高",
+        "LOW_FEEDBACK_COVERAGE" => "业务反馈不足",
+        "HIGH_P95_LATENCY" => "运行耗时偏高",
+        "LOW_RULE_COVERAGE" => "规则覆盖不足",
+        "FREQUENT_FALLBACK" => "默认或无匹配分支偏多",
+        "FAILURE_TREND_UP" => "失败率近期上升",
+        "FEEDBACK_TREND_DOWN" => "业务反馈近期下降",
+        "LATENCY_TREND_UP" => "耗时近期上升",
         "LOW_COVERAGE" => "覆盖率不足",
         "OUTDATED_MODEL" => "模型版本过旧",
         "MISSING_KNOWLEDGE" => "缺少知识绑定",
@@ -191,9 +200,10 @@ pub fn optimization_proposal_actions(proposal: &DecisionOptimizationProposal) ->
 
 pub fn optimization_proposal_status_label(status: &str) -> &'static str {
     match status {
-        "pending" => "待处理",
-        "accepted" => "已采纳",
-        "rejected" => "已拒绝",
+        "open" => "待处理",
+        "confirmed" => "已确认",
+        "dismissed" => "已驳回",
+        "withdrawn" => "已撤回",
         _ => "未知",
     }
 }
@@ -216,15 +226,69 @@ fn shell_quote(value: &str) -> String {
 
 pub fn public_service_curl(service: &PublishedDecisionService, secret: &str) -> String {
     format!(
-        r#"curl -X POST {endpoint} \
+        r#"curl --fail-with-body --silent --show-error --request POST --url {endpoint} \
   -H {key_header} \
   -H {content_type} \
-  -d {body}"#,
+  --data-binary {body}"#,
         endpoint = shell_quote(&public_service_endpoint(service)),
         key_header = shell_quote(&format!("X-Decision-Key: {secret}")),
         content_type = shell_quote("Content-Type: application/json"),
         body = shell_quote(&service_request_template(service)),
     )
+}
+
+#[cfg(target_family = "wasm")]
+pub async fn copy_text_to_clipboard(text: &str) -> bool {
+    use js_sys::{Function, Promise, Reflect};
+    use wasm_bindgen::{JsCast, JsValue};
+    use wasm_bindgen_futures::JsFuture;
+
+    let Some(window) = web_sys::window() else {
+        return false;
+    };
+    let navigator: JsValue = window.navigator().into();
+    if let Ok(clipboard) = Reflect::get(&navigator, &JsValue::from_str("clipboard")) {
+        if !clipboard.is_null() && !clipboard.is_undefined() {
+            if let Ok(write_text) = Reflect::get(&clipboard, &JsValue::from_str("writeText")) {
+                if let Ok(write_text) = write_text.dyn_into::<Function>() {
+                    if let Ok(promise) = write_text
+                        .call1(&clipboard, &JsValue::from_str(text))
+                        .and_then(|value| value.dyn_into::<Promise>())
+                    {
+                        if JsFuture::from(promise).await.is_ok() {
+                            return true;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    let Some(document) = window.document() else {
+        return false;
+    };
+    let Ok(textarea) = document.create_element("textarea") else {
+        return false;
+    };
+    let Ok(textarea) = textarea.dyn_into::<web_sys::HtmlTextAreaElement>() else {
+        return false;
+    };
+    textarea.set_value(text);
+    let _ = textarea.set_attribute("style", "position:fixed;left:-10000px;top:0;opacity:0;");
+    let Some(body) = document.body() else {
+        return false;
+    };
+    if body.append_child(&textarea).is_err() {
+        return false;
+    }
+    let _ = textarea.focus();
+    textarea.select();
+    let document: web_sys::HtmlDocument = document.unchecked_into();
+    let copied = document.exec_command("copy").unwrap_or(false);
+    if let Some(parent) = textarea.parent_node() {
+        let _ = parent.remove_child(&textarea);
+    }
+    copied
 }
 
 #[cfg(test)]
@@ -264,12 +328,26 @@ mod tests {
     }
 
     #[test]
+    fn optimization_proposal_statuses_have_distinct_labels() {
+        assert_eq!(optimization_proposal_status_label("open"), "待处理");
+        assert_eq!(optimization_proposal_status_label("confirmed"), "已确认");
+        assert_eq!(optimization_proposal_status_label("dismissed"), "已驳回");
+        assert_eq!(optimization_proposal_status_label("withdrawn"), "已撤回");
+        assert_eq!(optimization_proposal_status_label("unknown"), "未知");
+    }
+
+    #[test]
     fn generated_curl_matches_public_execution_contract() {
         let command = public_service_curl(&service(), "dmn_live_secret");
+        assert!(
+            command
+                .starts_with("curl --fail-with-body --silent --show-error --request POST --url ")
+        );
         assert!(command.contains("X-Decision-Key: dmn_live_secret"));
         assert!(!command.contains("Authorization: Bearer"));
         assert!(command.contains("\"serviceId\": \"pricing\""));
         assert!(command.contains("\"businessReference\": \"ORDER-2026-0001\""));
         assert!(command.contains("\"inputs\": {"));
+        assert!(command.contains("--data-binary"));
     }
 }

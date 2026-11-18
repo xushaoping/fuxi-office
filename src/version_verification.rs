@@ -14,6 +14,123 @@ use crate::models::{
 
 const MAX_BOUNDARY_CASES: usize = 24;
 
+pub(crate) fn analyze_static_rules(xml: &str) -> Result<Vec<VerificationFinding>, String> {
+    let model = dmn::parse_dmn(xml).map_err(|error| format!("DMN XML 解析失败：{error}"))?;
+    dmn::compile_dmn(&model).map_err(|error| format!("DMN 模型编译失败：{error}"))?;
+    Ok(analyze_rules(&model))
+}
+
+pub(crate) fn static_finding_witness_input(
+    model: &DmnModel,
+    finding: &VerificationFinding,
+) -> Option<Value> {
+    if !matches!(
+        finding.code.as_str(),
+        "UNIQUE_RULE_CONFLICT" | "ANY_OUTPUT_CONFLICT"
+    ) || finding.rule_ids.len() != 2
+    {
+        return None;
+    }
+    let decision = model
+        .decisions
+        .iter()
+        .find(|decision| decision.name == finding.element)?;
+    let DecisionLogic::DecisionTable(table) = &decision.logic else {
+        return None;
+    };
+    let rules = finding
+        .rule_ids
+        .iter()
+        .map(|id| {
+            table
+                .rules
+                .iter()
+                .enumerate()
+                .find(|(index, rule)| rule_id(rule.id.as_deref(), *index) == *id)
+        })
+        .collect::<Option<Vec<_>>>()?;
+    let left = rules[0].1;
+    let right = rules[1].1;
+    if left.input_entries.len() != table.inputs.len()
+        || right.input_entries.len() != table.inputs.len()
+    {
+        return None;
+    }
+    let mut input = sample_input(model).ok()?;
+    for ((clause, left), right) in table
+        .inputs
+        .iter()
+        .zip(&left.input_entries)
+        .zip(&right.input_entries)
+    {
+        let witness = condition_witness(&parse_rule_condition(left), &parse_rule_condition(right))?;
+        let field = model.input_data.iter().find(|field| {
+            field.name == clause.expression
+                || field.variable.as_deref() == Some(clause.expression.as_str())
+        })?;
+        let path = field.variable.as_deref().unwrap_or(&field.name);
+        if !assign_input_path(&mut input, path, witness) {
+            return None;
+        }
+    }
+    Some(input)
+}
+
+fn condition_witness(left: &RuleCondition, right: &RuleCondition) -> Option<Value> {
+    match (left, right) {
+        (RuleCondition::Any, condition) | (condition, RuleCondition::Any) => {
+            condition_witness_single(condition)
+        }
+        (RuleCondition::Exact(left), RuleCondition::Exact(right)) if left == right => {
+            serde_json::from_str(left).ok()
+        }
+        (RuleCondition::Number(left), RuleCondition::Number(right)) => {
+            interval_witness(intersect_intervals(*left, *right)?).map(|value| json!(value))
+        }
+        _ => None,
+    }
+}
+
+fn condition_witness_single(condition: &RuleCondition) -> Option<Value> {
+    match condition {
+        RuleCondition::Any => Some(json!(0)),
+        RuleCondition::Exact(value) => serde_json::from_str(value).ok(),
+        RuleCondition::Number(interval) => interval_witness(*interval).map(|value| json!(value)),
+    }
+}
+
+fn intersect_intervals(left: NumericInterval, right: NumericInterval) -> Option<NumericInterval> {
+    let lower = maximum_lower(left.lower, right.lower);
+    let upper = minimum_upper(left.upper, right.upper);
+    match (lower, upper) {
+        (Some(lower), Some(upper))
+            if lower.value > upper.value
+                || (lower.value == upper.value && !(lower.inclusive && upper.inclusive)) =>
+        {
+            None
+        }
+        _ => Some(NumericInterval { lower, upper }),
+    }
+}
+
+fn interval_witness(interval: NumericInterval) -> Option<f64> {
+    match (interval.lower, interval.upper) {
+        (Some(lower), Some(upper)) if lower.value == upper.value => Some(lower.value),
+        (Some(lower), Some(upper)) => Some((lower.value + upper.value) / 2.0),
+        (Some(lower), None) => Some(if lower.inclusive {
+            lower.value
+        } else {
+            lower.value + (lower.value.abs() * 0.000_001).max(0.000_001)
+        }),
+        (None, Some(upper)) => Some(if upper.inclusive {
+            upper.value
+        } else {
+            upper.value - (upper.value.abs() * 0.000_001).max(0.000_001)
+        }),
+        (None, None) => Some(0.0),
+    }
+}
+
 pub fn verify_version(
     xml: &str,
     version_id: i64,

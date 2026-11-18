@@ -29,11 +29,17 @@ use wasm_bindgen_futures::JsFuture;
 
 use crate::api::{self, ChangeSummary, EvaluateResult, RunResult, SseEvent};
 use crate::models::{
-    AdminUser, AuditEvent, CreateDecisionTestCase, CreateDecisionVersion, CreateUser,
-    DecisionAnalyticsReport, DecisionOptimizationProposal, DecisionProject, DecisionServiceApiKey,
-    DecisionServiceRun, DecisionTestCase, DecisionVersion, ExecutionTrace, KnowledgeCitation,
-    KnowledgeSource, ModelChangeIntent, ModelLibraryItem, ProjectMember, PublishedDecisionService,
-    SaveDecisionRunOutcome, SaveDecisionTemplate, SaveKnowledgeSource, UpdateUser,
+    AdminUser, AuditEvent, BehaviorComparisonReport, CreateDecisionTestCase, CreateDecisionVersion,
+    CreateUser, DecisionAnalyticsReport, DecisionDriftAutomationRule, DecisionDriftEvent,
+    DecisionDriftImpactReport, DecisionDriftScanWindow, DecisionOptimizationProposal,
+    DecisionProject, DecisionServiceApiKey, DecisionServiceRun, DecisionTestCase, DecisionVersion,
+    DeviationAnalysis, ExecutionTrace, KnowledgeCitation, KnowledgeSource, ModelChangeIntent,
+    ModelLibraryItem, OptimizationAutodraftShadowEvaluation, OptimizationSimulationReport,
+    PatternLibraryAnalytics, PatternLineageItem, PatternRecommendation,
+    PatternRecommendationFeedback, ProjectMember, PublishedDecisionService, RegressionTestReport,
+    SaveDecisionRunOutcome, SaveDecisionTemplate, SaveKnowledgeSource,
+    UpdateDecisionDriftAutomation, UpdateDecisionDriftEventReview,
+    UpdateDecisionDriftScanWindowReview, UpdateDeviationAnalysisReview, UpdateUser,
     VersionChangeReview, VersionDiffEntry, VersionVerificationReport,
 };
 use crate::state::AppState;
@@ -41,12 +47,38 @@ use crate::state::WorkspaceDraftSnapshot;
 use crate::utils::use_keyboard_shortcut;
 use crate::workflow::{
     Clarification, ClarificationAnswer, DecisionBrief, DecisionField, DecisionPlan,
-    DecisionWorkflowState, MAX_MODEL_CHANGE_REPAIRS, is_repairable_model_change_error,
+    DecisionWorkflowState, MAX_MODEL_CHANGE_REPAIRS, append_orchestration_progress,
+    is_repairable_model_change_error, optimization_proposal_handoff_prompt,
 };
 use web_sys::AbortController;
 
+const DRIFT_AUTOMATION_OPTIONS: &[(&str, &str)] = &[
+    ("FREQUENT_FALLBACK", "频繁回退"),
+    ("HIGH_FAILURE_RATE", "失败率偏高"),
+    ("HIGH_MISMATCH_RATE", "业务偏差率偏高"),
+    ("HIGH_P95_LATENCY", "P95 延迟偏高"),
+    ("INPUT_DISTRIBUTION_DRIFT", "输入分布漂移"),
+    ("INPUT_FIELD_MISSINGNESS_DRIFT", "输入字段缺失率变化"),
+    ("LOW_FEEDBACK_COVERAGE", "反馈覆盖不足"),
+    ("LOW_RULE_COVERAGE", "规则覆盖偏低"),
+    ("NO_RECENT_RUNS", "近期无运行"),
+    ("RULE_FEEDBACK_MISMATCH", "规则反馈不一致"),
+    ("RULE_HIT_DRIFT", "规则命中漂移"),
+];
+
+fn simple_direct_workflow_eligible(workflow: &DecisionWorkflowState) -> bool {
+    workflow.simple_direct_eligible
+}
+
+fn newest_drift_scan_windows(
+    mut windows: Vec<DecisionDriftScanWindow>,
+) -> Vec<DecisionDriftScanWindow> {
+    windows.reverse();
+    windows
+}
+
 // Import from modular components
-use admin::AdminUsersPage;
+use admin::{AdminIntelligencePage, AdminPromptRegistryPage, AdminUsersPage};
 use auth::{AuthExpiryWatcher, LoginPage, RequireAuth, TOKEN_KEY, auth_token};
 use dmn_app::business_tests::{BusinessTestCaseSummary, TestCaseFilter};
 use dmn_app::context::provide_app_context;
@@ -58,14 +90,14 @@ use projects::ProjectManagementPage;
 use workspace::{
     CopyStatus, GenerationMode, MobileModelFocus, ResourceView, RunStatus, WorkspaceView,
     YAML_GRAPH_NODE_HEIGHT, YAML_GRAPH_NODE_WIDTH, YAML_GRAPH_WIDTH, YamlGraphEdge, YamlGraphNode,
-    agent_activity_for_step, apply_result, apply_result_message, escape_html, highlight_code,
-    highlight_json, highlight_value, highlight_xml, highlight_xml_text, highlight_yaml_line,
-    incremental_result_message, indexed, optimization_proposal_actions,
-    optimization_proposal_status_label, public_service_curl, public_service_endpoint,
-    service_input_template, service_sample_value, summary_names, timeline_item_class,
-    timeline_item_text, token_span, workflow_status_label, yaml_get, yaml_graph_edge_anchors,
-    yaml_graph_edge_path, yaml_graph_height, yaml_graph_knowledge_points, yaml_graph_label,
-    yaml_joined_list, yaml_list, yaml_map, yaml_text,
+    agent_activity_for_step, apply_result, apply_result_message, copy_text_to_clipboard,
+    escape_html, highlight_code, highlight_json, highlight_value, highlight_xml,
+    highlight_xml_text, highlight_yaml_line, incremental_result_message, indexed,
+    optimization_proposal_actions, optimization_proposal_status_label, public_service_curl,
+    public_service_endpoint, service_input_template, service_sample_value, summary_names,
+    timeline_item_class, timeline_item_text, token_span, workflow_status_label, yaml_get,
+    yaml_graph_edge_anchors, yaml_graph_edge_path, yaml_graph_height, yaml_graph_knowledge_points,
+    yaml_graph_label, yaml_joined_list, yaml_list, yaml_map, yaml_text,
 };
 
 // Re-export the new modular DmnApp components
@@ -81,7 +113,7 @@ pub(crate) use yaml_artifacts::{ArtifactTabs, yaml_summary};
 
 pub use dmn_app::workflow::{
     ClarificationInput, DecisionBriefView, DecisionPlanView, RequirementAnalysisProgress,
-    WorkflowFieldRow,
+    TesterReportView, WorkflowFieldRow,
 };
 
 // 已提取的组件定义已移至 dmn_app 模块
@@ -161,6 +193,17 @@ fn workspace_view_from_key(value: &str) -> WorkspaceView {
     }
 }
 
+fn workspace_view_storage_key(project_id: i64) -> String {
+    format!("fuxi-dmn:workspace-view:{project_id}")
+}
+
+fn load_workspace_view(project_id: i64) -> WorkspaceView {
+    LocalStorage::get::<String>(&workspace_view_storage_key(project_id))
+        .ok()
+        .map(|key| workspace_view_from_key(&key))
+        .unwrap_or(WorkspaceView::Discovery)
+}
+
 // ==========================================
 // 1. App 根组件: 路由配置
 // ==========================================
@@ -196,6 +239,8 @@ pub fn App() -> impl IntoView {
             <Routes fallback=|| view! { <p>"加载中..."</p> }>
                 <Route path=path!("/") view=move || view! { <RequireAuth><DmnApp /></RequireAuth> } />
                 <Route path=path!("/admin") view=move || view! { <RequireAuth><AdminUsersPage /></RequireAuth> } />
+                <Route path=path!("/admin/intelligence") view=move || view! { <RequireAuth><AdminIntelligencePage /></RequireAuth> } />
+                <Route path=path!("/admin/prompts") view=move || view! { <RequireAuth><AdminPromptRegistryPage /></RequireAuth> } />
                 <Route path=path!("/projects") view=move || view! { <RequireAuth><ProjectManagementPage /></RequireAuth> } />
                 <Route path=path!("/login") view=LoginPage />
             </Routes>
@@ -205,7 +250,10 @@ pub fn App() -> impl IntoView {
 
 fn audit_event_kind(event_type: &str) -> &'static str {
     match event_type {
-        "test_cases.generated" | "test_case.approved" | "test_case.approval_revoked" => "test-case",
+        "test_cases.generated"
+        | "test_case.approved"
+        | "test_case.approval_revoked"
+        | "tester_proposal.converted" => "test-case",
         "version.verified" => "verification",
         "version.published" => "published",
         "version.retired" => "retired",
@@ -226,10 +274,68 @@ fn audit_event_type_label(event_type: &str) -> &'static str {
         "test_cases.generated" => "案例生成",
         "test_case.approved" => "案例批准",
         "test_case.approval_revoked" => "撤销批准",
+        "tester_proposal.converted" => "提案转用例",
         "decision_service.invoked" => "服务调用",
         "project.member_added" => "成员添加",
         "project.member_removed" => "成员移除",
         _ => "其他事件",
+    }
+}
+
+fn orchestration_event_update(event: &SseEvent) -> Option<(String, bool)> {
+    let role_label = |role: &str| match role {
+        "analyst" => "分析师",
+        "facilitator" => "澄清主持人",
+        "architect" => "架构师",
+        "validator" => "校验器",
+        "engineer" => "工程师",
+        "tester" => "测试员",
+        _ => "智能体",
+    };
+    let artifact_label = |kind: &str| match kind {
+        "decision_brief" => "需求卡",
+        "clarification_context" | "clarification_state" => "澄清上下文",
+        "confirmed_decision_plan" | "decision_plan" => "决策方案",
+        "tester_report" => "测试提案",
+        "compiled_dmn_candidate" => "已校验模型候选",
+        _ => "结构化产物",
+    };
+    match event {
+        SseEvent::Stage(payload) => {
+            let name = payload["name"].as_str()?;
+            let label = match name {
+                "analysis" => "需求分析",
+                "facilitator" => "多轮澄清",
+                "architect" => "方案规划",
+                "engineer" => "DSL 工程",
+                _ => return None,
+            };
+            Some((format!("编排阶段：{label}"), false))
+        }
+        SseEvent::Agent(payload) => {
+            let role = role_label(payload["role"].as_str()?);
+            let status = match payload["status"].as_str()? {
+                "running" => "正在运行",
+                "completed" => "已完成",
+                "failed" => "失败",
+                _ => "状态更新",
+            };
+            Some((format!("{role}{status}"), true))
+        }
+        SseEvent::Artifact(payload) => Some((
+            format!("已生成{}", artifact_label(payload["kind"].as_str()?)),
+            true,
+        )),
+        SseEvent::Handoff(payload) => Some((
+            format!(
+                "{} → {}：已交接{}",
+                role_label(payload["fromRole"].as_str()?),
+                role_label(payload["toRole"].as_str()?),
+                artifact_label(payload["artifactKind"].as_str()?),
+            ),
+            true,
+        )),
+        _ => None,
     }
 }
 
@@ -247,6 +353,14 @@ pub fn DmnApp() -> impl IntoView {
         signal(Vec::<KnowledgeCitation>::new());
     let (model_library_filter, set_model_library_filter) = signal("all".to_string());
     let (model_library_query, set_model_library_query) = signal(String::new());
+    let (pattern_recommendations, set_pattern_recommendations) =
+        signal(Vec::<PatternRecommendation>::new());
+    let (pattern_lineage, set_pattern_lineage) = signal(Vec::<PatternLineageItem>::new());
+    let (pattern_lineage_busy, set_pattern_lineage_busy) = signal(false);
+    let (pattern_analytics, set_pattern_analytics) =
+        signal(Option::<PatternLibraryAnalytics>::None);
+    let (pattern_recommendations_busy, set_pattern_recommendations_busy) = signal(false);
+    let (pattern_feedback_busy, set_pattern_feedback_busy) = signal(false);
     let (selected_model_source, set_selected_model_source) = signal(Option::<String>::None);
     let (reuse_project_name, set_reuse_project_name) = signal(String::new());
     let (reuse_confirmed, set_reuse_confirmed) = signal(false);
@@ -265,6 +379,10 @@ pub fn DmnApp() -> impl IntoView {
     let (selected_version_id, set_selected_version_id) = signal(Option::<i64>::None);
     let (selected_version_review, set_selected_version_review) =
         signal(Option::<VersionChangeReview>::None);
+    let (behavior_comparison, set_behavior_comparison) =
+        signal(Option::<BehaviorComparisonReport>::None);
+    let (regression_report, set_regression_report) = signal(Option::<RegressionTestReport>::None);
+    let (regression_loading, set_regression_loading) = signal(false);
     let (review_loading, set_review_loading) = signal(false);
     let (audit_events, set_audit_events) = signal(Vec::<AuditEvent>::new());
     let (project_members, set_project_members) = signal(Vec::<ProjectMember>::new());
@@ -320,10 +438,44 @@ pub fn DmnApp() -> impl IntoView {
     let (analytics_loading, set_analytics_loading) = signal(false);
     let (analytics_error, set_analytics_error) = signal(Option::<String>::None);
     let (analytics_revision, set_analytics_revision) = signal(0_u64);
+    let (analytics_thresholds, set_analytics_thresholds) =
+        signal(crate::models::DecisionAnalyticsThresholds::default());
+    let (analytics_thresholds_loading, set_analytics_thresholds_loading) = signal(false);
+    let (analytics_thresholds_busy, set_analytics_thresholds_busy) = signal(false);
+    let (analytics_thresholds_error, set_analytics_thresholds_error) =
+        signal(Option::<String>::None);
     let (optimization_proposals, set_optimization_proposals) =
         signal(Vec::<DecisionOptimizationProposal>::new());
+    let (drift_events, set_drift_events) = signal(Vec::<DecisionDriftEvent>::new());
+    let (drift_scan_windows, set_drift_scan_windows) =
+        signal(Vec::<DecisionDriftScanWindow>::new());
+    let (deviation_analyses, set_deviation_analyses) = signal(Vec::<DeviationAnalysis>::new());
+    let (drift_impacts, set_drift_impacts) =
+        signal(BTreeMap::<i64, DecisionDriftImpactReport>::new());
+    let (drift_rule, set_drift_rule) = signal(Option::<DecisionDriftAutomationRule>::None);
+    let (drift_rule_enabled, set_drift_rule_enabled) = signal(false);
+    let (drift_rule_codes, set_drift_rule_codes) = signal(Vec::<String>::new());
+    let (drift_rule_cooldown, set_drift_rule_cooldown) = signal("24".to_string());
+    let (drift_webhook_url, set_drift_webhook_url) = signal(String::new());
+    let (drift_rule_busy, set_drift_rule_busy) = signal(false);
+    let (drift_rule_error, set_drift_rule_error) = signal(Option::<String>::None);
+    let (drift_event_busy, set_drift_event_busy) = signal(false);
+    let (drift_impact_busy, set_drift_impact_busy) = signal(None::<i64>);
+    let (drift_event_error, set_drift_event_error) = signal(Option::<String>::None);
     let (proposal_busy, set_proposal_busy) = signal(false);
     let (proposal_error, set_proposal_error) = signal(Option::<String>::None);
+    let (simulation_candidate_version_id, set_simulation_candidate_version_id) =
+        signal(None::<i64>);
+    let (optimization_simulation, set_optimization_simulation) =
+        signal(Option::<OptimizationSimulationReport>::None);
+    let (simulation_busy, set_simulation_busy) = signal(false);
+    let (shadow_evaluations, set_shadow_evaluations) =
+        signal(Vec::<OptimizationAutodraftShadowEvaluation>::new());
+    let (shadow_cursor, set_shadow_cursor) = signal(0_i64);
+    let (shadow_has_more, set_shadow_has_more) = signal(false);
+    let (shadow_busy, set_shadow_busy) = signal(false);
+    let (shadow_error, set_shadow_error) = signal(Option::<String>::None);
+    let (shadow_request_generation, set_shadow_request_generation) = signal(0_u64);
     let (service_busy, set_service_busy) = signal(false);
     let (service_error, set_service_error) = signal(Option::<String>::None);
     let (outcome_run_id, set_outcome_run_id) = signal(Option::<i64>::None);
@@ -336,12 +488,24 @@ pub fn DmnApp() -> impl IntoView {
     let (decision_workflow, set_decision_workflow) = signal(Option::<DecisionWorkflowState>::None);
     let (workflow_busy, set_workflow_busy) = signal(false);
     let (workflow_analyzing, set_workflow_analyzing) = signal(false);
+    let (workflow_facilitating, set_workflow_facilitating) = signal(false);
+    let (workflow_controller, set_workflow_controller) = signal(Option::<AbortController>::None);
+    let (workflow_orchestration_id, set_workflow_orchestration_id) = signal(None::<i64>);
+    let (workflow_orchestration_stage, set_workflow_orchestration_stage) = signal(0usize);
+    let (workflow_orchestration_events, set_workflow_orchestration_events) =
+        signal(Vec::<String>::new());
     let (workflow_planning, set_workflow_planning) = signal(false);
     let (workflow_confirming, set_workflow_confirming) = signal(false);
     let (workflow_error, set_workflow_error) = signal(Option::<String>::None);
+    let (engineer_retry_id, set_engineer_retry_id) = signal(Option::<i64>::None);
+    let (workflow_retry_id, set_workflow_retry_id) = signal(Option::<i64>::None);
+    let (plan_retry_id, set_plan_retry_id) = signal(Option::<i64>::None);
+    let (facilitator_retry_id, set_facilitator_retry_id) = signal(Option::<i64>::None);
     let (clarification_answers, set_clarification_answers) =
         signal(BTreeMap::<String, String>::new());
     let (prompt, set_prompt) = signal(String::new());
+    let (requirement_importing, set_requirement_importing) = signal(false);
+    let (requirement_import_error, set_requirement_import_error) = signal(None::<String>);
     let (messages, set_messages) = signal(Vec::<ChatMessage>::new());
     let (steps, set_steps) = signal(Vec::<String>::new());
     let (assistant_delta, set_assistant_delta) = signal(String::new());
@@ -354,6 +518,7 @@ pub fn DmnApp() -> impl IntoView {
     let (status, set_status) = signal(RunStatus::Idle);
     let (generation_mode, set_generation_mode) = signal(GenerationMode::Create);
     let (controller, set_controller) = signal(Option::<AbortController>::None);
+    let (active_orchestration_id, set_active_orchestration_id) = signal(None::<i64>);
     let (workspace_view, set_workspace_view) = signal(WorkspaceView::Discovery);
     let (prompt_checkpoint, set_prompt_checkpoint) = signal(String::new());
     let (draft_to_restore, set_draft_to_restore) = signal(Option::<WorkspaceDraftSnapshot>::None);
@@ -453,7 +618,43 @@ pub fn DmnApp() -> impl IntoView {
                     && member.role == "modeler"
             })
     });
+    let can_review = Signal::derive(move || {
+        let Some(project) = current_project.get() else {
+            return false;
+        };
+        user_role.get() == "admin"
+            || project_members.get().iter().any(|member| {
+                member.project_id == project.id
+                    && member.username == user_id.get()
+                    && member.role == "reviewer"
+            })
+    });
+    let can_manage_service = Signal::derive(move || {
+        let Some(project) = current_project.get() else {
+            return false;
+        };
+        let username = user_id.get();
+        user_role.get() == "admin"
+            || project.owner_username == username
+            || project_members.get().iter().any(|member| {
+                member.project_id == project.id
+                    && member.username == username
+                    && member.role.eq_ignore_ascii_case("approver")
+            })
+    });
     let app_state = expect_context::<AppState>();
+    Effect::new(move |_| {
+        if project_busy.get() {
+            return;
+        }
+        let (Some(project), view) = (current_project.get(), workspace_view.get()) else {
+            return;
+        };
+        let _ = LocalStorage::set(
+            workspace_view_storage_key(project.id),
+            workspace_view_key(view),
+        );
+    });
     let cleanup_app_state = app_state.clone();
     on_cleanup(move || cleanup_app_state.ui.workspace_dirty.set(false));
     let dirty_app_state = app_state.clone();
@@ -671,6 +872,7 @@ pub fn DmnApp() -> impl IntoView {
                         .cloned()
                         .or_else(|| items.first().cloned());
                     if let Some(project) = project {
+                        set_workspace_view.set(load_workspace_view(project.id));
                         match api::get_project_workspace(&token_value, project.id).await {
                             Ok(workspace) => {
                                 load_app_state.set_active_project(Some(project.id));
@@ -755,8 +957,6 @@ pub fn DmnApp() -> impl IntoView {
                                             .unwrap_or_default();
                                         set_prompt_checkpoint.set(prompt_value.clone());
                                         set_prompt.set(prompt_value);
-                                        // 新增模型必须从需求与方案页的确认方案入口触发。
-                                        set_workspace_view.set(WorkspaceView::Discovery);
                                         set_decision_workflow.set(workflow);
                                     }
                                     Err(message) => {
@@ -942,18 +1142,148 @@ pub fn DmnApp() -> impl IntoView {
     });
 
     Effect::new(move |_| {
-        let _ = analytics_revision.get();
         let (Some(token_value), Some(project)) = (token.get(), current_project.get()) else {
-            set_optimization_proposals.set(Vec::new());
-            set_proposal_error.set(None);
+            set_analytics_thresholds.set(crate::models::DecisionAnalyticsThresholds::default());
+            set_analytics_thresholds_loading.set(false);
+            set_analytics_thresholds_error.set(None);
             return;
         };
+        set_analytics_thresholds_loading.set(true);
+        spawn_local(async move {
+            match api::get_decision_analytics_thresholds(&token_value, project.id).await {
+                Ok(thresholds)
+                    if current_project
+                        .get_untracked()
+                        .is_some_and(|current| current.id == project.id) =>
+                {
+                    set_analytics_thresholds.set(thresholds);
+                    set_analytics_thresholds_error.set(None);
+                }
+                Ok(_) => {}
+                Err(message)
+                    if current_project
+                        .get_untracked()
+                        .is_some_and(|current| current.id == project.id) =>
+                {
+                    set_analytics_thresholds_error.set(Some(message));
+                }
+                Err(_) => {}
+            }
+            if current_project
+                .get_untracked()
+                .is_some_and(|current| current.id == project.id)
+            {
+                set_analytics_thresholds_loading.set(false);
+            }
+        });
+    });
+
+    Effect::new(move |_| {
+        let _ = analytics_revision.get();
+        set_shadow_request_generation.update(|generation| {
+            *generation = generation.wrapping_add(1);
+        });
+        let request_generation = shadow_request_generation.get_untracked();
+        let (Some(token_value), Some(project)) = (token.get(), current_project.get()) else {
+            set_shadow_evaluations.set(Vec::new());
+            set_shadow_cursor.set(0);
+            set_shadow_has_more.set(false);
+            set_shadow_busy.set(false);
+            set_shadow_error.set(None);
+            set_optimization_proposals.set(Vec::new());
+            set_drift_events.set(Vec::new());
+            set_drift_scan_windows.set(Vec::new());
+            set_deviation_analyses.set(Vec::new());
+            set_drift_impacts.set(BTreeMap::new());
+            set_drift_rule.set(None);
+            set_proposal_error.set(None);
+            set_drift_event_error.set(None);
+            set_drift_rule_error.set(None);
+            set_simulation_candidate_version_id.set(None);
+            set_optimization_simulation.set(None);
+            return;
+        };
+        set_simulation_candidate_version_id.set(None);
+        set_optimization_simulation.set(None);
+        set_shadow_evaluations.set(Vec::new());
+        set_shadow_cursor.set(0);
+        set_shadow_has_more.set(false);
+        set_shadow_busy.set(false);
+        set_shadow_error.set(None);
         if project.published_version_id.is_none() {
             set_optimization_proposals.set(Vec::new());
+            set_drift_events.set(Vec::new());
+            set_drift_scan_windows.set(Vec::new());
+            set_deviation_analyses.set(Vec::new());
+            set_drift_impacts.set(BTreeMap::new());
+            set_drift_rule.set(None);
             set_proposal_error.set(None);
+            set_drift_event_error.set(None);
+            set_drift_rule_error.set(None);
             return;
         }
+        set_shadow_busy.set(true);
         spawn_local(async move {
+            match api::list_optimization_shadow_evaluations(&token_value, project.id, 0, 100).await
+            {
+                Ok(page)
+                    if current_project
+                        .get_untracked()
+                        .is_some_and(|current| current.id == project.id)
+                        && shadow_request_generation.get_untracked() == request_generation =>
+                {
+                    set_shadow_cursor.set(page.last().map(|item| item.id).unwrap_or_default());
+                    set_shadow_has_more.set(page.len() == 100);
+                    set_shadow_evaluations.set(page);
+                }
+                Ok(_) => {}
+                Err(message)
+                    if current_project
+                        .get_untracked()
+                        .is_some_and(|current| current.id == project.id)
+                        && shadow_request_generation.get_untracked() == request_generation =>
+                {
+                    set_shadow_error.set(Some(message));
+                }
+                Err(_) => {}
+            }
+            if shadow_request_generation.get_untracked() == request_generation {
+                set_shadow_busy.set(false);
+            }
+            match api::get_drift_automation_rule(&token_value, project.id).await {
+                Ok(rule)
+                    if current_project
+                        .get_untracked()
+                        .is_some_and(|current| current.id == project.id) =>
+                {
+                    set_drift_rule_enabled.set(rule.as_ref().is_some_and(|rule| rule.enabled));
+                    set_drift_rule_codes.set(
+                        rule.as_ref()
+                            .map(|rule| rule.finding_codes.clone())
+                            .unwrap_or_default(),
+                    );
+                    set_drift_rule_cooldown.set(
+                        rule.as_ref()
+                            .map(|rule| rule.cooldown_hours.to_string())
+                            .unwrap_or_else(|| "24".into()),
+                    );
+                    set_drift_webhook_url.set(
+                        rule.as_ref()
+                            .and_then(|rule| rule.webhook_url.clone())
+                            .unwrap_or_default(),
+                    );
+                    set_drift_rule.set(rule);
+                }
+                Ok(_) => {}
+                Err(message)
+                    if current_project
+                        .get_untracked()
+                        .is_some_and(|current| current.id == project.id) =>
+                {
+                    set_drift_rule_error.set(Some(message));
+                }
+                Err(_) => {}
+            }
             match api::list_optimization_proposals(&token_value, project.id).await {
                 Ok(proposals)
                     if current_project
@@ -969,6 +1299,60 @@ pub fn DmnApp() -> impl IntoView {
                         .is_some_and(|current| current.id == project.id) =>
                 {
                     set_proposal_error.set(Some(message));
+                }
+                Err(_) => {}
+            }
+            match api::list_drift_events(&token_value, project.id).await {
+                Ok(events)
+                    if current_project
+                        .get_untracked()
+                        .is_some_and(|current| current.id == project.id) =>
+                {
+                    set_drift_events.set(events);
+                }
+                Ok(_) => {}
+                Err(message)
+                    if current_project
+                        .get_untracked()
+                        .is_some_and(|current| current.id == project.id) =>
+                {
+                    set_drift_event_error.set(Some(message));
+                }
+                Err(_) => {}
+            }
+            match api::list_drift_scan_windows(&token_value, project.id).await {
+                Ok(windows)
+                    if current_project
+                        .get_untracked()
+                        .is_some_and(|current| current.id == project.id) =>
+                {
+                    set_drift_scan_windows.set(windows);
+                }
+                Ok(_) => {}
+                Err(message)
+                    if current_project
+                        .get_untracked()
+                        .is_some_and(|current| current.id == project.id) =>
+                {
+                    set_drift_event_error.set(Some(message));
+                }
+                Err(_) => {}
+            }
+            match api::list_deviation_analyses(&token_value, project.id).await {
+                Ok(analyses)
+                    if current_project
+                        .get_untracked()
+                        .is_some_and(|current| current.id == project.id) =>
+                {
+                    set_deviation_analyses.set(analyses);
+                }
+                Ok(_) => {}
+                Err(message)
+                    if current_project
+                        .get_untracked()
+                        .is_some_and(|current| current.id == project.id) =>
+                {
+                    set_drift_event_error.set(Some(message));
                 }
                 Err(_) => {}
             }
@@ -1094,10 +1478,25 @@ pub fn DmnApp() -> impl IntoView {
         spawn_local(async move {
             match api::generate_optimization_proposals(&token_value, project.id).await {
                 Ok(proposals) => {
+                    let pending_count = proposals
+                        .iter()
+                        .filter(|proposal| proposal.status == "open")
+                        .count();
+                    let proposal_count = proposals.len();
                     set_optimization_proposals.set(proposals);
-                    set_version_save_status.set(Some(
-                        "已基于当前发布版本生成可追溯优化建议，需人工确认后才会创建草稿".into(),
-                    ));
+                    if pending_count > 0 {
+                        set_version_save_status.set(Some(format!(
+                            "已生成 {pending_count} 条待确认优化建议，确认操作位于下方建议列表"
+                        )));
+                        scroll_to_workflow_anchor("optimization-proposals");
+                    } else if proposal_count == 0 {
+                        set_version_save_status
+                            .set(Some("当前发布版本未发现需要人工确认的优化建议".into()));
+                    } else {
+                        set_version_save_status.set(Some(
+                            "当前没有待确认优化建议，已有建议均已处理或撤回".into(),
+                        ));
+                    }
                     set_analytics_revision.update(|revision| *revision += 1);
                     set_audit_revision.update(|revision| *revision += 1);
                 }
@@ -1106,6 +1505,534 @@ pub fn DmnApp() -> impl IntoView {
             set_proposal_busy.set(false);
         });
     };
+
+    let save_analytics_thresholds = move |_| {
+        let (Some(token_value), Some(project)) = (token.get(), current_project.get()) else {
+            return;
+        };
+        if analytics_thresholds_busy.get() {
+            return;
+        }
+        let thresholds = analytics_thresholds.get();
+        set_analytics_thresholds_busy.set(true);
+        set_analytics_thresholds_error.set(None);
+        spawn_local(async move {
+            match api::update_decision_analytics_thresholds(&token_value, project.id, &thresholds)
+                .await
+            {
+                Ok(saved)
+                    if current_project
+                        .get_untracked()
+                        .is_some_and(|current| current.id == project.id) =>
+                {
+                    set_analytics_thresholds.set(saved);
+                    set_analytics_revision.update(|revision| *revision += 1);
+                    set_audit_revision.update(|revision| *revision += 1);
+                }
+                Ok(_) => {}
+                Err(message)
+                    if current_project
+                        .get_untracked()
+                        .is_some_and(|current| current.id == project.id) =>
+                {
+                    set_analytics_thresholds_error.set(Some(message));
+                }
+                Err(_) => {}
+            }
+            if current_project
+                .get_untracked()
+                .is_some_and(|current| current.id == project.id)
+            {
+                set_analytics_thresholds_busy.set(false);
+            }
+        });
+    };
+
+    let prepare_drift_event_proposals = Callback::new(move |event_id: i64| {
+        let (Some(token_value), Some(project)) = (token.get(), current_project.get()) else {
+            return;
+        };
+        if drift_event_busy.get() {
+            return;
+        }
+        set_drift_event_busy.set(true);
+        set_drift_event_error.set(None);
+        spawn_local(async move {
+            match api::prepare_drift_event_proposals(&token_value, project.id, event_id).await {
+                Ok(result)
+                    if current_project
+                        .get_untracked()
+                        .is_some_and(|current| current.id == project.id) =>
+                {
+                    set_drift_events.update(|events| {
+                        if let Some(event) = events.iter_mut().find(|event| event.id == event_id) {
+                            event.status = result.status.clone();
+                            event.action_result = Some(serde_json::json!({
+                                "proposalIds": result.proposal_ids.clone()
+                            }));
+                        }
+                    });
+                    set_version_save_status.set(Some(format!(
+                        "漂移事件已生成 {} 条待确认提案；请继续模拟并人工确认",
+                        result.proposal_ids.len()
+                    )));
+                    set_analytics_revision.update(|revision| *revision += 1);
+                    set_audit_revision.update(|revision| *revision += 1);
+                }
+                Ok(_) => {}
+                Err(message) => set_drift_event_error.set(Some(message)),
+            }
+            set_drift_event_busy.set(false);
+        });
+    });
+
+    let load_drift_event_impact = Callback::new(move |event_id: i64| {
+        let (Some(token_value), Some(project)) = (token.get(), current_project.get()) else {
+            return;
+        };
+        if drift_impact_busy.get().is_some() {
+            return;
+        }
+        set_drift_impact_busy.set(Some(event_id));
+        set_drift_event_error.set(None);
+        spawn_local(async move {
+            match api::get_drift_event_impact(&token_value, project.id, event_id).await {
+                Ok(report)
+                    if current_project
+                        .get_untracked()
+                        .is_some_and(|current| current.id == project.id) =>
+                {
+                    set_drift_impacts.update(|reports| {
+                        reports.insert(event_id, report);
+                    });
+                }
+                Ok(_) => {}
+                Err(message)
+                    if current_project
+                        .get_untracked()
+                        .is_some_and(|current| current.id == project.id) =>
+                {
+                    set_drift_event_error.set(Some(message));
+                }
+                Err(_) => {}
+            }
+            set_drift_impact_busy.set(None);
+        });
+    });
+
+    let save_drift_automation_rule = move |_| {
+        let (Some(token_value), Some(project)) = (token.get(), current_project.get()) else {
+            return;
+        };
+        if drift_rule_busy.get() || !can_model.get() {
+            return;
+        }
+        let Ok(cooldown_hours) = drift_rule_cooldown.get().parse::<i32>() else {
+            set_drift_rule_error.set(Some("冷却时间必须是 1 到 720 之间的整数".into()));
+            return;
+        };
+        let payload = UpdateDecisionDriftAutomation {
+            enabled: drift_rule_enabled.get(),
+            finding_codes: drift_rule_codes.get(),
+            cooldown_hours,
+            webhook_url: Some(drift_webhook_url.get()),
+        };
+        set_drift_rule_busy.set(true);
+        set_drift_rule_error.set(None);
+        spawn_local(async move {
+            match api::update_drift_automation_rule(&token_value, project.id, &payload).await {
+                Ok(rule)
+                    if current_project
+                        .get_untracked()
+                        .is_some_and(|current| current.id == project.id) =>
+                {
+                    set_drift_rule_enabled.set(rule.enabled);
+                    set_drift_rule_codes.set(rule.finding_codes.clone());
+                    set_drift_rule_cooldown.set(rule.cooldown_hours.to_string());
+                    set_drift_webhook_url.set(rule.webhook_url.clone().unwrap_or_default());
+                    set_drift_rule.set(Some(rule));
+                    set_version_save_status.set(Some("漂移扫描规则已保存".into()));
+                    set_audit_revision.update(|revision| *revision += 1);
+                }
+                Ok(_) => {}
+                Err(message) => set_drift_rule_error.set(Some(message)),
+            }
+            set_drift_rule_busy.set(false);
+        });
+    };
+
+    let dismiss_drift_event = Callback::new(move |event_id: i64| {
+        let (Some(token_value), Some(project)) = (token.get(), current_project.get()) else {
+            return;
+        };
+        if drift_event_busy.get() || !can_model.get() {
+            return;
+        }
+        set_drift_event_busy.set(true);
+        set_drift_event_error.set(None);
+        spawn_local(async move {
+            match api::dismiss_drift_event(&token_value, project.id, event_id).await {
+                Ok(result)
+                    if current_project
+                        .get_untracked()
+                        .is_some_and(|current| current.id == project.id) =>
+                {
+                    set_drift_events.update(|events| {
+                        if let Some(event) = events.iter_mut().find(|event| event.id == event_id) {
+                            event.status = result.status.clone();
+                            event.action_result = Some(serde_json::json!({"action": "dismissed"}));
+                        }
+                    });
+                    set_version_save_status.set(Some("漂移事件已忽略并记录审计".into()));
+                    set_audit_revision.update(|revision| *revision += 1);
+                }
+                Ok(_) => {}
+                Err(message) => set_drift_event_error.set(Some(message)),
+            }
+            set_drift_event_busy.set(false);
+        });
+    });
+
+    let review_drift_event = Callback::new(move |(event_id, review_label): (i64, String)| {
+        let (Some(token_value), Some(project)) = (token.get(), current_project.get()) else {
+            return;
+        };
+        if drift_event_busy.get() || !can_model.get() {
+            return;
+        }
+        let payload = UpdateDecisionDriftEventReview { review_label };
+        set_drift_event_busy.set(true);
+        set_drift_event_error.set(None);
+        spawn_local(async move {
+            match api::review_drift_event(&token_value, project.id, event_id, &payload).await {
+                Ok(review)
+                    if current_project
+                        .get_untracked()
+                        .is_some_and(|current| current.id == project.id) =>
+                {
+                    set_drift_events.update(|events| {
+                        if let Some(event) = events.iter_mut().find(|event| event.id == event_id) {
+                            event.review_label = Some(review.review_label);
+                            event.reviewed_by = Some(review.reviewed_by);
+                            event.reviewed_at = Some(review.reviewed_at);
+                        }
+                    });
+                    set_version_save_status.set(Some("漂移事件人工判定已保存并记录审计".into()));
+                    set_audit_revision.update(|revision| *revision += 1);
+                }
+                Ok(_) => {}
+                Err(message) => set_drift_event_error.set(Some(message)),
+            }
+            set_drift_event_busy.set(false);
+        });
+    });
+
+    let review_drift_scan_window =
+        Callback::new(move |(window_id, review_label): (i64, String)| {
+            let (Some(token_value), Some(project)) = (token.get(), current_project.get()) else {
+                return;
+            };
+            if drift_event_busy.get() || !can_model.get() {
+                return;
+            }
+            let payload = UpdateDecisionDriftScanWindowReview { review_label };
+            set_drift_event_busy.set(true);
+            set_drift_event_error.set(None);
+            spawn_local(async move {
+                match api::review_drift_scan_window(&token_value, project.id, window_id, &payload)
+                    .await
+                {
+                    Ok(review)
+                        if current_project
+                            .get_untracked()
+                            .is_some_and(|current| current.id == project.id) =>
+                    {
+                        set_drift_scan_windows.update(|windows| {
+                            if let Some(window) =
+                                windows.iter_mut().find(|window| window.id == window_id)
+                            {
+                                window.review_label = Some(review.review_label);
+                                window.reviewed_by = Some(review.reviewed_by);
+                                window.reviewed_at = Some(review.reviewed_at);
+                            }
+                        });
+                        set_version_save_status
+                            .set(Some("漂移扫描窗口人工判定已保存并记录审计".into()));
+                        set_audit_revision.update(|revision| *revision += 1);
+                    }
+                    Ok(_) => {}
+                    Err(message) => set_drift_event_error.set(Some(message)),
+                }
+                set_drift_event_busy.set(false);
+            });
+        });
+
+    let review_deviation_analysis =
+        Callback::new(move |(analysis_id, review_label): (i64, String)| {
+            let (Some(token_value), Some(project)) = (token.get(), current_project.get()) else {
+                return;
+            };
+            if drift_event_busy.get() || !can_model.get() {
+                return;
+            }
+            let payload = UpdateDeviationAnalysisReview { review_label };
+            set_drift_event_busy.set(true);
+            set_drift_event_error.set(None);
+            spawn_local(async move {
+                match api::review_deviation_analysis(
+                    &token_value,
+                    project.id,
+                    analysis_id,
+                    &payload,
+                )
+                .await
+                {
+                    Ok(review)
+                        if current_project
+                            .get_untracked()
+                            .is_some_and(|current| current.id == project.id) =>
+                    {
+                        set_deviation_analyses.update(|analyses| {
+                            if let Some(analysis) =
+                                analyses.iter_mut().find(|item| item.id == analysis_id)
+                            {
+                                analysis.review_label = Some(review.review_label);
+                                analysis.reviewed_by = Some(review.reviewed_by);
+                                analysis.reviewed_at = Some(review.reviewed_at);
+                            }
+                        });
+                        set_version_save_status
+                            .set(Some("偏差归因人工判定已保存并记录审计".into()));
+                        set_audit_revision.update(|revision| *revision += 1);
+                    }
+                    Ok(_) => {}
+                    Err(message) => set_drift_event_error.set(Some(message)),
+                }
+                set_drift_event_busy.set(false);
+            });
+        });
+
+    let retry_drift_webhook = Callback::new(move |event_id: i64| {
+        let (Some(token_value), Some(project)) = (token.get(), current_project.get()) else {
+            return;
+        };
+        if drift_event_busy.get() || !can_model.get() {
+            return;
+        }
+        set_drift_event_busy.set(true);
+        set_drift_event_error.set(None);
+        spawn_local(async move {
+            match api::retry_drift_webhook_delivery(&token_value, project.id, event_id).await {
+                Ok(_)
+                    if current_project
+                        .get_untracked()
+                        .is_some_and(|current| current.id == project.id) =>
+                {
+                    set_drift_events.update(|events| {
+                        if let Some(event) = events.iter_mut().find(|event| event.id == event_id) {
+                            event.webhook_delivery =
+                                Some(serde_json::json!({ "status": "pending", "attemptCount": 0 }));
+                        }
+                    });
+                    set_version_save_status.set(Some("漂移通知已重新加入投递队列".into()));
+                    set_audit_revision.update(|revision| *revision += 1);
+                }
+                Ok(_) => {}
+                Err(message) => set_drift_event_error.set(Some(message)),
+            }
+            set_drift_event_busy.set(false);
+        });
+    });
+
+    let load_more_shadow_evaluations = Callback::new(move |_| {
+        let (Some(token_value), Some(project)) = (token.get(), current_project.get()) else {
+            return;
+        };
+        if shadow_busy.get() || !shadow_has_more.get() {
+            return;
+        }
+        let after_id = shadow_cursor.get();
+        set_shadow_request_generation.update(|generation| {
+            *generation = generation.wrapping_add(1);
+        });
+        let request_generation = shadow_request_generation.get_untracked();
+        set_shadow_busy.set(true);
+        set_shadow_error.set(None);
+        spawn_local(async move {
+            match api::list_optimization_shadow_evaluations(&token_value, project.id, after_id, 100)
+                .await
+            {
+                Ok(page)
+                    if current_project
+                        .get_untracked()
+                        .is_some_and(|current| current.id == project.id)
+                        && shadow_request_generation.get_untracked() == request_generation =>
+                {
+                    set_shadow_cursor.set(page.last().map(|item| item.id).unwrap_or(after_id));
+                    set_shadow_has_more.set(page.len() == 100);
+                    set_shadow_evaluations.update(|items| items.extend(page));
+                }
+                Ok(_) => {}
+                Err(message)
+                    if current_project
+                        .get_untracked()
+                        .is_some_and(|current| current.id == project.id)
+                        && shadow_request_generation.get_untracked() == request_generation =>
+                {
+                    set_shadow_error.set(Some(message));
+                }
+                Err(_) => {}
+            }
+            if current_project
+                .get_untracked()
+                .is_some_and(|current| current.id == project.id)
+                && shadow_request_generation.get_untracked() == request_generation
+            {
+                set_shadow_busy.set(false);
+            }
+        });
+    });
+
+    let simulate_optimization = Callback::new(move |proposal_id: i64| {
+        let (Some(token_value), Some(project), Some(candidate_version_id)) = (
+            token.get(),
+            current_project.get(),
+            simulation_candidate_version_id.get(),
+        ) else {
+            set_proposal_error.set(Some("请先选择候选版本再运行效果模拟".into()));
+            return;
+        };
+        if simulation_busy.get() {
+            return;
+        }
+        set_simulation_busy.set(true);
+        set_proposal_error.set(None);
+        set_optimization_simulation.set(None);
+        spawn_local(async move {
+            match api::simulate_optimization_proposal(
+                &token_value,
+                project.id,
+                proposal_id,
+                candidate_version_id,
+            )
+            .await
+            {
+                Ok(report)
+                    if current_project
+                        .get_untracked()
+                        .is_some_and(|current| current.id == project.id) =>
+                {
+                    if report.proposal_withdrawn {
+                        let resolution_note = report.estimated_business_impact.clone();
+                        set_optimization_proposals.update(|proposals| {
+                            if let Some(proposal) =
+                                proposals.iter_mut().find(|item| item.id == proposal_id)
+                            {
+                                proposal.status = "withdrawn".into();
+                                proposal.resolution_note = resolution_note;
+                            }
+                        });
+                    }
+                    set_optimization_proposals.update(|proposals| {
+                        if let Some(proposal) =
+                            proposals.iter_mut().find(|item| item.id == proposal_id)
+                        {
+                            proposal.latest_simulation_passed = report.passed;
+                        }
+                    });
+                    if let Some(created_version_id) = report.autodraft_created_version_id {
+                        match api::get_project_workspace(&token_value, project.id).await {
+                            Ok(workspace)
+                                if workspace.version.as_ref().map(|version| version.id)
+                                    == Some(created_version_id)
+                                    && current_project
+                                        .get_untracked()
+                                        .is_some_and(|current| current.id == project.id) =>
+                            {
+                                let version = workspace.version.clone();
+                                set_current_project.set(Some(workspace.project));
+                                set_current_version.set(version);
+                                set_dsl.set(workspace.dsl_yaml.clone());
+                                set_source_dsl.set(workspace.dsl_yaml.unwrap_or_default());
+                                set_source_dsl_checkpoint.set(source_dsl.get_untracked());
+                                set_xml.set(workspace.dmn_xml);
+                                set_generation_mode.set(GenerationMode::Modify);
+                                set_pending_review.set(None);
+                                set_review_confirmed.set(false);
+                                set_verification_report.set(None);
+                                set_publish_confirmed.set(false);
+                                set_workspace_view.set(WorkspaceView::Model);
+                                set_test_case_load_revision.update(|revision| *revision += 1);
+                                set_version_save_status.set(Some(
+                                    "自动草稿已创建：请完成业务验收、独立复核和人工发布".into(),
+                                ));
+                                match api::list_project_versions(&token_value, project.id).await {
+                                    Ok(versions) => set_versions.set(versions),
+                                    Err(message) => set_project_error.set(Some(message)),
+                                }
+                                match api::list_optimization_proposals(&token_value, project.id)
+                                    .await
+                                {
+                                    Ok(proposals) => set_optimization_proposals.set(proposals),
+                                    Err(message) => set_proposal_error.set(Some(message)),
+                                }
+                                set_analytics_revision.update(|revision| *revision += 1);
+                                set_audit_revision.update(|revision| *revision += 1);
+                            }
+                            Ok(_) => {}
+                            Err(message) => set_project_error.set(Some(message)),
+                        }
+                    }
+                    set_optimization_simulation.set(Some(report));
+                    set_shadow_evaluations.set(Vec::new());
+                    set_shadow_cursor.set(0);
+                    set_shadow_request_generation.update(|generation| {
+                        *generation = generation.wrapping_add(1);
+                    });
+                    let request_generation = shadow_request_generation.get_untracked();
+                    set_shadow_busy.set(true);
+                    match api::list_optimization_shadow_evaluations(
+                        &token_value,
+                        project.id,
+                        0,
+                        100,
+                    )
+                    .await
+                    {
+                        Ok(page)
+                            if current_project
+                                .get_untracked()
+                                .is_some_and(|current| current.id == project.id)
+                                && shadow_request_generation.get_untracked()
+                                    == request_generation =>
+                        {
+                            set_shadow_cursor
+                                .set(page.last().map(|item| item.id).unwrap_or_default());
+                            set_shadow_has_more.set(page.len() == 100);
+                            set_shadow_evaluations.set(page);
+                        }
+                        Ok(_) => {}
+                        Err(message)
+                            if current_project
+                                .get_untracked()
+                                .is_some_and(|current| current.id == project.id)
+                                && shadow_request_generation.get_untracked()
+                                    == request_generation =>
+                        {
+                            set_shadow_error.set(Some(message));
+                        }
+                        Err(_) => {}
+                    }
+                    if shadow_request_generation.get_untracked() == request_generation {
+                        set_shadow_busy.set(false);
+                    }
+                }
+                Ok(_) => {}
+                Err(message) => set_proposal_error.set(Some(message)),
+            }
+            set_simulation_busy.set(false);
+        });
+    });
 
     let dismiss_optimization_proposal = move |proposal_id: i64| {
         let (Some(token_value), Some(project)) = (token.get(), current_project.get()) else {
@@ -1202,10 +2129,13 @@ pub fn DmnApp() -> impl IntoView {
             ));
             return;
         }
-        if let Err(message) = workflow.generation_prompt(base_revision) {
-            set_workspace_view.set(WorkspaceView::Discovery);
-            set_workflow_error.set(Some(message));
-            return;
+        let simple_direct = simple_direct_workflow_eligible(&workflow);
+        if !simple_direct {
+            if let Err(message) = workflow.generation_prompt(base_revision) {
+                set_workspace_view.set(WorkspaceView::Discovery);
+                set_workflow_error.set(Some(message));
+                return;
+            }
         }
         let workflow_updated_at = workflow.updated_at;
         set_generation_mode.set(mode);
@@ -1232,6 +2162,9 @@ pub fn DmnApp() -> impl IntoView {
             set_error.set(Some("请先创建或选择一个决策项目".to_string()));
             return;
         };
+        let retry_of_orchestration_id = engineer_retry_id.get();
+        set_engineer_retry_id.set(None);
+        set_active_orchestration_id.set(None);
         if mode == GenerationMode::Modify {
             let Some(base) = current_version.get() else {
                 set_error.set(Some("当前没有可修改的草稿版本".into()));
@@ -1281,6 +2214,8 @@ pub fn DmnApp() -> impl IntoView {
             let set_workspace_view = set_workspace_view;
             let set_controller = set_controller;
             let set_status = set_status;
+            let set_engineer_retry_id = set_engineer_retry_id;
+            let set_active_orchestration_id = set_active_orchestration_id;
             spawn_local(async move {
                 let change_request = "根据已确认的变更方案生成模型变更".to_string();
                 let mut repair_attempt = 0;
@@ -1288,6 +2223,8 @@ pub fn DmnApp() -> impl IntoView {
                 let mut previous_intent: Option<ModelChangeIntent> = None;
                 let result = loop {
                     let mut generated_intent = None;
+                    let mut current_orchestration_id = None;
+                    let mut stream_error = None;
                     let intent_stream_result = api::generate_change_intent_stream(
                         &token_value,
                         project_id,
@@ -1297,6 +2234,7 @@ pub fn DmnApp() -> impl IntoView {
                         repair_error.clone(),
                         repair_attempt,
                         previous_intent.clone(),
+                        retry_of_orchestration_id,
                         controller_value.clone(),
                         |event| match event {
                             SseEvent::Step(message) => {
@@ -1304,7 +2242,28 @@ pub fn DmnApp() -> impl IntoView {
                                 set_steps.update(|items| items.push(message));
                             }
                             SseEvent::ChangeIntent(intent) => generated_intent = Some(intent),
+                            SseEvent::Orchestration(id) => {
+                                current_orchestration_id = Some(id);
+                                set_active_orchestration_id.set(Some(id));
+                            }
                             SseEvent::Error(message) => {
+                                set_engineer_retry_id.set(None);
+                                stream_error = Some(message.clone());
+                                set_steps.update(|items| {
+                                    items.push(format!("⚠ 变更意图生成失败：{message}"))
+                                });
+                                set_agent_activity.set("变更意图生成失败".into());
+                            }
+                            SseEvent::RetryableFailure { message, retryable } => {
+                                stream_error = Some(message.clone());
+                                let retry_root = retry_of_orchestration_id
+                                    .or(current_orchestration_id)
+                                    .filter(|id| *id > 0);
+                                set_engineer_retry_id.set(if retryable {
+                                    retry_root
+                                } else {
+                                    None
+                                });
                                 set_steps.update(|items| {
                                     items.push(format!("⚠ 变更意图生成失败：{message}"))
                                 });
@@ -1314,11 +2273,24 @@ pub fn DmnApp() -> impl IntoView {
                             | SseEvent::Preview(_)
                             | SseEvent::Result(_)
                             | SseEvent::WorkflowResult(_) => {}
+                            event @ (SseEvent::Agent(_)
+                            | SseEvent::Artifact(_)
+                            | SseEvent::Handoff(_)
+                            | SseEvent::Stage(_)) => {
+                                if let Some((message, record)) = orchestration_event_update(&event)
+                                {
+                                    set_agent_activity.set(message.clone());
+                                    if record {
+                                        set_steps.update(|items| items.push(message));
+                                    }
+                                }
+                            }
                         },
                     )
                     .await;
                     if controller_value.signal().aborted() {
                         set_controller.set(None);
+                        set_active_orchestration_id.set(None);
                         set_status.set(RunStatus::Aborted);
                         return;
                     }
@@ -1327,7 +2299,11 @@ pub fn DmnApp() -> impl IntoView {
                     }
                     let intent = match generated_intent {
                         Some(intent) => intent,
-                        None => break Err("变更意图流未返回有效结果".into()),
+                        None => {
+                            break Err(
+                                stream_error.unwrap_or_else(|| "变更意图流未返回有效结果".into())
+                            );
+                        }
                     };
                     set_steps
                         .update(|items| items.push("✓ 变更意图生成完成，正在校验 DSL...".into()));
@@ -1353,6 +2329,7 @@ pub fn DmnApp() -> impl IntoView {
                 };
                 match result {
                     Ok(candidate) => {
+                        set_engineer_retry_id.set(None);
                         let dsl_yaml = candidate.dsl_yaml;
                         let dmn_xml = candidate.dmn_xml;
                         set_steps.update(|items| {
@@ -1390,6 +2367,7 @@ pub fn DmnApp() -> impl IntoView {
                     }
                 }
                 set_controller.set(None);
+                set_active_orchestration_id.set(None);
             });
             return;
         }
@@ -1425,6 +2403,7 @@ pub fn DmnApp() -> impl IntoView {
         set_validation_running.set(false);
         set_analysis_running.set(false);
         set_error.set(None);
+        set_engineer_retry_id.set(None);
         set_pending_review.set(None);
         set_pending_candidate_id.set(None);
         set_pending_knowledge_citations.set(Vec::new());
@@ -1460,7 +2439,10 @@ pub fn DmnApp() -> impl IntoView {
         let set_generation_mode = set_generation_mode;
         let set_source_dsl = set_source_dsl;
         let set_version_save_status = set_version_save_status;
+        let set_engineer_retry_id = set_engineer_retry_id;
+        let set_active_orchestration_id = set_active_orchestration_id;
         spawn_local(async move {
+            let mut current_orchestration_id = None;
             let result = api::run_pipeline(
                 &token_value,
                 project_id,
@@ -1468,8 +2450,13 @@ pub fn DmnApp() -> impl IntoView {
                 existing,
                 base_version,
                 workflow_updated_at,
+                retry_of_orchestration_id,
                 controller_value.clone(),
                 |event| match event {
+                    SseEvent::Orchestration(id) => {
+                        current_orchestration_id = Some(id);
+                        set_active_orchestration_id.set(Some(id));
+                    }
                     SseEvent::Step(message) => {
                         if message.starts_with("→ 调用 LLM") {
                             set_assistant_delta.set(String::new());
@@ -1494,14 +2481,77 @@ pub fn DmnApp() -> impl IntoView {
                     }
                     SseEvent::Result(result) => {
                         if result.ok {
+                            set_engineer_retry_id.set(None);
                             set_pending_knowledge_citations.set(result.knowledge_citations.clone());
                             set_agent_activity.set("模型已生成，可继续核验或测试".to_string());
                             set_steps.update(|items| items.push("✓ DMN XML 生成完成".to_string()));
+                            if result.simple_direct_preview {
+                                set_steps.update(|items| {
+                                    items.push(
+                                        "simple 候选基于未确认的需求卡结构生成；保存草稿前请人工检查".into(),
+                                    );
+                                });
+                            }
+                            if let Some(probes) = result
+                                .tester_static_analysis
+                                .as_ref()
+                                .and_then(|report| report["executionProbes"].as_array())
+                            {
+                                let probe_count = probes.len();
+                                set_steps.update(|items| {
+                                    items.push(format!(
+                                        "✓ Tester 已执行 {probe_count} 个静态发现见证探测，结果待人工确认"
+                                    ));
+                                });
+                                for probe in probes.iter().take(5) {
+                                    let finding = probe["findingCode"].as_str().unwrap_or("静态发现");
+                                    let element = probe["element"].as_str().unwrap_or("决策");
+                                    let status = probe["executionStatus"].as_str().unwrap_or("未知");
+                                    let observed = probe["observedDecisions"]
+                                        .as_array()
+                                        .and_then(|decisions| decisions.first())
+                                        .map(|decision| decision["observedOutput"].to_string())
+                                        .unwrap_or_else(|| "无输出".to_string());
+                                    let matched_rules = probe["observedDecisions"]
+                                        .as_array()
+                                        .and_then(|decisions| decisions.first())
+                                        .and_then(|decision| decision["matchedRuleIds"].as_array())
+                                        .map(|rules| {
+                                            rules
+                                                .iter()
+                                                .filter_map(serde_json::Value::as_str)
+                                                .collect::<Vec<_>>()
+                                                .join(", ")
+                                        })
+                                        .filter(|rules| !rules.is_empty())
+                                        .unwrap_or_else(|| "无命中规则".to_string());
+                                    set_steps.update(|items| {
+                                        items.push(format!(
+                                            "Tester 探测 {element} / {finding}：{status}；观测输出 {observed}；{matched_rules}"
+                                        ));
+                                    });
+                                }
+                                if probe_count > 5 {
+                                    set_steps.update(|items| {
+                                        items.push(format!("其余 {} 个 Tester 探测详见运行结果", probe_count - 5));
+                                    });
+                                }
+                            }
                             if result.dsl.is_some() && result.xml.is_some() {
                                 set_pending_review.set(result.change_review.clone());
                                 set_review_confirmed.set(false);
                                 set_version_save_status
                                     .set(Some("模型已生成，等待确认变更后保存版本".into()));
+                            }
+                            if let Some(degradation) = result.degradation.as_ref() {
+                                let reason =
+                                    degradation["reason"].as_str().unwrap_or("Tester 未执行");
+                                set_steps.update(|items| {
+                                    items.push(format!("需人工复核：{reason}"));
+                                });
+                                set_version_save_status.set(Some(
+                                    "Tester 已跳过或不可用，保存前请人工复核模型".into(),
+                                ));
                             }
                         }
                         apply_result(
@@ -1522,6 +2572,18 @@ pub fn DmnApp() -> impl IntoView {
                         );
                     }
                     SseEvent::Error(message) => {
+                        set_engineer_retry_id.set(None);
+                        set_assistant_delta.set(String::new());
+                        set_prompt.set(request_for_retry.clone());
+                        set_agent_activity.set("生成失败，请修正需求后重试".to_string());
+                        set_error.set(Some(message));
+                        set_status.set(RunStatus::Failed);
+                    }
+                    SseEvent::RetryableFailure { message, retryable } => {
+                        let retry_root = retry_of_orchestration_id
+                            .or(current_orchestration_id)
+                            .filter(|id| *id > 0);
+                        set_engineer_retry_id.set(if retryable { retry_root } else { None });
                         set_assistant_delta.set(String::new());
                         set_prompt.set(request_for_retry.clone());
                         set_agent_activity.set("生成失败，请修正需求后重试".to_string());
@@ -1530,17 +2592,30 @@ pub fn DmnApp() -> impl IntoView {
                     }
                     SseEvent::WorkflowResult(_) => {}
                     SseEvent::ChangeIntent(_) => {}
+                    event @ (SseEvent::Agent(_)
+                    | SseEvent::Artifact(_)
+                    | SseEvent::Handoff(_)
+                    | SseEvent::Stage(_)) => {
+                        if let Some((message, record)) = orchestration_event_update(&event) {
+                            set_agent_activity.set(message.clone());
+                            if record {
+                                set_steps.update(|items| items.push(message));
+                            }
+                        }
+                    }
                 },
             )
             .await;
 
             if controller_value.signal().aborted() {
                 set_controller.set(None);
+                set_active_orchestration_id.set(None);
                 set_status.set(RunStatus::Aborted);
                 set_agent_activity.set("已停止当前生成任务".to_string());
                 return;
             }
             if let Err(message) = result {
+                set_engineer_retry_id.set(None);
                 set_assistant_delta.set(String::new());
                 set_prompt.set(request_for_retry);
                 set_agent_activity.set("请求未完成，请检查错误信息后重试".to_string());
@@ -1548,6 +2623,7 @@ pub fn DmnApp() -> impl IntoView {
                 set_status.set(RunStatus::Failed);
             }
             set_controller.set(None);
+            set_active_orchestration_id.set(None);
         });
     };
 
@@ -1675,6 +2751,10 @@ pub fn DmnApp() -> impl IntoView {
                             )));
                         }
                     }
+                    match api::get_decision_workflow(&token_value, project.id).await {
+                        Ok(workflow) => set_decision_workflow.set(workflow),
+                        Err(message) => set_workflow_error.set(Some(message)),
+                    }
                     match api::list_project_versions(&token_value, project.id).await {
                         Ok(items) => set_versions.set(items),
                         Err(message) => set_project_error.set(Some(message)),
@@ -1762,7 +2842,27 @@ pub fn DmnApp() -> impl IntoView {
 
     let stop = move |_| {
         if let Some(active) = controller.get() {
-            active.abort();
+            if let (Some(project), Some(token_value), Some(orchestration_id)) = (
+                current_project.get(),
+                token.get(),
+                active_orchestration_id.get(),
+            ) {
+                let set_steps = set_steps;
+                spawn_local(async move {
+                    let cancel_result =
+                        api::cancel_agent_orchestration(&token_value, project.id, orchestration_id)
+                            .await;
+                    active.abort();
+                    if let Err(message) = cancel_result {
+                        set_steps.update(|items| {
+                            items.push(format!("服务端取消未确认：{message}；当前流已在本地停止"));
+                        });
+                    }
+                });
+            } else {
+                active.abort();
+            }
+            set_active_orchestration_id.set(None);
             set_status.set(RunStatus::Aborted);
             set_agent_activity.set("已停止当前生成任务".to_string());
         }
@@ -1781,6 +2881,10 @@ pub fn DmnApp() -> impl IntoView {
                 Ok(items) => set_model_library.set(items),
                 Err(message) => set_model_library_error.set(Some(message)),
             }
+            match api::get_pattern_library_analytics(&token_value).await {
+                Ok(analytics) => set_pattern_analytics.set(Some(analytics)),
+                Err(message) => set_model_library_error.set(Some(message)),
+            }
             set_model_library_busy.set(false);
         });
     };
@@ -1790,13 +2894,96 @@ pub fn DmnApp() -> impl IntoView {
         set_resource_view.set(ResourceView::Knowledge);
     };
 
+    let load_pattern_lineage = move |version_id: i64| {
+        let Some(token_value) = token.get() else {
+            return;
+        };
+        set_pattern_lineage_busy.set(true);
+        set_model_library_error.set(None);
+        spawn_local(async move {
+            match api::list_decision_pattern_lineage(&token_value, version_id).await {
+                Ok(items) => set_pattern_lineage.set(items),
+                Err(message) => set_model_library_error.set(Some(message)),
+            }
+            set_pattern_lineage_busy.set(false);
+        });
+    };
+
     let select_model_library_item = move |source_kind: String, source_id: String, name: String| {
         set_selected_model_source.set(Some(format!("{source_kind}:{source_id}")));
         set_reuse_project_name.set(name);
         set_reuse_confirmed.set(false);
         set_template_name.set(String::new());
         set_template_industry.set(String::new());
+        set_pattern_lineage.set(Vec::new());
         set_model_library_error.set(None);
+        if source_kind == "history"
+            && let Ok(version_id) = source_id.parse::<i64>()
+        {
+            load_pattern_lineage(version_id);
+        }
+    };
+
+    let request_pattern_recommendations = move |_| {
+        let query = model_library_query.get().trim().to_string();
+        if query.is_empty() || pattern_recommendations_busy.get() {
+            return;
+        }
+        let Some(token_value) = token.get() else {
+            return;
+        };
+        set_pattern_recommendations_busy.set(true);
+        set_model_library_error.set(None);
+        let project_id = current_project.get().map(|project| project.id);
+        spawn_local(async move {
+            match api::recommend_decision_patterns(&token_value, &query, project_id).await {
+                Ok(items) => set_pattern_recommendations.set(items),
+                Err(message) => set_model_library_error.set(Some(message)),
+            }
+            set_pattern_recommendations_busy.set(false);
+        });
+    };
+
+    let recommend_current_requirement = move |_| {
+        let query = prompt.get().trim().to_string();
+        if query.is_empty() || pattern_recommendations_busy.get() {
+            return;
+        }
+        let Some(token_value) = token.get() else {
+            return;
+        };
+        set_pattern_recommendations_busy.set(true);
+        set_model_library_error.set(None);
+        let project_id = current_project.get().map(|project| project.id);
+        spawn_local(async move {
+            match api::recommend_decision_patterns(&token_value, &query, project_id).await {
+                Ok(items) => set_pattern_recommendations.set(items),
+                Err(message) => set_model_library_error.set(Some(message)),
+            }
+            set_pattern_recommendations_busy.set(false);
+        });
+    };
+
+    let submit_pattern_feedback = move |recommendation_id: i64, accepted: bool| {
+        if pattern_feedback_busy.get() {
+            return;
+        }
+        let Some(token_value) = token.get() else {
+            return;
+        };
+        set_pattern_feedback_busy.set(true);
+        spawn_local(async move {
+            if let Err(message) = api::submit_pattern_recommendation_feedback(
+                &token_value,
+                recommendation_id,
+                &PatternRecommendationFeedback { accepted },
+            )
+            .await
+            {
+                set_model_library_error.set(Some(message));
+            }
+            set_pattern_feedback_busy.set(false);
+        });
     };
 
     let instantiate_selected_model = Callback::new({
@@ -2084,7 +3271,7 @@ pub fn DmnApp() -> impl IntoView {
                             return;
                         }
                     };
-                    set_workspace_view.set(WorkspaceView::Discovery);
+                    set_workspace_view.set(load_workspace_view(project.id));
                     set_workflow_error.set(None);
                     set_pending_review.set(None);
                     set_pending_candidate_id.set(None);
@@ -2237,6 +3424,9 @@ pub fn DmnApp() -> impl IntoView {
         if raw.is_empty() {
             set_selected_version_id.set(None);
             set_selected_version_review.set(None);
+            set_behavior_comparison.set(None);
+            set_regression_report.set(None);
+            set_regression_loading.set(false);
             return;
         }
         let Ok(version_id) = raw.parse::<i64>() else {
@@ -2251,6 +3441,9 @@ pub fn DmnApp() -> impl IntoView {
         set_selected_version_id.set(Some(version_id));
         set_workspace_view.set(WorkspaceView::Versions);
         set_selected_version_review.set(None);
+        set_behavior_comparison.set(None);
+        set_regression_report.set(None);
+        set_regression_loading.set(false);
         set_review_loading.set(true);
         set_project_error.set(None);
         spawn_local(async move {
@@ -2266,6 +3459,21 @@ pub fn DmnApp() -> impl IntoView {
             match api::get_version_review(&token_value, project.id, version_id).await {
                 Ok(review) if is_current_request() => {
                     set_selected_version_review.set(Some(review));
+                    if versions.get_untracked().iter().any(|version| {
+                        version.id == version_id && version.base_version_id.is_some()
+                    }) {
+                        if let Ok(comparison) = api::get_version_behavior_comparison(
+                            &token_value,
+                            project.id,
+                            version_id,
+                        )
+                        .await
+                        {
+                            if is_current_request() {
+                                set_behavior_comparison.set(Some(comparison));
+                            }
+                        }
+                    }
                     set_review_loading.set(false);
                 }
                 Ok(_) => {}
@@ -2276,6 +3484,34 @@ pub fn DmnApp() -> impl IntoView {
                 }
                 Err(_) => {}
             }
+        });
+    };
+
+    let run_selected_regression = move || {
+        let (Some(project), Some(version_id), Some(token_value)) = (
+            current_project.get(),
+            selected_version_id.get(),
+            token.get(),
+        ) else {
+            return;
+        };
+        set_regression_loading.set(true);
+        set_project_error.set(None);
+        spawn_local(async move {
+            let result =
+                api::run_version_regression_tests(&token_value, project.id, version_id).await;
+            if selected_version_id.get_untracked() != Some(version_id)
+                || current_project
+                    .get_untracked()
+                    .is_none_or(|current| current.id != project.id)
+            {
+                return;
+            }
+            match result {
+                Ok(report) => set_regression_report.set(Some(report)),
+                Err(message) => set_project_error.set(Some(message)),
+            }
+            set_regression_loading.set(false);
         });
     };
 
@@ -3091,13 +4327,7 @@ pub fn DmnApp() -> impl IntoView {
             return;
         };
         spawn_local(async move {
-            let copied = if let Some(window) = web_sys::window() {
-                JsFuture::from(window.navigator().clipboard().write_text(&secret))
-                    .await
-                    .is_ok()
-            } else {
-                false
-            };
+            let copied = copy_text_to_clipboard(&secret).await;
             set_service_key_copy_status.set(if copied {
                 CopyStatus::Copied
             } else {
@@ -3121,13 +4351,7 @@ pub fn DmnApp() -> impl IntoView {
         };
         let command = public_service_curl(&service, &secret);
         spawn_local(async move {
-            let copied = if let Some(window) = web_sys::window() {
-                JsFuture::from(window.navigator().clipboard().write_text(&command))
-                    .await
-                    .is_ok()
-            } else {
-                false
-            };
+            let copied = copy_text_to_clipboard(&command).await;
             set_service_curl_copy_status.set(if copied {
                 CopyStatus::Copied
             } else {
@@ -3156,13 +4380,7 @@ pub fn DmnApp() -> impl IntoView {
 
     let copy_service_endpoint = move |(service_id, endpoint): (String, String)| {
         spawn_local(async move {
-            let copied = if let Some(window) = web_sys::window() {
-                JsFuture::from(window.navigator().clipboard().write_text(&endpoint))
-                    .await
-                    .is_ok()
-            } else {
-                false
-            };
+            let copied = copy_text_to_clipboard(&endpoint).await;
             if copied {
                 set_service_endpoint_copied.set(Some(service_id));
             }
@@ -3263,7 +4481,22 @@ pub fn DmnApp() -> impl IntoView {
         });
     };
 
-    let analyze_requirement_action = move || {
+    let route_copilot_write = Callback::new(move |intent: String| {
+        if !can_model.get() || workflow_locked.get() {
+            return;
+        }
+        set_prompt.set(intent);
+        set_generation_mode.set(if current_version.get().is_some() {
+            GenerationMode::Modify
+        } else {
+            GenerationMode::Create
+        });
+        set_workspace_view.set(WorkspaceView::Discovery);
+        set_mobile_model_focus.set(MobileModelFocus::Conversation);
+        set_workflow_error.set(None);
+    });
+
+    let analyze_requirement_action = move |retry_of_orchestration_id: Option<i64>| {
         if !can_model.get() || workflow_locked.get() {
             return;
         }
@@ -3291,30 +4524,58 @@ pub fn DmnApp() -> impl IntoView {
         if text.is_empty() || workflow_busy.get() {
             return;
         }
+        let controller = AbortController::new().expect("AbortController should be available");
         set_workflow_busy.set(true);
         set_workflow_analyzing.set(true);
+        set_workflow_controller.set(Some(controller.clone()));
+        set_workflow_orchestration_stage.set(0);
+        set_workflow_orchestration_events.set(Vec::new());
         set_workflow_error.set(None);
+        set_workflow_retry_id.set(None);
+        set_workflow_orchestration_id.set(None);
         set_workspace_view.set(WorkspaceView::Discovery);
         set_agent_activity.set("正在分析业务目标、输入输出和关键歧义".into());
         scroll_to_workflow_anchor("workflow-analysis-progress");
-        let controller = AbortController::new().expect("AbortController should be available");
         let set_decision_workflow = set_decision_workflow;
         let set_clarification_answers = set_clarification_answers;
         let set_workflow_error = set_workflow_error;
         let set_agent_activity = set_agent_activity;
         let set_workflow_busy = set_workflow_busy;
         let set_workflow_analyzing = set_workflow_analyzing;
+        let set_workflow_orchestration_stage = set_workflow_orchestration_stage;
+        let set_workflow_orchestration_events = set_workflow_orchestration_events;
+        let set_workflow_orchestration_id = set_workflow_orchestration_id;
         spawn_local(async move {
             let result = api::analyze_requirement_stream(
                 &token_value,
                 project.id,
                 text,
+                retry_of_orchestration_id,
                 controller.clone(),
                 |event| match event {
+                    SseEvent::Orchestration(id) => {
+                        set_workflow_orchestration_id.set(Some(id));
+                        set_workflow_retry_id.set(Some(retry_of_orchestration_id.unwrap_or(id)))
+                    }
                     SseEvent::Step(message) => {
+                        if message.starts_with("编排阶段：") {
+                            let stage = if message.contains("需求分析智能体") {
+                                1
+                            } else if message.contains("业务模式识别器") {
+                                2
+                            } else if message.contains("澄清排序器") {
+                                3
+                            } else if message.contains("校验并保存") {
+                                4
+                            } else {
+                                0
+                            };
+                            set_workflow_orchestration_stage.set(stage);
+                        }
                         set_agent_activity.set(agent_activity_for_step(&message));
                     }
                     SseEvent::WorkflowResult(workflow) => {
+                        set_workflow_retry_id.set(None);
                         set_clarification_answers.set(BTreeMap::new());
                         set_prompt_checkpoint.set(workflow.requirement_text.clone());
                         set_decision_workflow.set(Some(workflow));
@@ -3322,30 +4583,128 @@ pub fn DmnApp() -> impl IntoView {
                         scroll_to_workflow_anchor("workflow-clarifications");
                     }
                     SseEvent::Error(message) => {
+                        set_workflow_retry_id.set(None);
                         set_workflow_error.set(Some(message));
                         set_agent_activity.set("需求分析未完成".into());
                     }
-                    SseEvent::Delta(_)
-                    | SseEvent::Preview(_)
-                    | SseEvent::Result(_)
-                    | SseEvent::ChangeIntent(_) => {}
+                    SseEvent::RetryableFailure { message, retryable } => {
+                        if !retryable {
+                            set_workflow_retry_id.set(None);
+                        }
+                        set_workflow_error.set(Some(message));
+                        set_agent_activity.set("需求分析未完成".into());
+                    }
+                    event => {
+                        if let Some((message, _)) = orchestration_event_update(&event) {
+                            set_agent_activity.set(message.clone());
+                            set_workflow_orchestration_events.update(|events| {
+                                append_orchestration_progress(events, message);
+                            });
+                        }
+                    }
                 },
             )
             .await;
             if !controller.signal().aborted() {
                 if let Err(message) = result {
+                    set_workflow_retry_id.set(None);
                     set_workflow_error.set(Some(message));
                     set_agent_activity.set("需求分析未完成".into());
                 }
             }
+            set_workflow_orchestration_id.set(None);
+            set_workflow_controller.set(None);
             set_workflow_busy.set(false);
             set_workflow_analyzing.set(false);
         });
     };
 
-    let analyze_requirement = move |_| analyze_requirement_action();
+    let analyze_requirement = move |_| analyze_requirement_action(None);
+    let import_requirement_document = move |event: web_sys::Event| {
+        let input = event_target::<web_sys::HtmlInputElement>(&event);
+        let Some(file) = input.files().and_then(|files| files.item(0)) else {
+            return;
+        };
+        input.set_value("");
+        let filename = file.name();
+        let supported = filename
+            .rsplit('.')
+            .next()
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        if !matches!(supported.as_str(), "txt" | "md" | "markdown") {
+            set_requirement_import_error.set(Some("仅支持 TXT 和 Markdown 文件".into()));
+            return;
+        }
+        if file.size() > 20_000.0 {
+            set_requirement_import_error.set(Some("需求文档不能超过 20,000 字节".into()));
+            return;
+        }
+        if workflow_locked.get_untracked() || requirement_importing.get_untracked() {
+            return;
+        }
+        set_requirement_importing.set(true);
+        set_requirement_import_error.set(None);
+        spawn_local(async move {
+            let text = JsFuture::from(file.text())
+                .await
+                .ok()
+                .and_then(|value| value.as_string());
+            match text {
+                Some(text) if !text.trim().is_empty() && text.len() <= 20_000 => {
+                    set_prompt.set(text);
+                }
+                Some(_) => set_requirement_import_error
+                    .set(Some("文档正文不能为空且不能超过 20,000 字节".into())),
+                None => set_requirement_import_error
+                    .set(Some("读取文档失败，请确认文件是有效文本".into())),
+            }
+            set_requirement_importing.set(false);
+        });
+    };
+    let retry_requirement_analysis = move |_| {
+        if let Some(orchestration_id) = workflow_retry_id.get() {
+            analyze_requirement_action(Some(orchestration_id));
+        }
+    };
+    let stop_workflow_operation = move |_| {
+        if let Some(active) = workflow_controller.get() {
+            let was_planning = workflow_planning.get();
+            let was_facilitating = workflow_facilitating.get();
+            if let (Some(project), Some(token_value), Some(orchestration_id)) = (
+                current_project.get(),
+                token.get(),
+                workflow_orchestration_id.get(),
+            ) {
+                let set_agent_activity = set_agent_activity;
+                spawn_local(async move {
+                    let cancel_result =
+                        api::cancel_agent_orchestration(&token_value, project.id, orchestration_id)
+                            .await;
+                    active.abort();
+                    if let Err(message) = cancel_result {
+                        set_agent_activity
+                            .set(format!("本地任务已停止，服务端取消未确认：{message}"));
+                    }
+                });
+            } else {
+                active.abort();
+            }
+            set_workflow_retry_id.set(None);
+            set_plan_retry_id.set(None);
+            set_facilitator_retry_id.set(None);
+            set_workflow_orchestration_id.set(None);
+            set_agent_activity.set(if was_planning {
+                "已停止方案规划".into()
+            } else if was_facilitating {
+                "已停止澄清主持".into()
+            } else {
+                "已停止需求分析".into()
+            });
+        }
+    };
 
-    let create_decision_plan_action = move || {
+    let create_decision_plan_action = move |retry_of_orchestration_id: Option<i64>| {
         if !can_model.get() || workflow_locked.get() {
             return;
         }
@@ -3380,30 +4739,228 @@ pub fn DmnApp() -> impl IntoView {
                 answer,
             })
             .collect::<Vec<_>>();
+        let controller = AbortController::new().expect("AbortController should be available");
         set_workflow_busy.set(true);
         set_workflow_planning.set(true);
+        set_workflow_controller.set(Some(controller.clone()));
+        set_workflow_orchestration_stage.set(0);
+        set_workflow_orchestration_events.set(Vec::new());
+        set_workflow_orchestration_id.set(None);
         set_workflow_error.set(None);
+        set_plan_retry_id.set(None);
         set_agent_activity.set("正在规划决策、依赖和验收标准".into());
+        let set_workflow_orchestration_id = set_workflow_orchestration_id;
+        let set_workflow_orchestration_stage = set_workflow_orchestration_stage;
+        let set_workflow_orchestration_events = set_workflow_orchestration_events;
+        let set_plan_retry_id = set_plan_retry_id;
+        let set_workflow_error = set_workflow_error;
+        let set_agent_activity = set_agent_activity;
+        let set_prompt_checkpoint = set_prompt_checkpoint;
+        let set_decision_workflow = set_decision_workflow;
+        let set_workflow_controller = set_workflow_controller;
+        let set_workflow_planning = set_workflow_planning;
+        let set_workflow_busy = set_workflow_busy;
         spawn_local(async move {
-            match api::create_decision_plan(&token_value, project.id, answers, workflow.updated_at)
-                .await
-            {
-                Ok(workflow) => {
-                    set_prompt_checkpoint.set(workflow.requirement_text.clone());
-                    set_decision_workflow.set(Some(workflow));
-                    set_agent_activity.set("决策方案已生成，等待确认".into());
-                }
-                Err(message) => {
+            let result = api::create_decision_plan_stream(
+                &token_value,
+                project.id,
+                answers,
+                workflow.updated_at,
+                retry_of_orchestration_id,
+                controller.clone(),
+                |event| match event {
+                    SseEvent::Orchestration(id) => {
+                        set_workflow_orchestration_id.set(Some(id));
+                        set_plan_retry_id.set(Some(retry_of_orchestration_id.unwrap_or(id)));
+                    }
+                    SseEvent::Step(message) => {
+                        set_workflow_orchestration_stage.set(1);
+                        set_agent_activity.set(agent_activity_for_step(&message));
+                    }
+                    SseEvent::WorkflowResult(workflow) => {
+                        set_plan_retry_id.set(None);
+                        set_prompt_checkpoint.set(workflow.requirement_text.clone());
+                        set_decision_workflow.set(Some(workflow));
+                        set_agent_activity.set("决策方案已生成，等待确认".into());
+                    }
+                    SseEvent::RetryableFailure { message, retryable } => {
+                        if !retryable {
+                            set_plan_retry_id.set(None);
+                        }
+                        set_workflow_error.set(Some(message));
+                        set_agent_activity.set("决策方案规划未完成".into());
+                    }
+                    SseEvent::Error(message) => {
+                        set_plan_retry_id.set(None);
+                        set_workflow_error.set(Some(message));
+                        set_agent_activity.set("决策方案规划未完成".into());
+                    }
+                    event => {
+                        if let Some((message, _)) = orchestration_event_update(&event) {
+                            set_agent_activity.set(message.clone());
+                            set_workflow_orchestration_events.update(|events| {
+                                append_orchestration_progress(events, message);
+                            });
+                        }
+                    }
+                },
+            )
+            .await;
+            if !controller.signal().aborted() {
+                if let Err(message) = result {
+                    set_plan_retry_id.set(None);
                     set_workflow_error.set(Some(message));
                     set_agent_activity.set("决策方案规划未完成".into());
                 }
             }
+            set_workflow_orchestration_id.set(None);
+            set_workflow_controller.set(None);
             set_workflow_planning.set(false);
             set_workflow_busy.set(false);
         });
     };
 
-    let create_decision_plan = move |_| create_decision_plan_action();
+    let continue_clarification_action = move |retry_of_orchestration_id: Option<i64>| {
+        if !can_model.get() || workflow_locked.get() || !workflow_current.get() {
+            return;
+        }
+        if missing_clarifications.get() > 0 {
+            set_workflow_error.set(Some(format!(
+                "还有 {} 个必答问题，请先回答或修改答案",
+                missing_clarifications.get()
+            )));
+            return;
+        }
+        let Some(workflow) = decision_workflow.get() else {
+            return;
+        };
+        let Some(project) = current_project.get() else {
+            return;
+        };
+        let Some(token_value) = token.get() else {
+            return;
+        };
+        let current_round = workflow
+            .clarifications
+            .iter()
+            .map(|item| item.round)
+            .max()
+            .unwrap_or(1);
+        let answers = clarification_answers.get();
+        let answers = workflow
+            .clarifications
+            .iter()
+            .filter(|item| item.round == current_round)
+            .filter_map(|item| {
+                answers.get(&item.id).map(|answer| ClarificationAnswer {
+                    clarification_id: item.id.clone(),
+                    answer: answer.clone(),
+                })
+            })
+            .collect::<Vec<_>>();
+        set_workflow_busy.set(true);
+        set_workflow_facilitating.set(true);
+        let controller = AbortController::new().expect("AbortController should be available");
+        set_workflow_controller.set(Some(controller.clone()));
+        set_workflow_orchestration_id.set(None);
+        set_workflow_orchestration_stage.set(0);
+        set_workflow_orchestration_events.set(Vec::new());
+        set_workflow_error.set(None);
+        set_facilitator_retry_id.set(None);
+        set_agent_activity.set("澄清主持人正在根据本轮回答检查未决歧义".into());
+        let set_workflow_busy = set_workflow_busy;
+        let set_workflow_facilitating = set_workflow_facilitating;
+        let set_workflow_error = set_workflow_error;
+        let set_workflow = set_decision_workflow;
+        let set_answers = set_clarification_answers;
+        let set_activity = set_agent_activity;
+        let set_orchestration_id = set_workflow_orchestration_id;
+        let set_orchestration_stage = set_workflow_orchestration_stage;
+        let set_orchestration_events = set_workflow_orchestration_events;
+        let set_controller = set_workflow_controller;
+        let set_facilitator_retry_id = set_facilitator_retry_id;
+        spawn_local(async move {
+            let result = api::continue_workflow_clarifications(
+                &token_value,
+                project.id,
+                answers,
+                workflow.updated_at,
+                retry_of_orchestration_id,
+                controller.clone(),
+                |event| match event {
+                    SseEvent::Orchestration(id) => {
+                        set_orchestration_id.set(Some(id));
+                        set_facilitator_retry_id.set(Some(retry_of_orchestration_id.unwrap_or(id)));
+                    }
+                    SseEvent::Step(message) => {
+                        set_orchestration_stage.set(1);
+                        set_activity.set(agent_activity_for_step(&message));
+                    }
+                    SseEvent::WorkflowResult(updated) => {
+                        set_facilitator_retry_id.set(None);
+                        let answer_values = updated
+                            .answers
+                            .iter()
+                            .map(|answer| (answer.clarification_id.clone(), answer.answer.clone()))
+                            .collect();
+                        let converged = updated.status == "analyzed";
+                        set_answers.set(answer_values);
+                        set_workflow.set(Some(updated));
+                        set_activity.set(if converged {
+                            "澄清已收敛，可以生成决策方案".into()
+                        } else {
+                            "本轮澄清完成，请回答新增问题".into()
+                        });
+                    }
+                    SseEvent::Error(message) => {
+                        set_facilitator_retry_id.set(None);
+                        set_workflow_error.set(Some(message));
+                        set_activity.set("澄清主持未完成".into());
+                    }
+                    SseEvent::RetryableFailure { message, retryable } => {
+                        if !retryable {
+                            set_facilitator_retry_id.set(None);
+                        }
+                        set_workflow_error.set(Some(message));
+                        set_activity.set("澄清主持未完成".into());
+                    }
+                    event => {
+                        if let Some((message, _)) = orchestration_event_update(&event) {
+                            set_activity.set(message.clone());
+                            set_orchestration_events.update(|events| {
+                                append_orchestration_progress(events, message);
+                            });
+                        }
+                    }
+                },
+            )
+            .await;
+            if !controller.signal().aborted() {
+                if let Err(message) = result {
+                    set_facilitator_retry_id.set(None);
+                    set_workflow_error.set(Some(message));
+                    set_activity.set("澄清主持未完成".into());
+                }
+            }
+            set_orchestration_id.set(None);
+            set_controller.set(None);
+            set_workflow_facilitating.set(false);
+            set_workflow_busy.set(false);
+        });
+    };
+
+    let create_decision_plan = move |_| create_decision_plan_action(None);
+    let continue_clarification = move |_| continue_clarification_action(None);
+    let retry_clarification = move |_| {
+        if let Some(orchestration_id) = facilitator_retry_id.get() {
+            continue_clarification_action(Some(orchestration_id));
+        }
+    };
+    let retry_decision_plan = move |_| {
+        if let Some(orchestration_id) = plan_retry_id.get() {
+            create_decision_plan_action(Some(orchestration_id));
+        }
+    };
 
     let confirm_decision_plan_action = move || {
         if !can_model.get() || workflow_locked.get() {
@@ -3451,11 +5008,14 @@ pub fn DmnApp() -> impl IntoView {
         if !can_model.get() {
             return;
         }
-        let confirmed = decision_workflow
-            .get()
+        let workflow = decision_workflow.get();
+        let confirmed = workflow
             .as_ref()
             .is_some_and(|workflow| workflow.status == "confirmed" && workflow.plan.is_some());
-        if !confirmed
+        let simple_direct = workflow
+            .as_ref()
+            .is_some_and(simple_direct_workflow_eligible);
+        if !(confirmed || simple_direct)
             || workflow_locked.get()
             || !workflow_current.get()
             || workflow_answers_changed.get()
@@ -3495,11 +5055,11 @@ pub fn DmnApp() -> impl IntoView {
             return;
         }
         if !workflow_current.get() {
-            analyze_requirement_action();
+            analyze_requirement_action(None);
             return;
         }
         if workflow_answers_changed.get() {
-            create_decision_plan_action();
+            create_decision_plan_action(None);
             return;
         }
 
@@ -3508,11 +5068,11 @@ pub fn DmnApp() -> impl IntoView {
             .as_ref()
             .map(|workflow| workflow.status.as_str())
         {
-            None => analyze_requirement_action(),
-            Some("analyzed" | "clarification") => create_decision_plan_action(),
+            None => analyze_requirement_action(None),
+            Some("analyzed" | "clarification") => create_decision_plan_action(None),
             Some("planned") => confirm_decision_plan_action(),
             Some("confirmed") => generate_model_action(),
-            Some(_) => analyze_requirement_action(),
+            Some(_) => analyze_requirement_action(None),
         }
     };
 
@@ -3779,6 +5339,58 @@ pub fn DmnApp() -> impl IntoView {
                                 aria-selected=move || resource_view.get() == ResourceView::Models
                             >"模型库"</button>
                         </div>
+                        <Show when=move || {
+                            resource_view.get() == ResourceView::Models
+                                && pattern_analytics.get().is_some()
+                        }>
+                            {move || pattern_analytics.get().map(|analytics| {
+                                let has_top_patterns = !analytics.top_patterns.is_empty();
+                                let top_patterns = analytics.top_patterns.clone();
+                                view! {
+                                <div class="pattern-library-analytics" aria-label="模式库统计">
+                                    <span>{format!("模式 {} 个", analytics.total_patterns)}</span>
+                                    <span>{format!("实际复用 {} 次", analytics.total_usage_count)}</span>
+                                    <span>{format!("推荐 {} 次", analytics.total_recommendations)}</span>
+                                    <span>{match analytics.acceptance_rate {
+                                        Some(rate) => format!("反馈采纳率 {:.2}%", rate),
+                                        None => "反馈采纳率暂无".to_string(),
+                                    }}</span>
+                                    <span>{match analytics.average_match_score {
+                                        Some(score) => format!("平均匹配度 {:.1}", score),
+                                        None => "平均匹配度暂无".to_string(),
+                                    }}</span>
+                                    <span>{match analytics.average_success_rate {
+                                        Some(rate) => format!("平均成功率 {:.1}%", rate),
+                                        None => "平均成功率暂无".to_string(),
+                                    }}</span>
+                                    <Show when=move || has_top_patterns>
+                                        {view! {
+                                            <div class="pattern-library-top" aria-label="高复用模式排行">
+                                                <strong>"高复用模式"</strong>
+                                                <div class="pattern-library-top-list">
+                                                    {top_patterns.clone().into_iter().map(|pattern| view! {
+                                                        <div class="pattern-library-top-item">
+                                                            <div>
+                                                                <strong>{pattern.name}</strong>
+                                                                <span>{format!("复用 {} 次 · 演进 v{}", pattern.usage_count, pattern.evolution_number)}</span>
+                                                            </div>
+                                                            <small>{match pattern.success_rate {
+                                                                Some(rate) => format!("反馈成功率 {:.1}%", rate),
+                                                                None => "暂无反馈成功率".to_string(),
+                                                            }}</small>
+                                                            <small>{match pattern.last_used {
+                                                                Some(last_used) => format!("最近复用 {}", last_used.format("%Y-%m-%d")),
+                                                                None => "尚未实际复用".to_string(),
+                                                            }}</small>
+                                                        </div>
+                                                    }).collect_view()}
+                                                </div>
+                                            </div>
+                                        }}
+                                    </Show>
+                                </div>
+                            }})}
+                        </Show>
                     </div>
 
             <Show when=move || resource_view.get() == ResourceView::Knowledge>
@@ -3801,6 +5413,11 @@ pub fn DmnApp() -> impl IntoView {
                                 prop:value=model_library_query
                                 on:input=move |event| set_model_library_query.set(event_target_value(&event))
                             />
+                            <button
+                                class="button button-quiet"
+                                on:click=request_pattern_recommendations
+                                disabled=move || pattern_recommendations_busy.get() || model_library_query.get().trim().is_empty()
+                            >{move || if pattern_recommendations_busy.get() { "检索中..." } else { "推荐相似模式" }}</button>
                             <div class="model-library-filters" role="group" aria-label="模型来源筛选">
                                 <For
                                     each=move || vec![("all", "全部"), ("builtin", "行业模板"), ("template", "我的模板"), ("history", "发布历史")]
@@ -3817,6 +5434,62 @@ pub fn DmnApp() -> impl IntoView {
                     </div>
                     <div class="model-library-body">
                         <div class="model-library-catalog">
+                            <Show when=move || !pattern_recommendations.get().is_empty()>
+                                <section class="pattern-recommendations" aria-label="相似决策模式推荐">
+                                    <strong>"相似已发布模式"</strong>
+                                    <For
+                                        each=move || pattern_recommendations.get()
+                                        key=|item| item.pattern_id
+                                        let:item
+                                    >
+                                        {
+                                            let version_id = item.source_version_id;
+                                            let score = item.match_score;
+                                            let project_name = item.source_project_name.clone();
+                                            let version_number = item.source_version_number;
+                                            let description = item.description.clone();
+                                            let pattern_type = item.pattern_type.clone();
+                                            let recommendation_id = item.recommendation_id;
+                                            view! {
+                                                <article class="pattern-recommendation">
+                                                    <div>
+                                                        <strong>{item.name}</strong>
+                                                        <span>{format!("{} · 匹配度 {:.0}%", pattern_type, score)}</span>
+                                                    </div>
+                                                    <small>{format!("来源：{} v{}", project_name, version_number)}</small>
+                                                    <small>{format!("模式演进 v{}", item.evolution_number)}</small>
+                                                    <p>{item.recommendation_reason}</p>
+                                                    <small>{match item.success_rate {
+                                                        Some(rate) => format!("历史反馈成功率 {:.0}% · 已复用 {} 次", rate, item.usage_count),
+                                                        None => format!("已有 {} 次复用 · 暂无反馈统计", item.usage_count),
+                                                    }}</small>
+                                                    <small>{move || description.clone()}</small>
+                                                    <div class="pattern-recommendation-feedback">
+                                                        <button
+                                                            class="button button-quiet"
+                                                            on:click=move |_| submit_pattern_feedback(recommendation_id, true)
+                                                            disabled=move || pattern_feedback_busy.get()
+                                                        >"有帮助"</button>
+                                                        <button
+                                                            class="button button-quiet"
+                                                            on:click=move |_| submit_pattern_feedback(recommendation_id, false)
+                                                            disabled=move || pattern_feedback_busy.get()
+                                                        >"不匹配"</button>
+                                                    </div>
+                                                    <button
+                                                        class="button button-quiet"
+                                                        on:click=move |_| {
+                                                            if let Some(history) = model_library.get().into_iter().find(|entry| entry.source_version_id == Some(version_id)) {
+                                                                select_model_library_item(history.source_kind, history.source_id, history.name);
+                                                            }
+                                                        }
+                                                    >"选择并复用"</button>
+                                                </article>
+                                            }
+                                        }
+                                    </For>
+                                </section>
+                            </Show>
                             <Show
                                 when=move || !model_library_busy.get() || !model_library.get().is_empty()
                                 fallback=move || view! { <div class="model-library-empty">"正在读取模型库..."</div> }
@@ -3900,6 +5573,31 @@ pub fn DmnApp() -> impl IntoView {
                                         <span>{format!("{} 个案例", item.test_case_count)}</span>
                                     </div>
                                     <p class="model-library-description">{item.description}</p>
+                                    <Show when=move || {
+                                        is_history
+                                            && (pattern_lineage_busy.get()
+                                                || !pattern_lineage.get().is_empty())
+                                    }>
+                                        <section class="model-pattern-lineage" aria-label="模式演进链">
+                                            <div class="model-pattern-lineage-heading">
+                                                <span class="toolbar-label">"模式演进链"</span>
+                                                <small>{move || if pattern_lineage_busy.get() { "读取中...".to_string() } else { format!("{} 个版本", pattern_lineage.get().len()) }}</small>
+                                            </div>
+                                            <div class="model-pattern-lineage-list">
+                                                <For
+                                                    each=move || pattern_lineage.get()
+                                                    key=|lineage| lineage.pattern_id
+                                                    let:lineage
+                                                >
+                                                    <div class="model-pattern-lineage-item">
+                                                        <strong>{format!("v{} · {}", lineage.source_version_number, lineage.name)}</strong>
+                                                        <small>{format!("演进序号 {} · {}", lineage.evolution_number, lineage.version_status)}</small>
+                                                        <span>{lineage.description}</span>
+                                                    </div>
+                                                </For>
+                                            </div>
+                                        </section>
+                                    </Show>
                                     <label class="model-library-field">
                                         <span>"新项目名称"</span>
                                         <input
@@ -3979,6 +5677,10 @@ pub fn DmnApp() -> impl IntoView {
             <Show when=move || selected_version_review.get().is_some()>
                 <VersionHistoryPanel
                     selected_version_review=selected_version_review
+                    behavior_comparison=behavior_comparison
+                    regression_report=regression_report
+                    regression_loading=regression_loading
+                    on_run_regression=Callback::new(move |_| run_selected_regression())
                     selected_version_id=selected_version_id
                     versions=versions
                     current_version=current_version
@@ -3991,6 +5693,9 @@ pub fn DmnApp() -> impl IntoView {
                     on_close=Callback::new(move |_| {
                         set_selected_version_id.set(None);
                         set_selected_version_review.set(None);
+                        set_behavior_comparison.set(None);
+                        set_regression_report.set(None);
+                        set_regression_loading.set(false);
                     })
                 />
             </Show>
@@ -4009,6 +5714,7 @@ pub fn DmnApp() -> impl IntoView {
                     </div>
                     <ServiceCredentialsPanel
                         published_services=published_services
+                        can_manage_service=can_manage_service
                         selected_service_id=selected_service_id
                         service_keys=service_keys
                         service_key_name=service_key_name
@@ -4065,6 +5771,11 @@ pub fn DmnApp() -> impl IntoView {
                             })}
                             <ServiceRunHistory
                                 service_runs=service_runs
+                                project_id=Signal::derive(move || current_project.get().map(|project| project.id))
+                                token=Signal::derive(move || token.get())
+                                reviewer_username=Signal::derive(move || user_id.get())
+                                can_model=can_model
+                                can_review=can_review
                                 outcome_run_id=outcome_run_id
                                 set_outcome_run_id=set_outcome_run_id
                                 outcome_business_reference=outcome_business_reference
@@ -4105,6 +5816,117 @@ pub fn DmnApp() -> impl IntoView {
                             <span class="analytics-version">{move || decision_analytics.get().map(|report| format!("v{}", report.version_number)).unwrap_or_else(|| "--".into())}</span>
                         </div>
                     </div>
+                    <details class="analytics-threshold-settings">
+                        <summary>"发现阈值"</summary>
+                        <div class="analytics-threshold-grid">
+                            <label>
+                                <span>"失败率预警 (%)"</span>
+                                <input
+                                    type="number"
+                                    min="1"
+                                    max="99"
+                                    step="1"
+                                    prop:value=move || format!("{:.0}", analytics_thresholds.get().failure_warning_rate * 100.0)
+                                    on:input=move |event| {
+                                        if let Ok(value) = event_target_value(&event).parse::<f64>() {
+                                            set_analytics_thresholds.update(|settings| settings.failure_warning_rate = value / 100.0);
+                                        }
+                                    }
+                                    disabled=move || analytics_thresholds_loading.get() || analytics_thresholds_busy.get() || !can_model.get()
+                                />
+                            </label>
+                            <label>
+                                <span>"失败率高风险 (%)"</span>
+                                <input
+                                    type="number"
+                                    min="1"
+                                    max="100"
+                                    step="1"
+                                    prop:value=move || format!("{:.0}", analytics_thresholds.get().failure_high_rate * 100.0)
+                                    on:input=move |event| {
+                                        if let Ok(value) = event_target_value(&event).parse::<f64>() {
+                                            set_analytics_thresholds.update(|settings| settings.failure_high_rate = value / 100.0);
+                                        }
+                                    }
+                                    disabled=move || analytics_thresholds_loading.get() || analytics_thresholds_busy.get() || !can_model.get()
+                                />
+                            </label>
+                            <label>
+                                <span>"偏差率预警 (%)"</span>
+                                <input
+                                    type="number"
+                                    min="1"
+                                    max="99"
+                                    step="1"
+                                    prop:value=move || format!("{:.0}", analytics_thresholds.get().mismatch_warning_rate * 100.0)
+                                    on:input=move |event| {
+                                        if let Ok(value) = event_target_value(&event).parse::<f64>() {
+                                            set_analytics_thresholds.update(|settings| settings.mismatch_warning_rate = value / 100.0);
+                                        }
+                                    }
+                                    disabled=move || analytics_thresholds_loading.get() || analytics_thresholds_busy.get() || !can_model.get()
+                                />
+                            </label>
+                            <label>
+                                <span>"偏差率高风险 (%)"</span>
+                                <input
+                                    type="number"
+                                    min="1"
+                                    max="100"
+                                    step="1"
+                                    prop:value=move || format!("{:.0}", analytics_thresholds.get().mismatch_high_rate * 100.0)
+                                    on:input=move |event| {
+                                        if let Ok(value) = event_target_value(&event).parse::<f64>() {
+                                            set_analytics_thresholds.update(|settings| settings.mismatch_high_rate = value / 100.0);
+                                        }
+                                    }
+                                    disabled=move || analytics_thresholds_loading.get() || analytics_thresholds_busy.get() || !can_model.get()
+                                />
+                            </label>
+                            <label>
+                                <span>"失败率最小样本数"</span>
+                                <input
+                                    type="number"
+                                    min="1"
+                                    max="100000"
+                                    step="1"
+                                    prop:value=move || analytics_thresholds.get().failure_min_runs.to_string()
+                                    on:input=move |event| {
+                                        if let Ok(value) = event_target_value(&event).parse::<i32>() {
+                                            set_analytics_thresholds.update(|settings| settings.failure_min_runs = value);
+                                        }
+                                    }
+                                    disabled=move || analytics_thresholds_loading.get() || analytics_thresholds_busy.get() || !can_model.get()
+                                />
+                            </label>
+                            <label>
+                                <span>"偏差率最小样本数"</span>
+                                <input
+                                    type="number"
+                                    min="1"
+                                    max="100000"
+                                    step="1"
+                                    prop:value=move || analytics_thresholds.get().mismatch_min_samples.to_string()
+                                    on:input=move |event| {
+                                        if let Ok(value) = event_target_value(&event).parse::<i32>() {
+                                            set_analytics_thresholds.update(|settings| settings.mismatch_min_samples = value);
+                                        }
+                                    }
+                                    disabled=move || analytics_thresholds_loading.get() || analytics_thresholds_busy.get() || !can_model.get()
+                                />
+                            </label>
+                        </div>
+                        <Show when=move || analytics_thresholds_error.get().is_some()>
+                            <div class="analytics-error">{move || analytics_thresholds_error.get().unwrap_or_default()}</div>
+                        </Show>
+                        <Show when=move || can_model.get()>
+                            <button
+                                class="button button-quiet"
+                                on:click=save_analytics_thresholds
+                                disabled=move || analytics_thresholds_loading.get() || analytics_thresholds_busy.get()
+                            >{move || if analytics_thresholds_busy.get() { "保存中..." } else { "保存阈值" }}</button>
+                        </Show>
+                    </details>
                     <Show when=move || analytics_loading.get() && decision_analytics.get().is_none()>
                         <div class="analytics-state">"正在聚合运行轨迹..."</div>
                     </Show>
@@ -4117,12 +5939,450 @@ pub fn DmnApp() -> impl IntoView {
                             findings=report.findings
                         />
                     })}
+                    <analytics::DecisionCopilotPanel
+                        token=token
+                        current_project=current_project
+                        can_route_write=Signal::derive(move || can_model.get() && !workflow_locked.get())
+                        on_route_write=route_copilot_write
+                    />
+                    <section class="optimization-shadow-history" aria-labelledby="optimization-shadow-title">
+                        <div class="optimization-shadow-heading">
+                            <div>
+                                <strong id="optimization-shadow-title">"自动草稿 Shadow 评估"</strong>
+                                <small>"只评估试点门槛，不会创建草稿；统计范围为当前已加载记录"</small>
+                            </div>
+                            <span>{move || shadow_evaluations.get().len()}</span>
+                        </div>
+                        <Show when=move || shadow_error.get().is_some()>
+                            <div class="analytics-error" role="alert">{move || shadow_error.get().unwrap_or_default()}</div>
+                        </Show>
+                        <Show when=move || !shadow_evaluations.get().is_empty()>
+                            <div class="optimization-shadow-summary">
+                                <span>{move || {
+                                    let evaluations = shadow_evaluations.get();
+                                    let passed = evaluations.iter().filter(|item| item.outcome == "eligible_shadow_candidate").count();
+                                    format!("门槛通过 {passed}")
+                                }}</span>
+                                <span>{move || {
+                                    let evaluations = shadow_evaluations.get();
+                                    let blocked = evaluations.iter().filter(|item| item.outcome != "eligible_shadow_candidate").count();
+                                    format!("阻断 {}", blocked)
+                                }}</span>
+                                <span>{move || format!("已加载 {} 条", shadow_evaluations.get().len())}</span>
+                            </div>
+                            <div class="optimization-shadow-list">
+                                <For each=move || shadow_evaluations.get() key=|item| item.id let:item>
+                                    <article>
+                                        <div>
+                                            <strong>{item.finding_code}</strong>
+                                            <span>{format!("模拟 #{} · 候选版本 #{}", item.simulation_id, item.candidate_version_id)}</span>
+                                        </div>
+                                        <span class=if item.outcome == "eligible_shadow_candidate" { "shadow-outcome is-eligible" } else { "shadow-outcome" }>
+                                            {if item.outcome == "eligible_shadow_candidate" { "门槛通过" } else { "已阻断" }}
+                                        </span>
+                                        <small>{format!("{} · 样本 {} · 一致率 {:.1}% → {:.1}% · {}", item.outcome, item.test_set_size, item.baseline_accuracy, item.simulated_accuracy, item.created_at.format("%Y-%m-%d %H:%M UTC"))}</small>
+                                    </article>
+                                </For>
+                            </div>
+                        </Show>
+                        <Show when=move || shadow_evaluations.get().is_empty() && !shadow_busy.get() && shadow_error.get().is_none()>
+                            <small class="optimization-resolution">"暂无 Shadow 评估记录"</small>
+                        </Show>
+                        <Show when=move || shadow_has_more.get()>
+                            <button class="button button-quiet" on:click=move |_| load_more_shadow_evaluations.run(()) disabled=move || shadow_busy.get()>
+                                {move || if shadow_busy.get() { "读取中..." } else { "加载更多评估记录" }}
+                            </button>
+                        </Show>
+                    </section>
+                    <section class="drift-rule-panel" aria-labelledby="drift-rule-title">
+                        <div class="drift-events-heading">
+                            <div>
+                                <strong id="drift-rule-title">"漂移扫描规则"</strong>
+                                <small>"后台每日检查当前发布版本；命中后只记录待处理事件"</small>
+                            </div>
+                            <span>{move || if drift_rule_enabled.get() { "已启用" } else { "已停用" }}</span>
+                        </div>
+                        <Show when=move || drift_rule_error.get().is_some()>
+                            <div class="analytics-error">{move || drift_rule_error.get().unwrap_or_default()}</div>
+                        </Show>
+                        <div class="drift-rule-controls">
+                            <Show when=move || can_model.get() fallback=|| view! {
+                                <div class="drift-rule-readonly">"当前角色可查看规则，只有项目建模者可以修改。"</div>
+                            }>
+                                <label class="drift-rule-toggle">
+                                    <input
+                                        type="checkbox"
+                                        prop:checked=move || drift_rule_enabled.get()
+                                        on:change=move |event| set_drift_rule_enabled.set(event_target_checked(&event))
+                                    />
+                                    <span>"启用每日漂移扫描"</span>
+                                </label>
+                                <div class="drift-rule-options">
+                                    <For
+                                        each=move || DRIFT_AUTOMATION_OPTIONS.to_vec()
+                                        key=|option| option.0
+                                        let:option
+                                    >
+                                        {
+                                            let code = option.0.to_string();
+                                            let checked_code = code.clone();
+                                            let label = option.1;
+                                            view! {
+                                                <label>
+                                                    <input
+                                                        type="checkbox"
+                                                        prop:checked=move || drift_rule_codes.get().contains(&checked_code)
+                                                        on:change=move |event| {
+                                                            let checked = event_target_checked(&event);
+                                                            let selected_code = code.clone();
+                                                            set_drift_rule_codes.update(|codes| {
+                                                                if checked && !codes.contains(&selected_code) {
+                                                                    codes.push(selected_code);
+                                                                    codes.sort();
+                                                                } else if !checked {
+                                                                    codes.retain(|item| item != &selected_code);
+                                                                }
+                                                            });
+                                                        }
+                                                    />
+                                                    <span>{label}</span>
+                                                </label>
+                                            }
+                                        }
+                                    </For>
+                                </div>
+                                <label class="drift-cooldown-field">
+                                    <span>"冷却时间（小时）"</span>
+                                    <input
+                                        type="number"
+                                        min="1"
+                                        max="720"
+                                        step="1"
+                                        prop:value=move || drift_rule_cooldown.get()
+                                        on:input=move |event| set_drift_rule_cooldown.set(event_target_value(&event))
+                                    />
+                                </label>
+                                <label class="drift-webhook-field">
+                                    <span>"Webhook HTTPS 地址"</span>
+                                    <input
+                                        type="url"
+                                        maxlength="2048"
+                                        placeholder="https://hooks.example.com/decision-drift"
+                                        prop:value=move || drift_webhook_url.get()
+                                        on:input=move |event| set_drift_webhook_url.set(event_target_value(&event))
+                                    />
+                                    <small>"目标主机必须由服务端白名单放行；通知会携带 HMAC-SHA256 签名。留空则不发送通知。"</small>
+                                </label>
+                                <button
+                                    class="button button-secondary"
+                                    on:click=save_drift_automation_rule
+                                    disabled=move || drift_rule_busy.get()
+                                >{move || if drift_rule_busy.get() { "保存中..." } else { "保存扫描规则" }}</button>
+                            </Show>
+                        </div>
+                        <Show when=move || drift_rule.get().is_some_and(|rule| rule.next_eligible_at.is_some())>
+                            <small class="drift-rule-next">{move || drift_rule.get().and_then(|rule| rule.next_eligible_at).map(|time| format!("下次可记录事件：{}", time.format("%Y-%m-%d %H:%M UTC"))).unwrap_or_default()}</small>
+                        </Show>
+                    </section>
+                    <Show when=move || !drift_events.get().is_empty() || drift_event_error.get().is_some()>
+                        <section class="drift-events" aria-labelledby="drift-events-title">
+                            <div class="drift-events-heading">
+                                <div>
+                                    <strong id="drift-events-title">"漂移事件"</strong>
+                                    <small>"事件保留扫描证据；准备提案不会创建草稿或发布版本"</small>
+                                </div>
+                                <span>{move || drift_events.get().iter().filter(|event| event.status == "open").count()}</span>
+                            </div>
+                            <Show when=move || drift_event_error.get().is_some()>
+                                <div class="analytics-error">{move || drift_event_error.get().unwrap_or_default()}</div>
+                            </Show>
+                            <div class="drift-event-list">
+                                <For
+                                    each=move || drift_events.get()
+                                    key=|event| event.id
+                                    let:event
+                                >
+                                    {
+                                        let event_id = event.id;
+                                        let source_version_number = event.evidence["sourceVersionNumber"]
+                                            .as_i64()
+                                            .unwrap_or(event.source_version_id);
+                                        let proposal_ids = event.action_result.as_ref()
+                                            .and_then(|result| result.get("proposalIds"))
+                                            .and_then(serde_json::Value::as_array)
+                                            .map(|ids| ids.iter().filter_map(serde_json::Value::as_i64).collect::<Vec<_>>())
+                                            .unwrap_or_default();
+                                        let status = match event.status.as_str() {
+                                            "proposal_created" => "已生成提案",
+                                            "dismissed" => "已忽略",
+                                            _ => "待处理",
+                                        };
+                                        let event_is_open = event.status == "open";
+                                        let webhook_status = event.webhook_delivery.as_ref()
+                                            .and_then(|delivery| delivery.get("status"))
+                                            .and_then(serde_json::Value::as_str)
+                                            .unwrap_or("")
+                                            .to_string();
+                                        let webhook_failed = webhook_status == "failed";
+                                        let webhook_error = event.webhook_delivery.as_ref()
+                                            .and_then(|delivery| delivery.get("lastError"))
+                                            .and_then(serde_json::Value::as_str)
+                                            .unwrap_or("")
+                                            .to_string();
+                                        let review_label = event.review_label.as_deref().unwrap_or("");
+                                        let review_text = match review_label {
+                                            "confirmed_drift" => "已确认漂移",
+                                            "false_positive" => "已标记误报",
+                                            "inconclusive" => "判定不确定",
+                                            _ => "未人工判定",
+                                        };
+                                        let reviewed_by = event.reviewed_by.clone().unwrap_or_default();
+                                        let reviewed_at = event
+                                            .reviewed_at
+                                            .as_ref()
+                                            .map(|time| time.format("%Y-%m-%d %H:%M UTC").to_string())
+                                            .unwrap_or_default();
+                                        view! {
+                                            <article class="drift-event-row">
+                                                <div class="drift-event-main">
+                                                    <div class="drift-event-title">
+                                                        <strong>{event.finding_codes.join(" · ")}</strong>
+                                                        <span>{status}</span>
+                                                    </div>
+                                                    <small>{format!("发布版本 v{} · {}", source_version_number, event.observed_at.format("%Y-%m-%d %H:%M UTC"))}</small>
+                                                    <p>{event.evidence["findings"].as_array().into_iter().flatten().filter_map(|finding| finding["message"].as_str()).collect::<Vec<_>>().join("；")}</p>
+                                                    <small>{if reviewed_by.is_empty() { review_text.into() } else { format!("人工判定：{} · {} · {}", review_text, reviewed_by, reviewed_at) }}</small>
+                                                    {(!webhook_status.is_empty()).then(|| view! {
+                                                        <small>{format!("通知状态：{}（第 {} 次尝试）", match webhook_status.as_str() { "pending" | "sending" => "投递中", "delivered" => "已送达", "failed" => "失败", _ => "未知" }, event.webhook_delivery.as_ref().and_then(|delivery| delivery.get("attemptCount")).and_then(serde_json::Value::as_i64).unwrap_or(0))}</small>
+                                                    })}
+                                                    {(!webhook_error.is_empty()).then(|| view! { <small>{format!("通知错误：{webhook_error}")}</small> })}
+                                                    <button
+                                                        class="button button-ghost"
+                                                        on:click=move |_| load_drift_event_impact.run(event_id)
+                                                        disabled=move || drift_impact_busy.get().is_some()
+                                                    >{move || if drift_impact_busy.get() == Some(event_id) { "读取中..." } else { "查看近 30 天影响" }}</button>
+                                                    {move || drift_impacts.get().get(&event_id).cloned().map(|report| view! {
+                                                        <div class="drift-impact-report" role="status">
+                                                            <small>{format!("版本记录 #{} 近 30 天共运行 {} 次：成功 {}，失败 {}；有效反馈 {}，其中偏差 {}。", report.source_version_id, report.total_runs, report.succeeded_runs, report.failed_runs, report.feedback_runs, report.mismatch_runs)}</small>
+                                                            <For each=move || report.elements.clone() key=|impact| impact.element.clone() let:impact>
+                                                                <small>{format!("{}：命中 {} 次，成功 {} 次，反馈 {} 次，偏差 {} 次；规则 {}", impact.element, impact.observed_runs, impact.succeeded_runs, impact.feedback_runs, impact.mismatch_runs, if impact.matched_rule_ids.is_empty() { "无规则命中明细".into() } else { impact.matched_rule_ids.join(", ") })}</small>
+                                                            </For>
+                                                        </div>
+                                                    })}
+                                                    {(!proposal_ids.is_empty()).then(|| view! {
+                                                        <small>{format!("提案 ID：{}", proposal_ids.iter().map(i64::to_string).collect::<Vec<_>>().join(", "))}</small>
+                                                    })}
+                                                </div>
+                                                <Show when=move || event_is_open || webhook_failed || can_model.get()>
+                                                    <div class="drift-event-actions">
+                                                        <Show when=move || can_model.get()>
+                                                            <button
+                                                                class="button button-ghost"
+                                                                on:click=move |_| review_drift_event.run((event_id, "confirmed_drift".into()))
+                                                                disabled=move || drift_event_busy.get()
+                                                            >"确认漂移"</button>
+                                                            <button
+                                                                class="button button-ghost"
+                                                                on:click=move |_| review_drift_event.run((event_id, "false_positive".into()))
+                                                                disabled=move || drift_event_busy.get()
+                                                            >"标记误报"</button>
+                                                            <button
+                                                                class="button button-ghost"
+                                                                on:click=move |_| review_drift_event.run((event_id, "inconclusive".into()))
+                                                                disabled=move || drift_event_busy.get()
+                                                            >"不确定"</button>
+                                                            <Show when=move || webhook_failed>
+                                                                <button
+                                                                    class="button button-ghost"
+                                                                    on:click=move |_| retry_drift_webhook.run(event_id)
+                                                                    disabled=move || drift_event_busy.get()
+                                                                >{move || if drift_event_busy.get() { "处理中..." } else { "重试通知" }}</button>
+                                                            </Show>
+                                                            <Show when=move || event_is_open>
+                                                            <button
+                                                                class="button button-secondary"
+                                                                on:click=move |_| prepare_drift_event_proposals.run(event_id)
+                                                                disabled=move || drift_event_busy.get()
+                                                            >{move || if drift_event_busy.get() { "处理中..." } else { "准备提案" }}</button>
+                                                            <button
+                                                                class="button button-ghost"
+                                                                on:click=move |_| dismiss_drift_event.run(event_id)
+                                                                disabled=move || drift_event_busy.get()
+                                                            >"忽略"</button>
+                                                            </Show>
+                                                        </Show>
+                                                    </div>
+                                                </Show>
+                                            </article>
+                                        }
+                                    }
+                                </For>
+                            </div>
+                        </section>
+                    </Show>
+                    <Show when=move || !drift_scan_windows.get().is_empty() || drift_event_error.get().is_some()>
+                        <section class="drift-events" aria-labelledby="drift-windows-title">
+                            <div class="drift-events-heading">
+                                <div>
+                                    <strong id="drift-windows-title">"每日扫描窗口"</strong>
+                                    <small>"包含未触发事件的完整分析快照；人工标签用于阈值回放"</small>
+                                </div>
+                                <span>{move || drift_scan_windows.get().len()}</span>
+                            </div>
+                            <div class="drift-event-list">
+                                <For
+                                    each=move || newest_drift_scan_windows(drift_scan_windows.get())
+                                    key=|window| window.id
+                                    let:window
+                                >
+                                    {
+                                        let window_id = window.id;
+                                        let report = &window.evidence;
+                                        let findings = report["findings"].as_array()
+                                            .into_iter().flatten()
+                                            .filter_map(|finding| finding["code"].as_str())
+                                            .collect::<Vec<_>>();
+                                        let finding_label = if findings.is_empty() { "无触发信号".to_string() } else { findings.join(" · ") };
+                                        let summary = &report["summary"];
+                                        let run_count = summary["totalRuns"].as_i64().unwrap_or(0);
+                                        let outcome_count = summary["conclusiveOutcomeRuns"].as_i64().unwrap_or(0);
+                                        let failure_rate = summary["failureRate"].as_f64().unwrap_or(0.0) * 100.0;
+                                        let mismatch_rate = summary["mismatchRate"].as_f64().unwrap_or(0.0) * 100.0;
+                                        let label = window.review_label.as_deref().unwrap_or("");
+                                        let label_text = match label {
+                                            "drift" => "确认漂移",
+                                            "normal" => "正常窗口",
+                                            "inconclusive" => "不确定",
+                                            _ => "待人工判定",
+                                        };
+                                        let reviewer = window.reviewed_by.clone().unwrap_or_default();
+                                        let reviewed_at = window.reviewed_at
+                                            .map(|time| time.format("%Y-%m-%d %H:%M UTC").to_string())
+                                            .unwrap_or_default();
+                                        view! {
+                                            <article class="drift-event-row">
+                                                <div class="drift-event-main">
+                                                    <div class="drift-event-title">
+                                                        <strong>{window.scan_day.format("%Y-%m-%d").to_string()}</strong>
+                                                        <span>{finding_label}</span>
+                                                    </div>
+                                                    <small>{format!("发布版本 #{} · {} 次运行 · {} 条有效反馈", window.source_version_id, run_count, outcome_count)}</small>
+                                                    <small>{format!("失败率 {:.1}% · 偏差率 {:.1}%", failure_rate, mismatch_rate)}</small>
+                                                    <small>{if reviewer.is_empty() { label_text.to_string() } else { format!("人工判定：{label_text} · {reviewer} · {reviewed_at}") }}</small>
+                                                    <p>{report["findings"].as_array().into_iter().flatten().filter_map(|finding| finding["message"].as_str()).collect::<Vec<_>>().join("；")}</p>
+                                                </div>
+                                                <Show when=move || can_model.get()>
+                                                    <div class="drift-event-actions">
+                                                        <button class="button button-ghost" on:click=move |_| review_drift_scan_window.run((window_id, "drift".into())) disabled=move || drift_event_busy.get()>"确认漂移"</button>
+                                                        <button class="button button-ghost" on:click=move |_| review_drift_scan_window.run((window_id, "normal".into())) disabled=move || drift_event_busy.get()>"标记正常"</button>
+                                                        <button class="button button-ghost" on:click=move |_| review_drift_scan_window.run((window_id, "inconclusive".into())) disabled=move || drift_event_busy.get()>"不确定"</button>
+                                                    </div>
+                                                </Show>
+                                            </article>
+                                        }
+                                    }
+                                </For>
+                            </div>
+                        </section>
+                    </Show>
+                    <Show when=move || !deviation_analyses.get().is_empty() || drift_event_error.get().is_some()>
+                        <section class="drift-events" aria-labelledby="deviation-review-title">
+                            <div class="drift-events-heading">
+                                <div>
+                                    <strong id="deviation-review-title">"偏差归因抽检"</strong>
+                                    <small>"最近 100 条自动归因候选；不展示业务输入或输出值"</small>
+                                </div>
+                                <span>{move || deviation_analyses.get().len()}</span>
+                            </div>
+                            <div class="drift-event-list">
+                                <For each=move || deviation_analyses.get() key=|analysis| analysis.id let:analysis>
+                                    {
+                                        let analysis_id = analysis.id;
+                                        let label = analysis.review_label.as_deref().unwrap_or("");
+                                        let review_text = match label {
+                                            "correct" => "归因正确",
+                                            "incorrect" => "归因错误",
+                                            "inconclusive" => "证据不足",
+                                            _ => "待人工判定",
+                                        };
+                                        let reviewer = analysis.reviewed_by.clone().unwrap_or_default();
+                                        let reviewed_at = analysis.reviewed_at
+                                            .map(|time| time.format("%Y-%m-%d %H:%M UTC").to_string())
+                                            .unwrap_or_default();
+                                        let is_candidate = analysis.status == "candidate";
+                                        let status = if is_candidate { "候选规则" } else { "证据不足" };
+                                        let rule = analysis.attributed_rule.clone().unwrap_or_else(|| "未定位候选规则".into());
+                                        view! {
+                                            <article class="drift-event-row">
+                                                <div class="drift-event-main">
+                                                    <div class="drift-event-title">
+                                                        <strong>{format!("运行 #{} · {}", analysis.decision_run_id, rule)}</strong>
+                                                        <span>{status}</span>
+                                                    </div>
+                                                    <small>{format!("候选置信度 {:.0}% · {}", analysis.confidence * 100.0, analysis.created_at.format("%Y-%m-%d %H:%M UTC"))}</small>
+                                                    <small>{if reviewer.is_empty() { review_text.to_string() } else { format!("人工判定：{review_text} · {reviewer} · {reviewed_at}") }}</small>
+                                                </div>
+                                                <Show when=move || can_model.get()>
+                                                    <div class="drift-event-actions">
+                                                        <Show when=move || is_candidate>
+                                                            <button class="button button-ghost" on:click=move |_| review_deviation_analysis.run((analysis_id, "correct".into())) disabled=move || drift_event_busy.get()>"归因正确"</button>
+                                                            <button class="button button-ghost" on:click=move |_| review_deviation_analysis.run((analysis_id, "incorrect".into())) disabled=move || drift_event_busy.get()>"归因错误"</button>
+                                                        </Show>
+                                                        <button class="button button-ghost" on:click=move |_| review_deviation_analysis.run((analysis_id, "inconclusive".into())) disabled=move || drift_event_busy.get()>"证据不足"</button>
+                                                    </div>
+                                                </Show>
+                                            </article>
+                                        }
+                                    }
+                                </For>
+                            </div>
+                        </section>
+                    </Show>
                     <Show when=move || !optimization_proposals.get().is_empty() || proposal_error.get().is_some()>
-                        <div class="optimization-proposals">
+                        <div class="optimization-proposals" id="optimization-proposals">
                             <div class="optimization-proposals-heading">
-                                <div><strong>"优化建议"</strong><small>"建议基于发布版本运行快照；确认仅创建草稿，不会自动修改或发布模型"</small></div>
+                                <div>
+                                    <strong>"优化建议"</strong>
+                                    <small>"建议基于发布版本运行快照；确认仅创建草稿，不会自动修改或发布模型"</small>
+                                    <small>{move || {
+                                        let proposals = optimization_proposals.get();
+                                        let total = proposals.len();
+                                        let drafts = proposals
+                                            .iter()
+                                            .filter(|proposal| {
+                                                proposal.status == "confirmed"
+                                                    && proposal.resulting_version_id.is_some()
+                                            })
+                                            .count();
+                                        let rate = if total == 0 {
+                                            0.0
+                                        } else {
+                                            drafts as f64 / total as f64 * 100.0
+                                        };
+                                        format!("累计草稿转化 {drafts}/{total} · {rate:.1}%")
+                                    }}</small>
+                                </div>
                                 <span>{move || optimization_proposals.get().iter().filter(|proposal| proposal.status == "open").count()}</span>
                             </div>
+                            <label class="simulation-version-picker">
+                                <span>"效果模拟候选版本"</span>
+                                <select
+                                    prop:value=move || simulation_candidate_version_id.get().map(|id| id.to_string()).unwrap_or_default()
+                                    on:change=move |event| {
+                                        set_simulation_candidate_version_id.set(
+                                            event_target_value(&event).parse::<i64>().ok(),
+                                        );
+                                        set_optimization_simulation.set(None);
+                                    }
+                                >
+                                    <option value="">"请选择候选版本"</option>
+                                    <For each=move || versions.get() key=|version| version.id let:version>
+                                        <option value=version.id.to_string()>
+                                            {format!("v{} · {}", version.version_number, version.status)}
+                                        </option>
+                                    </For>
+                                </select>
+                            </label>
                             <Show when=move || proposal_error.get().is_some()>
                                 <div class="analytics-error">{move || proposal_error.get().unwrap_or_default()}</div>
                             </Show>
@@ -4136,15 +6396,113 @@ pub fn DmnApp() -> impl IntoView {
                                         let actions = optimization_proposal_actions(&proposal);
                                         let confirm_id = proposal.id;
                                         let dismiss_id = proposal.id;
+                                        let simulation_id = proposal.id;
+                                        let proposal_key = proposal.id;
                                         let is_open = proposal.status == "open";
+                                        let proposal_prompt =
+                                            optimization_proposal_handoff_prompt(&proposal);
+                                        let proposal_prompt = RwSignal::new(proposal_prompt);
+                                        let route_proposal = route_copilot_write;
+                                        let can_confirm = move || {
+                                            optimization_proposals
+                                                .get()
+                                                .iter()
+                                                .any(|item| {
+                                                    item.id == proposal_key
+                                                        && item.latest_simulation_passed
+                                                })
+                                        };
                                         let resolution = if proposal.status == "confirmed" {
                                             proposal
                                                 .resulting_version_id
                                                 .map(|id| format!("已创建草稿 #{id}"))
                                                 .unwrap_or_default()
+                                        } else if proposal.status == "withdrawn" {
+                                            proposal.resolution_note.clone()
                                         } else {
                                             "已保留人工驳回记录".into()
                                         };
+                                        let effectiveness_summary = proposal
+                                            .effectiveness_result
+                                            .as_ref()
+                                            .map(|result| {
+                                                let window_summary = |label: &str, key: &str| {
+                                                    let window = &result[key];
+                                                    let baseline = window["baselineSampleCount"]
+                                                        .as_u64()
+                                                        .unwrap_or_default();
+                                                    let candidate = window["candidateSampleCount"]
+                                                        .as_u64()
+                                                        .unwrap_or_default();
+                                                    match window["status"].as_str() {
+                                                        Some("complete") => format!(
+                                                            "{label}预测 {:+.2}pp，实际 {:+.2}pp，误差 {:.2}pp",
+                                                            window["predictedImprovementPp"]
+                                                                .as_f64()
+                                                                .unwrap_or_default(),
+                                                            window["actualImprovementPp"]
+                                                                .as_f64()
+                                                                .unwrap_or_default(),
+                                                            window["absoluteErrorPp"]
+                                                                .as_f64()
+                                                                .unwrap_or_default(),
+                                                        ),
+                                                        Some("pending") => {
+                                                            format!("{label}观察窗口尚未结束")
+                                                        }
+                                                        _ => format!(
+                                                            "{label}样本积累中（基线 {baseline}，发布后 {candidate}）"
+                                                        ),
+                                                    }
+                                                };
+                                                if result.get("sevenDay").is_some() {
+                                                    format!(
+                                                        "效果追踪：{}；{}。",
+                                                        window_summary("7 天", "sevenDay"),
+                                                        window_summary("30 天", "thirtyDay"),
+                                                    )
+                                                } else {
+                                                    format!(
+                                                        "30 天效果追踪：预测改善 {:+.2} 个百分点，实际改善 {:+.2} 个百分点，误差 {:.2} 个百分点；反馈样本 {}/{}。",
+                                                        result["predictedImprovementPp"].as_f64().unwrap_or_default(),
+                                                        result["actualImprovementPp"].as_f64().unwrap_or_default(),
+                                                        result["absoluteErrorPp"].as_f64().unwrap_or_default(),
+                                                        result["baselineSampleCount"].as_u64().unwrap_or_default(),
+                                                        result["candidateSampleCount"].as_u64().unwrap_or_default(),
+                                                    )
+                                                }
+                                            });
+                                        let representative_runs = proposal.evidence["representativeRuns"]
+                                            .as_array()
+                                            .cloned()
+                                            .unwrap_or_default()
+                                            .into_iter()
+                                            .filter_map(|run| {
+                                                let run_id = run["runId"].as_i64()?;
+                                                let status = run["status"].as_str().unwrap_or("unknown");
+                                                let assessment = run["outcomeAssessment"]
+                                                    .as_str()
+                                                    .unwrap_or("未回填");
+                                                let fields = |key: &str| {
+                                                    run[key]
+                                                        .as_array()
+                                                        .into_iter()
+                                                        .flatten()
+                                                        .filter_map(|field| field.as_str())
+                                                        .collect::<Vec<_>>()
+                                                        .join("、")
+                                                };
+                                                Some(format!(
+                                                    "运行 #{} · {} · {} · 输入字段：{} · 输出字段：{}",
+                                                    run_id,
+                                                    status,
+                                                    assessment,
+                                                    fields("inputFields"),
+                                                    fields("outputFields"),
+                                                ))
+                                            })
+                                            .collect::<Vec<_>>();
+                                        let representative_runs = RwSignal::new(representative_runs);
                                         let resolution = RwSignal::new(resolution);
                                         view! {
                                             <article class=format!("optimization-proposal proposal-{}", proposal.finding_level)>
@@ -4153,6 +6511,14 @@ pub fn DmnApp() -> impl IntoView {
                                                     <span class=format!("proposal-status status-{}", proposal.status)>{optimization_proposal_status_label(&proposal.status)}</span>
                                                 </div>
                                                 <p>{proposal.summary}</p>
+                                                <Show when=move || !representative_runs.get().is_empty()>
+                                                    <div class="optimization-evidence">
+                                                        <strong>"代表运行证据（仅字段摘要）"</strong>
+                                                        <For each=move || representative_runs.get() key=|run| run.clone() let:run>
+                                                            <small>{run}</small>
+                                                        </For>
+                                                    </div>
+                                                </Show>
                                                 <ul>
                                                     <For each=move || actions.clone() key=|action| action.clone() let:action>
                                                         <li>{action}</li>
@@ -4160,21 +6526,69 @@ pub fn DmnApp() -> impl IntoView {
                                                 </ul>
                                                 <Show when=move || is_open>
                                                     <div class="optimization-proposal-actions">
-                                                        <button class="button button-primary" on:click=move |_| confirm_optimization_proposal(confirm_id) disabled=move || proposal_busy.get()>"确认并创建草稿"</button>
+                                                        <button
+                                                            class="button button-quiet"
+                                                            on:click=move |_| route_proposal.run(proposal_prompt.get())
+                                                            disabled=move || !can_model.get() || workflow_locked.get()
+                                                        >"按建议分析变更"</button>
+                                                        <button class="button button-primary" on:click=move |_| confirm_optimization_proposal(confirm_id) disabled=move || proposal_busy.get() || !can_confirm()>"确认并创建草稿"</button>
                                                         <button class="button button-quiet" on:click=move |_| dismiss_optimization_proposal(dismiss_id) disabled=move || proposal_busy.get()>"驳回"</button>
                                                     </div>
                                                 </Show>
+                                                <Show when=move || is_open && !can_confirm()>
+                                                    <small class="optimization-resolution">"请先运行候选版本模拟；通过后才能确认并创建草稿。"</small>
+                                                </Show>
+                                                <button
+                                                    class="button button-quiet"
+                                                    disabled=move || simulation_busy.get() || simulation_candidate_version_id.get().is_none()
+                                                    on:click=move |_| simulate_optimization.run(simulation_id)
+                                                >
+                                                    {move || if simulation_busy.get() { "模拟中..." } else { "模拟候选版本效果" }}
+                                                </button>
                                                 <Show when=move || !is_open>
                                                     <small class="optimization-resolution">{move || resolution.get()}</small>
                                                 </Show>
+                                                {effectiveness_summary.map(|summary| view! {
+                                                    <small class="optimization-resolution">{summary}</small>
+                                                })}
                                             </article>
                                         }
                                     }
                                 </For>
                             </div>
+                            <Show when=move || optimization_simulation.get().is_some()>
+                                <div class="optimization-simulation-result">
+                                    {move || optimization_simulation.get().map(|report| view! {
+                                        <>
+                                            <strong>{format!("效果模拟 · {} 个样本", report.test_set_size)}</strong>
+                                            <strong>{if report.passed { "模拟通过" } else if report.test_set_size < report.minimum_sample_count { "样本不足" } else { "模拟未通过" }}</strong>
+                                            <span>{format!("基线 v{} 一致率 {:.2}% → 候选 v{} {:.2}%（{:+.2} 个百分点）", report.baseline_version_id, report.baseline_accuracy, report.candidate_version_id, report.simulated_accuracy, report.accuracy_improvement)}</span>
+                                            <span>{format!("偏差率：{:.2}% → {:.2}%", report.bias_rate_baseline, report.bias_rate_simulated)}</span>
+                                            <span>{if report.sample_source == "approved_business_tests" { "样本来源：已确认业务验收案例" } else { "样本来源：成功历史执行记录（行为基线，不代表业务真值）" }}</span>
+                                            <small>{report.estimated_business_impact}</small>
+                                            {report.shadow_evaluation.map(|outcome| view! {
+                                                <small>{match outcome.as_str() {
+                                                    "eligible_shadow_candidate" if report.autodraft_created_version_id.is_some() => "自动草稿已创建；仍需完成业务验收、独立复核和人工发布。".to_string(),
+                                                    "eligible_shadow_candidate" if report.autodraft_error.is_some() => "自动草稿创建失败；已记录审计，请人工处理。".to_string(),
+                                                    "eligible_shadow_candidate" => "自动草稿门控通过；当前为 Shadow 模式，仅记录结果。".to_string(),
+                                                    "blocked_project_risk" => "Shadow 未通过：项目风险等级不符合试点范围。".to_string(),
+                                                    "blocked_finding_code" => "Shadow 未通过：发现类型不在试点白名单。".to_string(),
+                                                    "blocked_unlabeled_samples" => "Shadow 未通过：样本不是已批准业务案例。".to_string(),
+                                                    "blocked_insufficient_samples" => "Shadow 未通过：业务案例数量不足。".to_string(),
+                                                    "blocked_simulation" => "Shadow 未通过：候选模拟未通过。".to_string(),
+                                                    _ => "Shadow 未通过：变更风险不符合试点门槛。".to_string(),
+                                                }}</small>
+                                            })}
+                                            {report.autodraft_created_version_id.map(|version_id| view! {
+                                                <small>{format!("自动创建的草稿版本 ID：{version_id}；该草稿未验收、未复核、未发布。")}</small>
+                                            })}
+                                        </>
+                                    })}
+                                </div>
+                            </Show>
                         </div>
                     </Show>
-                    <analytics::DecisionAnalyticsMetrics report=decision_analytics />
+                    <analytics::DecisionAnalyticsMetrics report=decision_analytics runs=service_runs />
                 </section>
             </Show>
 
@@ -4354,7 +6768,11 @@ pub fn DmnApp() -> impl IntoView {
                                     let status = test_case.status.clone();
                                     let status_for_class = status.clone();
                                     let status_for_label = status.clone();
-                                    let is_generated = test_case.source == "generated";
+                                    let source_label = match test_case.source.as_str() {
+                                        "generated" => "规则生成 · 待业务核对",
+                                        "tester_proposal" => "Tester 提案 · 业务填写",
+                                        _ => "人工录入",
+                                    };
                                     let can_approve = status == "passed";
                                     let can_select = can_approve;
                                     let input = serde_json::to_string_pretty(&test_case.input_json).unwrap_or_default();
@@ -4398,8 +6816,12 @@ pub fn DmnApp() -> impl IntoView {
                                                 </label>
                                                 <strong>{test_case.name}</strong>
                                                 <span>{move || if test_case_running.get() { "执行中..." } else { match status_for_label.as_str() { "passed" => "通过", "failed" => "不一致", "error" => "错误", _ => "待运行" } }}</span>
-                                                <small class=if is_generated { "case-source generated" } else { "case-source manual" }>
-                                                    {if is_generated { "规则生成 · 待业务核对" } else { "人工录入" }}
+                                                <small class=match test_case.source.as_str() {
+                                                    "generated" => "case-source generated",
+                                                    "tester_proposal" => "case-source tester-proposal",
+                                                    _ => "case-source manual",
+                                                }>
+                                                    {source_label}
                                                 </small>
                                             </div>
                                             <em>{if approved { "已批准" } else if can_approve { "待批准" } else { "通过后可批准" }}</em>
@@ -4421,8 +6843,9 @@ pub fn DmnApp() -> impl IntoView {
                                             <button
                                                 class="button button-quiet"
                                                 on:click=move |_| approve_business_test_case(case_id, !approved)
-                                                title=if !can_approve { "请先运行案例，只有执行通过的案例可以批准" } else if approved { "撤销此案例批准" } else { "批准此案例" }
+                                                title=move || if !can_review.get() { "仅复核者可批准业务验收案例" } else if !can_approve { "请先运行案例，只有执行通过的案例可以批准" } else if approved { "撤销此案例批准" } else { "批准此案例" }
                                                 disabled=move || test_case_busy.get()
+                                                    || !can_review.get()
                                                     || !can_approve
                                                     || current_version.get().is_some_and(|version| matches!(version.status.as_str(), "published" | "retired"))
                                             >{if approved { "撤销批准" } else { "批准" }}</button>
@@ -4467,6 +6890,11 @@ pub fn DmnApp() -> impl IntoView {
                                 on_verify=verify_current_version
                                 on_publish=publish_current_version
                                 on_review=review_current_version
+                                on_view_change=move |_| {
+                                    if let Some(version) = current_version.get() {
+                                        select_version_review(version.id.to_string());
+                                    }
+                                }
                                 busy=verification_busy
                                 published=published
                                 action_error=release_error
@@ -4580,7 +7008,19 @@ pub fn DmnApp() -> impl IntoView {
                                     </div>
                                 </div>
                                 <div class="workflow-requirement-editor analysis-editor">
-                                    <label for="decision-requirement">"业务需求"</label>
+                                    <div class="workflow-requirement-heading">
+                                        <label for="decision-requirement">"业务需求"</label>
+                                        <label class="workflow-requirement-import" title="导入会替换当前需求，支持 TXT 和 Markdown">
+                                            <input
+                                                class="knowledge-import-input"
+                                                type="file"
+                                                accept=".txt,.md,.markdown,text/plain,text/markdown"
+                                                disabled=move || workflow_locked.get() || requirement_importing.get() || !can_model.get()
+                                                on:change=import_requirement_document
+                                            />
+                                            <span>{move || if requirement_importing.get() { "读取中..." } else { "导入需求文档" }}</span>
+                                        </label>
+                                    </div>
                                     <textarea
                                         id="decision-requirement"
                                         class="workflow-requirement-input"
@@ -4588,8 +7028,11 @@ pub fn DmnApp() -> impl IntoView {
                                         prop:value=prompt
                                         on:input=move |event| set_prompt.set(event_target_value(&event))
                                         on:keydown=on_keydown
-                                        disabled=move || workflow_locked.get() || !can_model.get()
+                                        disabled=move || workflow_locked.get() || requirement_importing.get() || !can_model.get()
                                     ></textarea>
+                                    <Show when=move || requirement_import_error.get().is_some()>
+                                        <small class="workflow-requirement-import-error" role="alert">{move || requirement_import_error.get().unwrap_or_default()}</small>
+                                    </Show>
                                     <Show when=move || can_model.get()>
                                         <button
                                             class="button button-primary analysis-submit"
@@ -4598,6 +7041,48 @@ pub fn DmnApp() -> impl IntoView {
                                         >
                                             {move || if workflow_analyzing.get() { "分析中..." } else { "开始分析需求" }}
                                         </button>
+                                        <button
+                                            class="button button-quiet"
+                                            on:click=recommend_current_requirement
+                                            disabled=move || pattern_recommendations_busy.get() || prompt.get().trim().is_empty()
+                                        >{move || if pattern_recommendations_busy.get() { "检索中..." } else { "查找相似已发布模式" }}</button>
+                                    </Show>
+                                    <Show when=move || !pattern_recommendations.get().is_empty()>
+                                        <section class="pattern-recommendations workflow-pattern-recommendations" aria-label="需求相关的已发布模式">
+                                            <strong>"可复用的已发布模式"</strong>
+                                            <For
+                                                each=move || { pattern_recommendations.get().into_iter().take(3).collect::<Vec<_>>() }
+                                                key=|item| item.recommendation_id
+                                                let:item
+                                            >
+                                                {
+                                                    let version_id = item.source_version_id;
+                                                    let project_name = item.source_project_name.clone();
+                                                    let version_number = item.source_version_number;
+                                                    view! {
+                                                        <article class="pattern-recommendation">
+                                                            <div>
+                                                                <strong>{item.name}</strong>
+                                                                <span>{format!("匹配度 {:.0}%", item.match_score)}</span>
+                                                            </div>
+                                                            <small>{format!("来源：{} v{}", project_name, version_number)}</small>
+                                                            <small>{format!("模式演进 v{}", item.evolution_number)}</small>
+                                                            <p>{item.recommendation_reason}</p>
+                                                            <button
+                                                                class="button button-quiet"
+                                                                on:click=move |_| {
+                                                                    if let Some(history) = model_library.get().into_iter().find(|entry| entry.source_version_id == Some(version_id)) {
+                                                                        select_model_library_item(history.source_kind, history.source_id, history.name);
+                                                                    }
+                                                                    set_workspace_view.set(WorkspaceView::Resources);
+                                                                    set_resource_view.set(ResourceView::Models);
+                                                                }
+                                                            >"前往模型库复用"</button>
+                                                        </article>
+                                                    }
+                                                }
+                                            </For>
+                                        </section>
                                     </Show>
                                 </div>
                             </div>
@@ -4609,17 +7094,56 @@ pub fn DmnApp() -> impl IntoView {
                         </Show>
                         <Show when=move || decision_workflow.get().as_ref().is_some_and(|workflow| !workflow.clarifications.is_empty() && workflow.status != "confirmed")>
                             <section id="workflow-clarifications" class="analysis-questions" aria-label="需要你确认的问题">
-                                <div class="analysis-card-heading"><h3>"需要你确认的问题"</h3><span>"先回答标记为“需要回答”的问题"</span></div>
+                                <div class="analysis-card-heading"><h3>"需要你确认的问题"</h3><span>{move || decision_workflow.get().map(|workflow| format!("第 {} 轮 · 最多 3 项", workflow.clarifications.iter().map(|item| item.round).max().unwrap_or(1))).unwrap_or_default()}</span></div>
                                 <p class="analysis-section-description">"这些回答可能影响最终判断，请按实际业务情况补充。"</p>
                                 <div class="clarification-list">
-                                    <For each=move || decision_workflow.get().map(|workflow| workflow.clarifications).unwrap_or_default() key=|item| item.id.clone() let:item>
+                                    <For each=move || decision_workflow.get().map(|workflow| {
+                                        let current_round = workflow.clarifications.iter().map(|item| item.round).max().unwrap_or(1);
+                                        workflow.clarifications.into_iter().filter(|item| item.round == current_round).collect::<Vec<_>>()
+                                    }).unwrap_or_default() key=|item| item.id.clone() let:item>
                                         <ClarificationInput item=item answers=clarification_answers set_answers=set_clarification_answers disabled=Signal::derive(move || workflow_locked.get() || !can_model.get()) />
                                     </For>
                                 </div>
                             </section>
                         </Show>
                         <Show when=move || decision_workflow.get().and_then(|workflow| workflow.plan).is_some()>
-                            {move || decision_workflow.get().and_then(|workflow| workflow.plan).map(|plan| view! { <DecisionPlanView plan=plan /> })}
+                            {move || decision_workflow.get().and_then(|workflow| {
+                                let plan = workflow.plan?;
+                                Some(view! { <DecisionPlanView plan=plan requirements=workflow.brief.requirement_items /> })
+                            })}
+                        </Show>
+                        <Show when=move || decision_workflow.get().and_then(|workflow| workflow.tester_report).is_some()>
+                            {move || decision_workflow.get().and_then(|workflow| workflow.tester_report).map(|report| {
+                                let project = current_project.get();
+                                let draft_version_id = project.as_ref().and_then(|project| {
+                                    current_version.get().filter(|version| {
+                                        project.current_draft_version_id == Some(version.id)
+                                    }).map(|version| version.id)
+                                });
+                                let project_id = project.map(|project| project.id);
+                                view! {
+                                    <TesterReportView
+                                        report=report
+                                        project_id=project_id
+                                        version_id=draft_version_id
+                                        token=token.get()
+                                        can_model=can_model
+                                        on_converted=Callback::new(move |test_case: DecisionTestCase| {
+                                            set_decision_test_cases.update(|cases| {
+                                                if !cases.iter().any(|existing| existing.id == test_case.id) {
+                                                    cases.push(test_case.clone());
+                                                }
+                                            });
+                                            set_verification_report.set(None);
+                                            set_publish_confirmed.set(false);
+                                            set_workspace_view.set(WorkspaceView::Validation);
+                                            mark_version_draft(test_case.version_id);
+                                            set_version_save_status.set(Some("Tester 提案已转为待执行用例，请运行并交由复核者批准".into()));
+                                            set_audit_revision.update(|revision| *revision += 1);
+                                        })
+                                    />
+                                }
+                            })}
                         </Show>
                         <Show when=move || decision_workflow.get().is_some()>
                             <details class="analysis-details analysis-requirement-details" open=move || !workflow_current.get()>
@@ -4646,10 +7170,47 @@ pub fn DmnApp() -> impl IntoView {
                                     <span>{move || workflow_error.get().unwrap_or_default()}</span>
                                 </div>
                             </div>
+                            <Show when=move || workflow_retry_id.get().is_some()>
+                                <button
+                                    class="button button-quiet"
+                                    on:click=retry_requirement_analysis
+                                    disabled=move || workflow_locked.get() || workflow_busy.get()
+                                    title="仅重试已识别的临时模型故障"
+                                >
+                                    "重试临时故障"
+                                </button>
+                            </Show>
+                            <Show when=move || plan_retry_id.get().is_some()>
+                                <button
+                                    class="button button-quiet"
+                                    on:click=retry_decision_plan
+                                    disabled=move || workflow_locked.get() || workflow_busy.get()
+                                    title="仅重试已识别的临时模型故障"
+                                >
+                                    "重试方案规划"
+                                </button>
+                            </Show>
+                            <Show when=move || facilitator_retry_id.get().is_some()>
+                                <button
+                                    class="button button-quiet"
+                                    on:click=retry_clarification
+                                    disabled=move || workflow_locked.get() || workflow_busy.get()
+                                    title="仅重试已识别的临时模型故障"
+                                >
+                                    "重试澄清主持"
+                                </button>
+                            </Show>
                         </Show>
-                        <Show when=move || workflow_analyzing.get()>
+                        <Show when=move || workflow_analyzing.get() || workflow_planning.get() || workflow_facilitating.get()>
                             <div id="workflow-analysis-progress">
-                                <RequirementAnalysisProgress prompt=prompt agent_activity=agent_activity />
+                                <RequirementAnalysisProgress
+                                    prompt=prompt
+                                    agent_activity=agent_activity
+                                    orchestration_stage=workflow_orchestration_stage
+                                    orchestration_events=workflow_orchestration_events
+                                    planning=workflow_planning
+                                    on_cancel=Callback::new(move |_| stop_workflow_operation(()))
+                                />
                             </div>
                         </Show>
                         <Show when=move || can_model.get()>
@@ -4659,17 +7220,38 @@ pub fn DmnApp() -> impl IntoView {
                                     class="button button-quiet"
                                     on:click=analyze_requirement
                                     title="重新分析当前业务需求，成功后重新规划与确认方案"
-                                    disabled=move || workflow_locked.get() || prompt.get().trim().is_empty()
+                                    disabled=move || workflow_locked.get() || workflow_busy.get() || prompt.get().trim().is_empty()
                                 >
                                     {move || if workflow_analyzing.get() { "分析中..." } else { "重新分析" }}
                                 </button>
                             </Show>
-                            <Show when=move || !workflow_analyzing.get()>
-                                <Show when=move || decision_workflow.get().as_ref().is_some_and(|workflow| workflow.plan.is_none() || (workflow.status == "planned" && workflow_answers_changed.get()))>
+                            <Show when=move || !workflow_analyzing.get() && !workflow_planning.get()>
+                                <Show when=move || decision_workflow.get().as_ref().is_some_and(|workflow| workflow.status == "clarification" && workflow.plan.is_none())>
+                                    <button
+                                        class="button button-primary"
+                                        on:click=continue_clarification
+                                        disabled=move || workflow_locked.get() || !workflow_current.get() || (missing_clarifications.get() > 0)
+                                        title="每轮最多追问 3 项；未回答的可选问题会跳过"
+                                    >
+                                        "提交本轮并继续澄清"
+                                    </button>
+                                    <Show when=move || (missing_clarifications.get() > 0)>
+                                        <span class="workflow-action-hint">{move || format!("还需回答 {} 个必答问题", missing_clarifications.get())}</span>
+                                    </Show>
+                                </Show>
+                                <Show when=move || decision_workflow.get().as_ref().is_some_and(|workflow| workflow.status != "clarification" && (workflow.plan.is_none() || (workflow.status == "planned" && workflow_answers_changed.get())) && !simple_direct_workflow_eligible(workflow))>
                                     <button class="button button-primary" on:click=create_decision_plan disabled=move || workflow_locked.get() || !workflow_current.get() || (missing_clarifications.get() > 0)>
                                         {move || if workflow_planning.get() { "规划中..." } else if workflow_answers_changed.get() { "按新回答重新规划" } else { "生成决策方案" }}
                                     </button>
                                     <Show when=move || (missing_clarifications.get() > 0)><span class="workflow-action-hint">{move || format!("还需回答 {} 个必答问题", missing_clarifications.get())}</span></Show>
+                                </Show>
+                                <Show when=move || decision_workflow.get().as_ref().is_some_and(simple_direct_workflow_eligible)>
+                                    <div class="workflow-ready-actions">
+                                        <span class="workflow-action-hint">"将直接生成候选模型；请检查结果后再确认保存为草稿"</span>
+                                        <button class="button button-primary" on:click=move |_| generate_model_action() disabled=move || workflow_locked.get() || !workflow_current.get()>
+                                            "直接生成模型候选"
+                                        </button>
+                                    </div>
                                 </Show>
                                 <Show when=move || decision_workflow.get().as_ref().is_some_and(|workflow| workflow.status == "planned") && !workflow_answers_changed.get()>
                                     <button class="button button-primary" on:click=confirm_decision_plan disabled=move || workflow_locked.get() || !workflow_current.get()>
@@ -5052,9 +7634,11 @@ pub fn DmnApp() -> impl IntoView {
                 <div class="error-banner" role="alert">
                     <strong>"运行未完成"</strong>
                     <span>{move || error.get().unwrap_or_default()}</span>
-                    <button class="button button-quiet" on:click=retry disabled=move || status.get() == RunStatus::Running>
-                        "重试上次请求"
-                    </button>
+                    <Show when=move || engineer_retry_id.get().is_some()>
+                        <button class="button button-quiet" on:click=retry disabled=move || status.get() == RunStatus::Running title="仅重试已识别的临时模型故障">
+                            "重试临时故障"
+                        </button>
+                    </Show>
                 </div>
             </Show>
             <footer class="footer-note">"同源安全连接 · API 密钥仅保留在服务端"</footer>

@@ -22,6 +22,7 @@ base64 = "0.22"
 chrono = { version = "0.4", features = ["serde"] }
 quick-xml = { version = "0.36", features = ["serialize"] }
 regex = "1.13.0"
+sha2 = "0.10"
 
 # 2. 前端依赖 - 可选，只在编译 WASM（启用 csr feature）时引入
 #    注意：必须写在普通 [dependencies] 段内，若写在 target 段会被目标过滤掉
@@ -31,7 +32,7 @@ leptos_router = { version = "0.8.15", optional = true }
 wasm-bindgen = { version = "=0.2.129", optional = true }
 console_error_panic_hook = { version = "0.1", optional = true }
 # 浏览器 API：reqwest 在 wasm 上要求绝对 URL，需用 window.location.origin 动态拼接
-web-sys = { version = "0.3", features = ["Window", "Location", "Navigator", "Clipboard", "AbortController", "AbortSignal", "Headers", "Request", "RequestInit", "Response", "ReadableStream", "ReadableStreamDefaultReader", "TextDecoder", "TextDecodeOptions", "Event", "BeforeUnloadEvent", "Element", "HtmlElement"], optional = true }
+web-sys = { version = "0.3", features = ["Window", "Location", "Navigator", "Clipboard", "Document", "HtmlDocument", "HtmlTextAreaElement", "Node", "AbortController", "AbortSignal", "Headers", "Request", "RequestInit", "Response", "ReadableStream", "ReadableStreamDefaultReader", "TextDecoder", "TextDecodeOptions", "Event", "BeforeUnloadEvent", "Element", "HtmlElement", "Blob", "File", "FileList", "HtmlInputElement"], optional = true }
 # 前端可选：localStorage 存储 token（由 csr feature 启用）
 gloo-storage = { version = "0.3", optional = true }
 
@@ -57,7 +58,6 @@ dotenvy = "0.15"
 jsonwebtoken = "9"
 argon2 = "0.5"
 hmac = "0.12"
-sha2 = "0.10"
 anyhow = "1.0"
 uuid = { version = "1.10", features = ["v4"] }
 petgraph = "0.6"
@@ -84,6 +84,7 @@ name = "fuxi-dmn"
 path = "src/main.rs"
 
 [package.metadata.leptos]
+bin-target = "fuxi-dmn"
 # site 根目录
 site-root = "target/site"
 site-pkg-dir = "pkg"

@@ -4,7 +4,7 @@ use super::*;
 #[test]
 fn test_literals() {
     assert_eq!(eval_feel("42"), Ok(FeelValue::Number(42.0)));
-    assert_eq!(eval_feel("3.14"), Ok(FeelValue::Number(3.14)));
+    assert_eq!(eval_feel("3.14"), Ok(FeelValue::Number(314.0 / 100.0)));
     assert_eq!(eval_feel("true"), Ok(FeelValue::Bool(true)));
     assert_eq!(eval_feel("false"), Ok(FeelValue::Bool(false)));
     assert_eq!(eval_feel("null"), Ok(FeelValue::Null));
@@ -240,7 +240,10 @@ fn test_numeric_functions() {
     assert_eq!(eval_feel("floor(3.7)"), Ok(FeelValue::Number(3.0)));
     assert_eq!(eval_feel("ceiling(3.2)"), Ok(FeelValue::Number(4.0)));
     assert_eq!(eval_feel("round(3.5)"), Ok(FeelValue::Number(4.0)));
-    assert_eq!(eval_feel("round(3.14159, 2)"), Ok(FeelValue::Number(3.14)));
+    assert_eq!(
+        eval_feel("round(3.14159, 2)"),
+        Ok(FeelValue::Number(314.0 / 100.0))
+    );
     assert_eq!(eval_feel("modulo(10, 3)"), Ok(FeelValue::Number(1.0)));
     assert_eq!(eval_feel("sqrt(16)"), Ok(FeelValue::Number(4.0)));
 }
@@ -1264,7 +1267,7 @@ fn test_new_list_functions_0001() {
     then "INELIGIBLE" else "ELIGIBLE"
     "#;
     let compiled = compile_feel(expr).unwrap();
-    println!("expr={}", compiled.expression().to_string());
+    println!("expr={}", compiled.expression());
 
     let result = compiled
         .eval_with(&HashMap::from([

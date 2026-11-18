@@ -144,11 +144,13 @@ pub fn VerificationReportView(
     busy: ReadSignal<bool>,
     published: bool,
     on_review: impl Fn(web_sys::MouseEvent) + Send + Sync + 'static,
+    on_view_change: impl Fn(web_sys::MouseEvent) + Send + Sync + 'static,
     action_error: ReadSignal<Option<String>>,
 ) -> impl IntoView {
     let on_verify = Callback::new(on_verify);
     let on_publish = Callback::new(on_publish);
     let on_review = Callback::new(on_review);
+    let on_view_change = Callback::new(on_view_change);
     let passed = report.status == "passed";
     let high_risk_review_required = report.gates.iter().any(|gate| {
         gate.code == "CHANGE_REVIEW"
@@ -302,7 +304,7 @@ pub fn VerificationReportView(
                 </div>
             </Show>
             <Show when=move || published>
-                <button class="button button-quiet" on:click=move |event| on_review.run(event)>"查看变更详情"</button>
+                <button class="button button-quiet" on:click=move |event| on_view_change.run(event)>"查看变更详情"</button>
             </Show>
         </section>
     }

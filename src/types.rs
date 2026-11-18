@@ -10,19 +10,19 @@ use std::{
 pub(crate) struct AppState {
     pub(crate) db: PgPool,
     pub(crate) jwt_secret: String,
-    pub(crate) hcaptcha_secret: String,
-    pub(crate) hcaptcha_site_key: String,
+    pub(crate) captcha_pow_difficulty: u8,
     pub(crate) captchas: Arc<Mutex<HashMap<String, CaptchaChallenge>>>,
     pub(crate) captcha_rate_limits: Arc<Mutex<HashMap<String, RateLimitWindow>>>,
     pub(crate) login_rate_limits: Arc<Mutex<HashMap<String, RateLimitWindow>>>,
     pub(crate) captcha_verify_limits: Arc<Mutex<HashMap<String, RateLimitWindow>>>,
     pub(crate) trust_proxy_headers: bool,
-    pub(crate) boot_time: Instant,
 }
 
 #[derive(Debug, Clone)]
 pub(crate) struct CaptchaChallenge {
     pub answer_digest: [u8; 32],
+    pub work_challenge: [u8; 16],
+    pub work_difficulty: u8,
     pub created_at: Instant,
     pub ttl_seconds: u64,
     pub attempts: u8,
@@ -31,7 +31,7 @@ pub(crate) struct CaptchaChallenge {
 
 impl CaptchaChallenge {
     pub fn is_expired(&self) -> bool {
-        self.created_at.elapsed().as_secs() > self.ttl_seconds
+        self.created_at.elapsed().as_secs() >= self.ttl_seconds
     }
 }
 
@@ -55,8 +55,12 @@ pub struct Claims {
 pub(crate) struct AuthPayload {
     pub username: String,
     pub password: String,
-    #[serde(rename = "hcaptchaToken")]
-    pub hcaptcha_token: String,
+    #[serde(rename = "captchaId")]
+    pub captcha_id: String,
+    #[serde(rename = "captchaCode")]
+    pub captcha_code: String,
+    #[serde(rename = "captchaWorkNonce")]
+    pub captcha_work_nonce: String,
 }
 
 #[derive(Debug, Serialize)]

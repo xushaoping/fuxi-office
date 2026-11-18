@@ -1,0 +1,35 @@
+# expected_status<TAB>expected_metric<TAB>expected_days<TAB>question
+answered	total_runs	30	运行次数
+answered	total_runs	7	最近 7 天调用量是多少
+answered	success_rate	30	成功比例
+answered	success_rate	7	过去一周成功率
+answered	failure_rate	30	失败率是多少
+answered	failure_rate	7	近7天失败比例
+answered	mismatch_rate	30	最近一个月业务偏差率
+answered	mismatch_rate	7	近 7 天不一致率
+answered	feedback_coverage	30	最近一个月回填覆盖率
+answered	feedback_coverage	7	过去 7 天反馈覆盖率
+answered	average_latency	30	平均耗时
+answered	average_latency	7	过去一周平均延迟
+answered	p95_latency	30	最近 30 天 P95 耗时
+answered	p95_latency	30	近三十天 95 分位耗时
+routed	-	-	把失败率调整到 5%
+routed	-	-	修改规则
+routed	-	-	删除这个决策
+routed	-	-	发布模型
+routed	-	-	审批当前版本
+routed	-	-	请帮我调整风险阈值
+routed	-	-	将风险等级改为高风险
+clarification	-	-	最近 30 天审批通过率是多少
+clarification	-	-	最近 30 天模型发布量是多少
+clarification	-	-	规则调整次数是多少
+clarification	-	-	最近 14 天失败率是多少
+clarification	-	-	上周失败率是多少
+clarification	-	-	本月失败率是多少
+clarification	-	-	最近两个月失败率是多少
+clarification	-	-	今年成功率是多少
+clarification	-	-	最近失败率和成功率
+clarification	-	-	最近 7 天 P95 耗时
+clarification	-	-	执行 SELECT * FROM users
+clarification	-	-	每天失败率是多少
+clarification	-	-	最近 30 天成功率和失败率

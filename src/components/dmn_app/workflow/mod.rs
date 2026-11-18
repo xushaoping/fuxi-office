@@ -4,7 +4,11 @@ use leptos::prelude::*;
 use std::collections::BTreeMap;
 
 use crate::components::common::{SelectOption, WorkbenchSelect};
-use crate::workflow::{Clarification, DecisionBrief, DecisionField, DecisionPlan};
+use crate::models::{CreateDecisionTestCase, DecisionTestCase};
+use crate::workflow::{
+    Clarification, DecisionBrief, DecisionField, DecisionPlan, RequirementItem,
+    SemanticTestProposal, TesterJudgeReview, TesterReport,
+};
 use presentation::{business_risk, business_type, field_label};
 
 #[component]
@@ -102,6 +106,8 @@ pub fn DecisionBriefView(
     let constraints = RwSignal::new(brief.constraints);
     let assumptions = RwSignal::new(brief.assumptions);
     let terms = RwSignal::new(brief.terms);
+    let detected_patterns = RwSignal::new(brief.detected_patterns);
+    let requirement_items = RwSignal::new(brief.requirement_items);
     let input_count = inputs.get_untracked().len();
     let output_count = outputs.get_untracked().len();
 
@@ -140,6 +146,37 @@ pub fn DecisionBriefView(
                 {(question_count > 0).then(|| view! { <p class="analysis-question-hint">{format!("还有 {question_count} 项业务问题，请在下方逐项核对并补充回答。")}</p> })}
             </section>
         </div>
+        <Show when=move || !requirement_items.get().is_empty()>
+            <details class="analysis-details requirement-reference-list">
+                <summary>"需求条目"<span>{move || format!("{} 项", requirement_items.get().len())}</span></summary>
+                <ul><For each=move || requirement_items.get() key=|item| item.id.clone() let:item>
+                    <li><code>{item.id}</code><span>{item.text}</span><small>{item.source}</small></li>
+                </For></ul>
+            </details>
+        </Show>
+        <Show when=move || !detected_patterns.get().is_empty()>
+            <section class="analysis-card analysis-patterns" aria-label="识别到的业务模式">
+                <div class="analysis-card-heading"><h3>"识别到的业务模式"</h3><span>"启发式线索"</span></div>
+                <p class="analysis-section-description">"这些模式用于辅助拆解需求，最终规则仍以你确认的业务事实为准。"</p>
+                <div class="analysis-pattern-list">
+                    <For each=move || detected_patterns.get() key=|pattern| pattern.pattern_type.clone() let:pattern>
+                        {let label = match pattern.pattern_type.as_str() {
+                            "tree" => "决策树",
+                            "matrix" => "评分矩阵",
+                            "workflow" => "流程序列",
+                            "threshold" => "阈值规则",
+                            _ => "业务模式",
+                        };
+                        view! {
+                            <article class="analysis-pattern-item">
+                                <div><strong>{label}</strong><span>{format!("置信度 {}%", pattern.confidence_percent)}</span></div>
+                                <small>{if pattern.matched_keywords.is_empty() { "基于结构特征识别".to_string() } else { format!("命中关键词：{}", pattern.matched_keywords.join("、")) }}</small>
+                            </article>
+                        }}
+                    </For>
+                </div>
+            </section>
+        </Show>
         <div class="analysis-information-grid">
             <section class="analysis-card">
                 <div class="analysis-card-heading"><h3>"需要提供的信息"</h3><span>{format!("{input_count} 项")}</span></div>
@@ -188,26 +225,69 @@ pub fn DecisionBriefView(
 pub fn RequirementAnalysisProgress(
     prompt: ReadSignal<String>,
     agent_activity: ReadSignal<String>,
+    orchestration_stage: ReadSignal<usize>,
+    orchestration_events: ReadSignal<Vec<String>>,
+    planning: ReadSignal<bool>,
+    on_cancel: Callback<()>,
 ) -> impl IntoView {
     view! {
         <section class="requirement-analysis-progress" aria-live="polite">
             <div class="analysis-progress-heading">
                 <span class="analysis-progress-indicator" aria-hidden="true"><i></i><i></i><i></i></span>
-                <div><strong>"正在分析需求"</strong><small>{move || agent_activity.get()}</small></div>
+                <div><strong>{move || if planning.get() { "方案规划运行中" } else { "需求分析运行中" }}</strong><small>{move || agent_activity.get()}</small></div>
+                <button class="button button-quiet" on:click=move |_| on_cancel.run(())>
+                    {move || if planning.get() { "停止规划" } else { "停止分析" }}
+                </button>
             </div>
             <p class="analysis-progress-prompt">{move || prompt.get()}</p>
             <div class="analysis-progress-steps">
-                <span class="is-complete">"提取业务目标和决策范围"</span>
-                <span class="is-active">"识别输入、输出和关键规则"</span>
-                <span>"检查歧义并准备澄清问题"</span>
+                <Show
+                    when=move || planning.get()
+                    fallback=move || view! {
+                        <div class=move || { if orchestration_stage.get() > 0 { "orchestration-stage is-complete" } else { "orchestration-stage is-active" } }>
+                            <b>"01"</b><strong>"风险路由"</strong><small>"协调器"</small>
+                        </div>
+                        <div class=move || { if orchestration_stage.get() > 1 { "orchestration-stage is-complete" } else if orchestration_stage.get() == 1 { "orchestration-stage is-active" } else { "orchestration-stage" } }>
+                            <b>"02"</b><strong>"需求分析"</strong><small>"单模型 / 多模型投票"</small>
+                        </div>
+                        <div class=move || { if orchestration_stage.get() > 2 { "orchestration-stage is-complete" } else if orchestration_stage.get() == 2 { "orchestration-stage is-active" } else { "orchestration-stage" } }>
+                            <b>"03"</b><strong>"业务模式"</strong><small>"启发式识别器"</small>
+                        </div>
+                        <div class=move || { if orchestration_stage.get() > 3 { "orchestration-stage is-complete" } else if orchestration_stage.get() == 3 { "orchestration-stage is-active" } else { "orchestration-stage" } }>
+                            <b>"04"</b><strong>"澄清排序"</strong><small>"问题优先级"</small>
+                        </div>
+                        <div class=move || { if orchestration_stage.get() > 4 { "orchestration-stage is-complete" } else if orchestration_stage.get() == 4 { "orchestration-stage is-active" } else { "orchestration-stage" } }>
+                            <b>"05"</b><strong>"保存结果"</strong><small>"工作流协调器"</small>
+                        </div>
+                    }
+                >
+                    <div class="orchestration-stage is-active">
+                        <b>"01"</b><strong>"方案规划与校验"</strong><small>"规划智能体"</small>
+                    </div>
+                </Show>
             </div>
+            <Show when=move || !orchestration_events.get().is_empty()>
+                <ol class="analysis-progress-events" aria-label="编排事件轨迹">
+                    <For
+                        each=move || orchestration_events.get()
+                        key=|event| event.clone()
+                        let:item
+                    >
+                        <li>{item}</li>
+                    </For>
+                </ol>
+            </Show>
         </section>
     }
 }
 
 #[component]
-pub fn DecisionPlanView(plan: DecisionPlan) -> impl IntoView {
+pub fn DecisionPlanView(plan: DecisionPlan, requirements: Vec<RequirementItem>) -> impl IntoView {
     let decisions = RwSignal::new(plan.decisions);
+    let requirement_lookup = requirements
+        .into_iter()
+        .map(|item| (item.id, item.text))
+        .collect::<std::collections::HashMap<_, _>>();
     let knowledge_models = RwSignal::new(plan.business_knowledge_models);
     let services = RwSignal::new(plan.decision_services);
     let defaults = RwSignal::new(plan.defaults);
@@ -217,7 +297,16 @@ pub fn DecisionPlanView(plan: DecisionPlan) -> impl IntoView {
             <p>{plan.summary}</p>
             <div class="plan-decision-list">
                 <For each=move || decisions.get() key=|decision| decision.name.clone() let:decision>
-                    <div><strong>{decision.name}</strong><span>{decision.expression_type}</span><small>{decision.purpose}</small><code>{decision.dependencies.join(" → ")}</code></div>
+                    {
+                        let links = decision.requirement_ids.iter().filter_map(|id| {
+                            requirement_lookup.get(id).map(|text| format!("{id}：{text}"))
+                        }).collect::<Vec<_>>().join("；");
+                        view! { <div>
+                            <strong>{decision.name}</strong><span>{decision.expression_type}</span>
+                            <small>{decision.purpose}</small><code>{decision.dependencies.join(" → ")}</code>
+                            <small class="plan-requirement-links">{if links.is_empty() { "未记录需求关联".to_string() } else { format!("需求依据：{links}") }}</small>
+                        </div> }
+                    }
                 </For>
             </div>
             <Show when=move || !knowledge_models.get().is_empty()>
@@ -250,6 +339,398 @@ pub fn DecisionPlanView(plan: DecisionPlan) -> impl IntoView {
             <Show when=move || !criteria.get().is_empty()>
                 <div class="acceptance-list"><strong>"验收标准"</strong><For each=move || criteria.get() key=|item| item.clone() let:item><span>{item}</span></For></div>
             </Show>
+        </div>
+    }
+}
+
+fn tester_category_label(category: &str) -> &'static str {
+    match category {
+        "required_input" => "必填输入",
+        "optional_input" => "可选输入",
+        "clarification" => "业务澄清",
+        "semantic_requirement" | "semantic_scenario" => "业务语义场景",
+        "static_analysis" => "模型静态发现",
+        "acceptance_criterion" => "验收标准",
+        "decision_contract" => "决策契约",
+        "adversarial" => "对抗场景",
+        _ => "基础场景",
+    }
+}
+
+fn tester_proposal_matches_version(
+    proposal: &SemanticTestProposal,
+    version_id: Option<i64>,
+) -> bool {
+    if proposal.category != "static_analysis" {
+        return true;
+    }
+    let Some(version_id) = version_id else {
+        return false;
+    };
+    proposal
+        .source_reference
+        .strip_prefix("draftVersion:")
+        .and_then(|source| source.split_once('/'))
+        .and_then(|(source_version, _)| source_version.parse::<i64>().ok())
+        == Some(version_id)
+}
+
+#[component]
+pub fn TesterReportView(
+    report: TesterReport,
+    project_id: Option<i64>,
+    version_id: Option<i64>,
+    token: Option<String>,
+    can_model: Signal<bool>,
+    on_converted: Callback<DecisionTestCase>,
+) -> impl IntoView {
+    let proposals = RwSignal::new(
+        report
+            .proposals
+            .into_iter()
+            .filter(|proposal| tester_proposal_matches_version(proposal, version_id))
+            .collect::<Vec<_>>(),
+    );
+    let (run_busy, set_run_busy) = signal(false);
+    let (run_message, set_run_message) = signal(None::<String>);
+    let run_token = token.clone();
+    let run_cases = Callback::new(move |_| {
+        let (Some(project_id), Some(version_id), Some(token)) =
+            (project_id, version_id, run_token.clone())
+        else {
+            set_run_message.set(Some("请先切换到当前可编辑版本".into()));
+            return;
+        };
+        if run_busy.get()
+            || !proposals
+                .get()
+                .iter()
+                .any(|proposal| proposal.test_case_id.is_some())
+        {
+            return;
+        }
+        set_run_busy.set(true);
+        set_run_message.set(None);
+        wasm_bindgen_futures::spawn_local(async move {
+            match crate::api::run_tester_proposal_cases(&token, project_id, version_id).await {
+                Ok(cases) => {
+                    let passed = cases.iter().filter(|case| case.status == "passed").count();
+                    let failed = cases.iter().filter(|case| case.status == "failed").count();
+                    let errors = cases.iter().filter(|case| case.status == "error").count();
+                    proposals.update(|items| {
+                        for item in items {
+                            if let Some(case_id) = item.test_case_id {
+                                if let Some(case) = cases.iter().find(|case| case.id == case_id) {
+                                    item.execution_status = Some(case.status.clone());
+                                }
+                            }
+                        }
+                    });
+                    set_run_message.set(Some(format!(
+                        "Tester 用例执行完成：{} 个，通过 {}，不一致 {}，错误 {}",
+                        cases.len(),
+                        passed,
+                        failed,
+                        errors
+                    )));
+                }
+                Err(message) => set_run_message.set(Some(message)),
+            }
+            set_run_busy.set(false);
+        });
+    });
+    let on_proposal_converted = Callback::new(
+        move |(proposal_id, test_case): (String, DecisionTestCase)| {
+            proposals.update(|items| {
+                if let Some(item) = items.iter_mut().find(|item| item.id == proposal_id) {
+                    item.test_case_id = Some(test_case.id);
+                }
+            });
+            on_converted.run(test_case);
+        },
+    );
+    view! {
+        <section class="tester-report" aria-label="测试工程提案">
+            <div class="tester-report-heading">
+                <h3>"测试工程提案"</h3>
+                <div class="tester-report-actions">
+                    <span>{move || {
+                        let pending = proposals
+                            .get()
+                            .iter()
+                            .filter(|proposal| proposal.test_case_id.is_none())
+                            .count();
+                        format!("{} 条待复核", pending)
+                    }}</span>
+                    <button
+                        class="button button-quiet"
+                        on:click=move |_| run_cases.run(())
+                        disabled=move || run_busy.get()
+                            || project_id.is_none()
+                            || version_id.is_none()
+                            || !proposals.get().iter().any(|proposal| proposal.test_case_id.is_some())
+                    >
+                        {move || if run_busy.get() { "正在执行..." } else { "运行已转用例" }}
+                    </button>
+                </div>
+            </div>
+            <Show when=move || run_message.get().is_some()>
+                <p class="tester-execution-status" role="status">{move || run_message.get().unwrap_or_default()}</p>
+            </Show>
+            <p>"提案仅用于补充覆盖范围；期望结果由业务人员确认后录入正式测试用例。"</p>
+            <div class="tester-proposal-list">
+                <For each=move || proposals.get() key=|item| item.id.clone() let:item>
+                    <TesterProposalRow
+                        item=item
+                        project_id=project_id
+                        version_id=version_id
+                        token=token.clone()
+                        can_model=can_model
+                        on_proposal_converted=on_proposal_converted
+                    />
+                </For>
+            </div>
+        </section>
+    }
+}
+
+#[component]
+fn TesterProposalRow(
+    item: SemanticTestProposal,
+    project_id: Option<i64>,
+    version_id: Option<i64>,
+    token: Option<String>,
+    can_model: Signal<bool>,
+    on_proposal_converted: Callback<(String, DecisionTestCase)>,
+) -> impl IntoView {
+    let input_fields = item.input_fields.join("、");
+    let has_input_fields = !input_fields.is_empty();
+    let proposal_id = item.id.clone();
+    let proposal_case_id = item.test_case_id;
+    let execution_label = item.execution_status.as_deref().map(|status| match status {
+        "passed" => "DMN 执行通过",
+        "failed" => "DMN 执行不一致",
+        "error" => "DMN 执行错误",
+        _ => "DMN 尚未执行",
+    });
+    let proposal_name = item.title.clone();
+    let initial_input = item
+        .suggested_input
+        .as_ref()
+        .and_then(|input| serde_json::to_string_pretty(input).ok())
+        .unwrap_or_else(|| "{}".into());
+    let has_suggested_input = item.suggested_input.is_some();
+    let (input_json, set_input_json) = signal(initial_input);
+    let (expected_output_json, set_expected_output_json) = signal("{}".to_string());
+    let (busy, set_busy) = signal(false);
+    let (error, set_error) = signal(None::<String>);
+    let (converted_case, set_converted_case) = signal(None::<DecisionTestCase>);
+    let (judge_review, set_judge_review) = signal(item.judge_review.clone());
+    let (judge_stale, set_judge_stale) = signal(item.judge_review.is_some());
+    let judge_proposal_name = proposal_name.clone();
+    let judge_token = token.clone();
+    let judge_proposal_id = proposal_id.clone();
+    let judge = Callback::<()>::new(move |_| {
+        let (Some(project_id), Some(version_id), Some(token)) =
+            (project_id, version_id, judge_token.clone())
+        else {
+            set_error.set(Some("请先切换到当前可编辑版本".into()));
+            return;
+        };
+        let input_json = match serde_json::from_str::<serde_json::Value>(&input_json.get()) {
+            Ok(value) if value.is_object() => value,
+            Ok(_) => {
+                set_error.set(Some("测试输入必须是 JSON 对象".into()));
+                return;
+            }
+            Err(error) => {
+                set_error.set(Some(format!("输入 JSON 无效：{error}")));
+                return;
+            }
+        };
+        let expected_output_json =
+            match serde_json::from_str::<serde_json::Value>(&expected_output_json.get()) {
+                Ok(value) if value.as_object().is_some_and(|object| !object.is_empty()) => value,
+                Ok(_) => {
+                    set_error.set(Some(
+                        "期望输出必须是至少包含一个决策断言的 JSON 对象".into(),
+                    ));
+                    return;
+                }
+                Err(error) => {
+                    set_error.set(Some(format!("期望输出 JSON 无效：{error}")));
+                    return;
+                }
+            };
+        let token_for_request = token.clone();
+        let proposal_id = judge_proposal_id.clone();
+        let proposal_name = judge_proposal_name.clone();
+        set_busy.set(true);
+        set_error.set(None);
+        wasm_bindgen_futures::spawn_local(async move {
+            match crate::api::judge_tester_proposal(
+                &token_for_request,
+                project_id,
+                version_id,
+                &proposal_id,
+                CreateDecisionTestCase {
+                    name: proposal_name,
+                    input_json,
+                    expected_output_json,
+                },
+            )
+            .await
+            {
+                Ok(review) => {
+                    set_judge_review.set(Some(review));
+                    set_judge_stale.set(false);
+                }
+                Err(message) => set_error.set(Some(message)),
+            }
+            set_busy.set(false);
+        });
+    });
+    let convert = Callback::<()>::new(move |_| {
+        let (Some(project_id), Some(version_id), Some(token)) =
+            (project_id, version_id, token.clone())
+        else {
+            set_error.set(Some("请先切换到当前可编辑版本".into()));
+            return;
+        };
+        let input_json = match serde_json::from_str::<serde_json::Value>(&input_json.get()) {
+            Ok(value) => value,
+            Err(error) => {
+                set_error.set(Some(format!("输入 JSON 无效：{error}")));
+                return;
+            }
+        };
+        let expected_output_json =
+            match serde_json::from_str::<serde_json::Value>(&expected_output_json.get()) {
+                Ok(value) => value,
+                Err(error) => {
+                    set_error.set(Some(format!("期望输出 JSON 无效：{error}")));
+                    return;
+                }
+            };
+        let token_for_request = token.clone();
+        let proposal_id = proposal_id.clone();
+        let proposal_id_for_callback = proposal_id.clone();
+        let proposal_name = proposal_name.clone();
+        set_busy.set(true);
+        set_error.set(None);
+        wasm_bindgen_futures::spawn_local(async move {
+            match crate::api::convert_tester_proposal(
+                &token_for_request,
+                project_id,
+                version_id,
+                &proposal_id,
+                CreateDecisionTestCase {
+                    name: proposal_name,
+                    input_json,
+                    expected_output_json,
+                },
+            )
+            .await
+            {
+                Ok(test_case) => {
+                    set_converted_case.set(Some(test_case.clone()));
+                    on_proposal_converted.run((proposal_id_for_callback, test_case));
+                }
+                Err(message) => set_error.set(Some(message)),
+            }
+            set_busy.set(false);
+        });
+    });
+    view! {
+        <article class="tester-proposal">
+            <div class="tester-proposal-title">
+                <strong>{item.title}</strong>
+                <span>{tester_category_label(&item.category)}</span>
+            </div>
+            <p>{item.rationale}</p>
+            <small>{format!("依据：{}", item.source_reference)}</small>
+            <Show when=move || has_input_fields>
+                <small>{format!("关联输入：{}", input_fields)}</small>
+            </Show>
+            {move || converted_case.get().map(|test_case| test_case.id).or(proposal_case_id).map(|case_id| view! {
+                <small class="tester-proposal-converted">{format!("已转为待执行用例 #{}", case_id)}</small>
+            })}
+            {execution_label.map(|label| view! { <small class="tester-proposal-execution">{label}</small> })}
+            <Show when=move || converted_case.get().is_none() && proposal_case_id.is_none()>
+                <details class="tester-proposal-convert">
+                    <summary>"填写输入与期望输出"</summary>
+                    <label>
+                        <span>"测试输入 JSON"</span>
+                        <Show when=move || has_suggested_input>
+                            <small>"按当前规则条件生成的参考输入，请核对后使用。"</small>
+                        </Show>
+                        <textarea
+                            prop:value=move || input_json.get()
+                            on:input=move |event| {
+                                set_input_json.set(event_target_value(&event));
+                                set_judge_stale.set(true);
+                            }
+                            disabled=move || busy.get() || project_id.is_none() || version_id.is_none() || !can_model.get()
+                        ></textarea>
+                    </label>
+                    <label>
+                        <span>"业务确认的期望输出 JSON"</span>
+                        <textarea
+                            prop:value=move || expected_output_json.get()
+                            on:input=move |event| {
+                                set_expected_output_json.set(event_target_value(&event));
+                                set_judge_stale.set(true);
+                            }
+                            disabled=move || busy.get() || project_id.is_none() || version_id.is_none() || !can_model.get()
+                        ></textarea>
+                    </label>
+                    <Show when=move || judge_review.get().is_some()>
+                        {move || judge_review.get().map(|review| tester_judge_review_view(review, judge_stale.get()))}
+                    </Show>
+                    <Show when=move || error.get().is_some()>
+                        <small class="tester-proposal-error">{move || error.get().unwrap_or_default()}</small>
+                    </Show>
+                    <Show when=move || can_model.get()>
+                        <button
+                            class="button button-secondary"
+                            on:click=move |_| judge.run(())
+                            disabled=move || busy.get() || project_id.is_none() || version_id.is_none()
+                        >
+                            {move || if busy.get() { "复核处理中..." } else { "AI 建议复核" }}
+                        </button>
+                    </Show>
+                    <button
+                        class="button button-secondary"
+                        on:click=move |_| convert.run(())
+                        disabled=move || busy.get() || project_id.is_none() || version_id.is_none() || !can_model.get()
+                    >
+                        {move || if busy.get() { "正在保存..." } else { "保存为待执行用例" }}
+                    </button>
+                </details>
+            </Show>
+        </article>
+    }
+}
+
+fn tester_judge_review_view(review: TesterJudgeReview, stale: bool) -> impl IntoView {
+    let status = match review.status.as_str() {
+        "no_obvious_issue" => "两次判定均未发现明显问题",
+        "suspicious" => "两次判定均提示可疑",
+        _ => "判定不一致或证据不足",
+    };
+    let stale_label = if stale {
+        "内容可能已变化，此结果已过期；请重新复核"
+    } else {
+        "最近一次复核结果（仅供参考，不代表批准）"
+    };
+    view! {
+        <div class="tester-judge-review" role="status">
+            <strong>{status}</strong>
+            <small>{stale_label}</small>
+            <small>{review.summary}</small>
+            <For each=move || review.votes.clone() key=|vote| format!("{}:{}", vote.assessment, vote.reason) let:vote>
+                <small>{format!("{}：{}", match vote.assessment.as_str() { "plausible" => "依据充分", "suspicious" => "发现疑点", _ => "证据不足" }, vote.reason)}</small>
+            </For>
         </div>
     }
 }

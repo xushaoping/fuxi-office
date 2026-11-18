@@ -142,6 +142,10 @@ pub fn Header(
                                 <WorkbenchIcon name="collaboration" />
                                 "用户管理"
                             </A>
+                            <A href="/admin/intelligence" class:user-menu-item=true on:click=confirm_navigation>
+                                <WorkbenchIcon name="analytics" />
+                                "智能运营指标"
+                            </A>
                         </Show>
                         <button class="user-menu-item user-menu-danger" on:click=logout>
                             <WorkbenchIcon name="logout" />

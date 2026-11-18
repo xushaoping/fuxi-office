@@ -1,0 +1,21 @@
+# id<TAB>expected_pattern<TAB>requirement
+analysis-tree-01	tree	如果信用分低于 600，则转人工复核，否则自动审批。
+analysis-tree-02	tree	若客户风险等级为高，拒绝授信；否则继续处理。
+analysis-tree-03	tree	根据条件分支判断订单是否需要主管批准。
+analysis-tree-04	tree	如果设备温度过高则停机，否则保持运行。
+analysis-tree-05	tree	按规则分级，若逾期超过 30 天则列为高风险。
+analysis-matrix-01	matrix	按收入、负债和信用三个维度加权评分。
+analysis-matrix-02	matrix	综合得分由服务质量、响应速度和客户评分组成。
+analysis-matrix-03	matrix	根据多个指标打分并计算最终权重排名。
+analysis-matrix-04	matrix	使用评分矩阵评估供应商的质量与交付能力。
+analysis-matrix-05	matrix	各维度分值乘以对应权重后汇总为总分。
+analysis-workflow-01	workflow	首先检查资料完整性，然后提交主管审批，最后归档。
+analysis-workflow-02	workflow	按照申请、审核、批准三个步骤推进流程。
+analysis-workflow-03	workflow	先完成身份核验，接着评估风险，之后通知客户。
+analysis-workflow-04	workflow	订单流程依次执行库存检查、付款确认和发货。
+analysis-workflow-05	workflow	首先校验合同，然后由法务审批并完成签署。
+analysis-threshold-01	threshold	超过 80 分通过，低于 60 分拒绝，中间区间人工复核。
+analysis-threshold-02	threshold	当申请金额达到至少 5000 元时进入高额审批门槛。
+analysis-threshold-03	threshold	根据温度阈值和安全区间决定是否触发告警。
+analysis-threshold-04	threshold	折扣比例不超过 20%，超过上限时需要批准。
+analysis-threshold-05	threshold	设置库存下限，低于该阈值时自动补货。

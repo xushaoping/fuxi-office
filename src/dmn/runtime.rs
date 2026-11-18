@@ -694,7 +694,7 @@ impl<'a> DmnExecutor<'a> {
             let index = compiled.bkm_indices_by_id[&requirement.required_knowledge];
             let bkm = &compiled.model.business_knowledge_models[index];
             if bkm_has_literal_feel_body(bkm) {
-                self.bind_bkm_function(
+                Self::bind_bkm_function(
                     &requirement.required_knowledge,
                     state,
                     compiled,
@@ -707,7 +707,6 @@ impl<'a> DmnExecutor<'a> {
     }
 
     fn bind_bkm_function(
-        &self,
         bkm_id: &str,
         state: &mut ExecutionState,
         compiled: &CompiledDmnModel<'_>,
@@ -737,7 +736,7 @@ impl<'a> DmnExecutor<'a> {
             let dependency = &compiled.model.business_knowledge_models
                 [compiled.bkm_indices_by_id[&requirement.required_knowledge]];
             if bkm_has_literal_feel_body(dependency) {
-                self.bind_bkm_function(
+                Self::bind_bkm_function(
                     &requirement.required_knowledge,
                     state,
                     compiled,
@@ -1276,7 +1275,7 @@ impl<'a> DmnExecutor<'a> {
                         let dependency = &compiled.model.business_knowledge_models
                             [compiled.bkm_indices_by_id[&requirement.required_knowledge]];
                         if bkm_has_literal_feel_body(dependency) {
-                            self.bind_bkm_function(
+                            Self::bind_bkm_function(
                                 &requirement.required_knowledge,
                                 &mut bkm_state,
                                 compiled,

@@ -14,6 +14,8 @@ mod dmn;
 mod feel;
 #[cfg(not(target_family = "wasm"))]
 pub mod nl_dsl;
+#[cfg(not(target_family = "wasm"))]
+pub mod requirement_complexity;
 
 // 共享的数据结构（前后端通用）
 pub mod models;

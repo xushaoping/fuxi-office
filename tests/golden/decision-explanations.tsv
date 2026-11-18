@@ -1,0 +1,21 @@
+# Synthetic contract fixtures only. They assert decision ID coverage and safe structured output, not semantic explanation quality.
+single-approved	Eligibility
+single-denied	Eligibility
+single-fallback	Eligibility
+single-skipped	Eligibility
+single-no-match	Eligibility
+two-independent	Eligibility,LimitCheck
+two-dependent	Eligibility,Offer
+two-fallbacks	Eligibility,Offer
+two-mixed-status	Eligibility,LimitCheck
+two-default-output	Eligibility,Offer
+three-chain	Applicant,Eligibility,Offer
+three-review	Applicant,Eligibility,LimitCheck
+three-failure-path	Applicant,Eligibility,Offer
+three-no-match	Applicant,Eligibility,LimitCheck
+three-default-chain	Applicant,Eligibility,Offer
+four-chain	Applicant,Eligibility,LimitCheck,Offer
+four-branch	Applicant,Eligibility,LimitCheck,Offer
+four-review	Applicant,Eligibility,LimitCheck,Offer
+four-fallback	Applicant,Eligibility,LimitCheck,Offer
+four-mixed	Applicant,Eligibility,LimitCheck,Offer

@@ -4,13 +4,23 @@ use leptos_router::hooks::use_navigate;
 
 use crate::api;
 use crate::components::auth::auth_token;
+use crate::components::common::{SelectOption, WorkbenchSelect};
 use crate::models::{AdminUser, CreateUser, UpdateUser};
 use crate::state::AppState;
+
+fn system_role_options() -> Vec<SelectOption> {
+    vec![
+        SelectOption::new("user", "普通用户"),
+        SelectOption::new("admin", "超级管理员"),
+    ]
+}
 
 #[component]
 pub fn AdminUsersPage() -> impl IntoView {
     let token = auth_token();
     let navigate = use_navigate();
+    let navigate_to_intelligence = navigate.clone();
+    let navigate_to_prompts = navigate.clone();
     let app_state = expect_context::<AppState>();
     let users = RwSignal::new(Vec::<AdminUser>::new());
     let username = RwSignal::new(String::new());
@@ -158,6 +168,13 @@ pub fn AdminUsersPage() -> impl IntoView {
                         <strong>"伏羲智能决策建模工作台"</strong>
                     </div>
                 </div>
+                <nav class="admin-topbar-actions admin-page-nav" aria-label="页面导航">
+                    <button class="button button-quiet" on:click=move |_| navigate_to_prompts("/admin/prompts", Default::default())>
+                        "提示词管理"
+                    </button>
+                    <button class="button button-quiet" on:click=move |_| navigate_to_intelligence("/admin/intelligence", Default::default())>
+                        "智能运营指标"
+                    </button>
                 <button class="button button-quiet" on:click=move |_| {
                     if !app_state.ui.workspace_dirty.get_untracked()
                         || web_sys::window().is_some_and(|window| {
@@ -169,6 +186,7 @@ pub fn AdminUsersPage() -> impl IntoView {
                 }>
                     <span aria-hidden="true">"←"</span> "返回工作台"
                 </button>
+                </nav>
             </header>
             <div class="admin-content">
                 <section class="admin-heading">
@@ -194,7 +212,15 @@ pub fn AdminUsersPage() -> impl IntoView {
                             <label><span>"用户名"</span><input maxlength="255" placeholder="输入用户名" prop:value=username on:input=move |event| username.set(event_target_value(&event)) /></label>
                             <label><span>"初始密码"</span><input type="password" placeholder="至少 6 位" prop:value=password on:input=move |event| password.set(event_target_value(&event)) /></label>
                             <label><span>"确认密码"</span><input type="password" placeholder="再次输入密码" prop:value=confirm_password on:input=move |event| confirm_password.set(event_target_value(&event)) /></label>
-                            <label><span>"系统角色"</span><select prop:value=role on:change=move |event| role.set(event_target_value(&event))><option value="user">"普通用户"</option><option value="admin">"超级管理员"</option></select></label>
+                            <WorkbenchSelect
+                                class="admin-form-role-select"
+                                label="系统角色"
+                                options=Signal::derive(system_role_options)
+                                value=role
+                                disabled=busy
+                                placeholder=Signal::derive(|| "请选择系统角色".to_string())
+                                on_change=Callback::new(move |value| role.set(value))
+                            />
                         </div>
                         <Show when=move || !confirm_password.get().is_empty() && password.get() != confirm_password.get()>
                             <div class="error-msg" role="alert">"两次输入的密码不一致"</div>
@@ -213,12 +239,21 @@ pub fn AdminUsersPage() -> impl IntoView {
                             <For each=move || users.get() key=|user| user.username.clone() let:user>
                                 {
                                     let role_value = user.role.clone();
-                                    let role_label = if role_value == "admin" { "超级管理员" } else { "普通用户" };
-                                    let role_class = if role_value == "admin" { "admin-role-badge admin-role-badge-primary" } else { "admin-role-badge" };
                                     let username_for_delete = user.username.clone();
                                     let username_for_select = user.username.clone();
                                     let username_for_disabled = user.username.clone();
                                     let username_for_title = user.username.clone();
+                                    let username_for_role_value = username_for_select.clone();
+                                    let fallback_role = role_value.clone();
+                                    let role_signal = Signal::derive(move || {
+                                        users
+                                            .get()
+                                            .into_iter()
+                                            .find(|item| item.username == username_for_role_value)
+                                            .map(|item| item.role)
+                                            .unwrap_or_else(|| fallback_role.clone())
+                                    });
+                                    let user_for_role_update = user.clone();
                                     view! {
                                         <article class="admin-user-row">
                                             <div class="admin-user-identity">
@@ -226,11 +261,18 @@ pub fn AdminUsersPage() -> impl IntoView {
                                                 <div><strong>{user.username.clone()}</strong><small>{format!("加入于 {}", user.created_at.format("%Y-%m-%d"))}</small></div>
                                             </div>
                                             <div class="admin-user-role">
-                                                <span class=role_class>{role_label}</span>
-                                                <select aria-label="修改系统角色" prop:value=role_value on:change={let user = user.clone(); move |event| update_role(user.clone(), event_target_value(&event))} disabled=move || username_for_select == "admin" || busy.get()>
-                                                    <option value="user">"普通用户"</option>
-                                                    <option value="admin">"超级管理员"</option>
-                                                </select>
+                                                <WorkbenchSelect
+                                                    class="admin-user-role-select"
+                                                    label="修改系统角色"
+                                                    options=Signal::derive(system_role_options)
+                                                    value=role_signal
+                                                    disabled=Signal::derive(move || username_for_select == "admin" || busy.get())
+                                                    placeholder=Signal::derive(|| "请选择系统角色".to_string())
+                                                    on_change=Callback::new(move |new_role| update_role(
+                                                        user_for_role_update.clone(),
+                                                        new_role,
+                                                    ))
+                                                />
                                             </div>
                                             <div class="admin-user-actions">
                                                 <button

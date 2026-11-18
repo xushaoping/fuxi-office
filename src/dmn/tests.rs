@@ -231,7 +231,7 @@ fn applies_first_any_rule_and_output_order_policies() {
 #[test]
 fn applies_priority_order_policies() {
     let priority_order = parse_dmn(
-        &r##"<?xml version="1.0" encoding="UTF-8"?>
+        r##"<?xml version="1.0" encoding="UTF-8"?>
             <definitions xmlns="https://www.omg.org/spec/DMN/20230324/MODEL/"
                          xmlns:feel="https://www.omg.org/spec/DMN/20230324/FEEL/"
                          id="riskAssessment"
@@ -412,8 +412,7 @@ fn applies_priority_order_policies() {
                 </decisionTable>
               </decision>
             </definitions>
-            "##
-        .to_string(),
+            "##,
     )
     .unwrap();
     //age=65, healthScore=90

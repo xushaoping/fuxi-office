@@ -1,78 +1,152 @@
+# Production defaults. Supply credentials via --env-file; never commit real secrets.
 services:
-  # PostgreSQL 数据库
   postgres:
-    image: postgres:16-alpine
+    image: pgvector/pgvector:pg18
     container_name: fuxi-postgres
     restart: unless-stopped
     environment:
       POSTGRES_DB: fuxi_dmn
-      POSTGRES_USER: fuxi
-      POSTGRES_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD must be set}
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${DB_ADMIN_PASSWORD:?DB_ADMIN_PASSWORD must be set}
+      APP_DB_USER: ${APP_DB_USER:-fuxi}
+      APP_DB_OWNER: ${APP_DB_OWNER:-fuxi_owner}
+      DB_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD must be set}
+      FUXI_DB_SCRIPT_DIR: /opt/fuxi-db-scripts
     volumes:
-      - postgres_data:/var/lib/postgresql/data
-      - ./script/init.sql:/docker-entrypoint-initdb.d/001-init.sql:ro
-    # 注释掉端口映射，只在 Docker 网络内部访问
-    # ports:
-    #   - "5432:5432"
+      # PostgreSQL 18 uses a versioned directory below this mount.
+      # Existing volumes require an explicit, backed-up upgrade; never retag in place.
+      - postgres_data:/var/lib/postgresql
+      - type: bind
+        source: ./script
+        target: /opt/fuxi-db-scripts
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ./script/bootstrap-production-db.sh
+        target: /docker-entrypoint-initdb.d/001-bootstrap.sh
+        read_only: true
+        bind:
+          create_host_path: false
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U fuxi -d fuxi_dmn"]
+      test: ["CMD-SHELL", "pg_isready -U postgres -d fuxi_dmn"]
       interval: 10s
       timeout: 5s
       retries: 5
+    # Native development clients can use this loopback-only database port.
+    ports:
+      - "127.0.0.1:5432:5432"
 
-  # Fuxi-DMN 应用
   app:
-    # 本地 Binaryen 包为 x86_64 Linux 架构
-    platform: linux/amd64
+    image: ${FUXI_IMAGE:-fuxi-dmn:local}
+    container_name: fuxi-dmn
+    platform: ${APP_PLATFORM:-linux/amd64}
     build:
       context: .
       dockerfile: Dockerfile
       args:
         DEBIAN_MIRROR: ${DEBIAN_MIRROR:-http://deb.debian.org/debian}
         DEBIAN_SECURITY_MIRROR: ${DEBIAN_SECURITY_MIRROR:-http://deb.debian.org/debian-security}
+        APT_UPDATE_TIMEOUT: ${APT_UPDATE_TIMEOUT:-180}
+        APT_INSTALL_TIMEOUT: ${APT_INSTALL_TIMEOUT:-600}
+        APT_NETWORK_TIMEOUT: ${APT_NETWORK_TIMEOUT:-20}
+        APT_DOWNLOAD_RETRIES: ${APT_DOWNLOAD_RETRIES:-2}
+        FUXI_BUILD_COMMIT: ${FUXI_BUILD_COMMIT:-}
+        FUXI_SOURCE_CLEAN: ${FUXI_SOURCE_CLEAN:-}
         RUST_IMAGE: ${RUST_IMAGE:-rust:1.90-slim-bookworm}
-        BINARYEN_ARCHIVE: ${BINARYEN_ARCHIVE:-binaryen-version_132-x86_64-linux.tar.gz}
-        BINARYEN_SHA256: ${BINARYEN_SHA256:-195ddc94f9bc89f45abdabb0b9eea86023d727ba90eac8b35b80f2544fc30572}
-    container_name: fuxi-dmn
+        BINARYEN_VERSION: ${BINARYEN_VERSION:-132}
+        BINARYEN_MAX_TIME: ${BINARYEN_MAX_TIME:-1800}
+        # Empty archive selects the checksum-verified official download.
+        BINARYEN_ARCHIVE: ${BINARYEN_ARCHIVE:-}
+        BINARYEN_DOWNLOAD_URL: ${BINARYEN_DOWNLOAD_URL:-}
+        BINARYEN_SHA256: ${BINARYEN_SHA256:-}
     restart: unless-stopped
+    stop_grace_period: 45s
     depends_on:
       postgres:
         condition: service_healthy
     environment:
-      # 数据库连接
-      DATABASE_URL: postgres://fuxi:${DB_PASSWORD:?DB_PASSWORD must be set}@postgres:5432/fuxi_dmn
-
-      # 服务监听地址
+      DATABASE_URL: postgres://${APP_DB_USER:-fuxi}:${DB_PASSWORD:?DB_PASSWORD must be set}@postgres:5432/fuxi_dmn
+      APP_ENV: ${APP_ENV:-production}
       BIND_ADDR: 0.0.0.0:3000
-
-      # 应用位于 Nginx 后面时使用真实客户端 IP 做验证码绑定和限流
       TRUST_PROXY_HEADERS: ${TRUST_PROXY_HEADERS:-true}
       CAPTCHA_POW_DIFFICULTY: ${CAPTCHA_POW_DIFFICULTY:-14}
-
-      # JWT 密钥（生产环境必须修改！）
       JWT_SECRET: ${JWT_SECRET:?JWT_SECRET must be set}
-
-      # 超级管理员 admin 的初始密码（生产环境必须修改！）
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:?ADMIN_PASSWORD must be set}
-
-      # OpenAI 配置
-      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      SHUTDOWN_GRACE_SECONDS: ${SHUTDOWN_GRACE_SECONDS:-30}
+      SHUTDOWN_DRAIN_SECONDS: ${SHUTDOWN_DRAIN_SECONDS:-2}
+      DECISION_COPILOT_ENABLED: ${DECISION_COPILOT_ENABLED:-true}
+      REQUIRE_HISTORICAL_REGRESSION_BEFORE_PUBLISH: ${REQUIRE_HISTORICAL_REGRESSION_BEFORE_PUBLISH:-true}
+      OPTIMIZATION_AUTODRAFT_MODE: ${OPTIMIZATION_AUTODRAFT_MODE:-off}
+      OPTIMIZATION_AUTODRAFT_PROJECT_IDS:
+      AGENT_ORCHESTRATION_STALE_AFTER_SECONDS: ${AGENT_ORCHESTRATION_STALE_AFTER_SECONDS:-120}
+      DRIFT_WEBHOOK_ALLOWED_HOSTS:
+      DRIFT_WEBHOOK_SIGNING_SECRET:
+      OPENAI_API_KEY:
       OPENAI_BASE_URL: ${OPENAI_BASE_URL:-https://api.openai.com/v1}
-      OPENAI_MODEL: ${OPENAI_MODEL:-gpt-4-turbo}
-
-      # 日志级别
+      OPENAI_MODEL: ${OPENAI_MODEL:-gpt-4o-mini}
+      EMBEDDING_ENABLED: ${EMBEDDING_ENABLED:-false}
+      FUXI_EMBEDDING_ENABLED: ${FUXI_EMBEDDING_ENABLED:-${EMBEDDING_ENABLED:-false}}
+      FUXI_EMBEDDING_PROVIDER: ${FUXI_EMBEDDING_PROVIDER:-${EMBEDDING_PROVIDER:-openai-compatible}}
+      OPENAI_EMBEDDING_MODEL: ${OPENAI_EMBEDDING_MODEL:-text-embedding-3-large}
+      OPENAI_API_BASE: ${OPENAI_API_BASE:-${OPENAI_BASE_URL:-https://api.openai.com/v1}}
       RUST_LOG: ${RUST_LOG:-info}
+      # Null entries inherit --env-file/shell values; when absent they stay unset.
+      # Do not replace these with empty defaults: budgets fail closed on empty input.
+      OPENAI_MAX_COMPLETION_TOKENS:
+      OPENAI_MAX_ESTIMATED_CALL_COST_USD:
+      OPENAI_MAX_PROJECT_DAILY_TOKENS:
+      OPENAI_MAX_PROJECT_DAILY_ESTIMATED_COST_USD:
+      OPENAI_MAX_ORCHESTRATION_ESTIMATED_COST_USD:
+      OPENAI_MAX_ORCHESTRATION_OBSERVED_TOKENS:
+      OPENAI_MODEL_MAX_CONCURRENCY:
+      OPENAI_MODEL_SELECTION_POLICY:
+      OPENAI_MODEL_CANDIDATES_JSON:
+      OPENAI_REQUEST_OPTIONS_JSON:
+      OPENAI_FALLBACK_MODELS:
+      OPENAI_OPTIMIZATION_MODEL:
+      OPENAI_ANALYSIS_MODEL:
+      OPENAI_ANALYSIS_MODEL_SELECTION_POLICY:
+      OPENAI_ANALYSIS_REQUEST_OPTIONS_JSON:
+      OPENAI_ANALYSIS_FALLBACK_MODELS:
+      OPENAI_ANALYSIS_EXPERIMENT_NAME:
+      OPENAI_ANALYSIS_EXPERIMENT_MODEL:
+      OPENAI_ANALYSIS_EXPERIMENT_TREATMENT_PERCENT:
+      OPENAI_PLAN_MODEL:
+      OPENAI_PLAN_MODEL_SELECTION_POLICY:
+      OPENAI_PLAN_REQUEST_OPTIONS_JSON:
+      OPENAI_PLAN_FALLBACK_MODELS:
+      OPENAI_PLAN_EXPERIMENT_NAME:
+      OPENAI_PLAN_EXPERIMENT_MODEL:
+      OPENAI_PLAN_EXPERIMENT_TREATMENT_PERCENT:
+      OPENAI_DSL_MODEL:
+      OPENAI_DSL_MODEL_SELECTION_POLICY:
+      OPENAI_DSL_REQUEST_OPTIONS_JSON:
+      OPENAI_DSL_FALLBACK_MODELS:
+      OPENAI_DSL_EXPERIMENT_NAME:
+      OPENAI_DSL_EXPERIMENT_MODEL:
+      OPENAI_DSL_EXPERIMENT_TREATMENT_PERCENT:
+      OPENAI_CHANGE_INTENT_MODEL:
+      OPENAI_CHANGE_INTENT_MODEL_SELECTION_POLICY:
+      OPENAI_CHANGE_INTENT_REQUEST_OPTIONS_JSON:
+      OPENAI_CHANGE_INTENT_FALLBACK_MODELS:
+      OPENAI_CHANGE_INTENT_EXPERIMENT_NAME:
+      OPENAI_CHANGE_INTENT_EXPERIMENT_MODEL:
+      OPENAI_CHANGE_INTENT_EXPERIMENT_TREATMENT_PERCENT:
+      OPENAI_ANALYSIS_SIMPLE_MODEL:
+      OPENAI_ANALYSIS_COMPLEX_MODEL:
+      OPENAI_ANALYSIS_EXPERIMENT_SIMPLE_MODEL:
+      OPENAI_ANALYSIS_EXPERIMENT_COMPLEX_MODEL:
     ports:
-      # 仅允许宿主机上的 Nginx 访问；避免公网直接伪造 X-Forwarded-For
-      - "127.0.0.1:3000:3000"
+      # Only a trusted local TLS reverse proxy may reach the app directly.
+      - "127.0.0.1:${APP_PORT:-3000}:3000"
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:3000/api/health"]
+      test: ["CMD", "curl", "--fail", "--silent", "http://localhost:3000/api/ready"]
       interval: 30s
       timeout: 10s
       retries: 3
       start_period: 40s
 
-  # Nginx 反向代理（可选但推荐）
   nginx:
     image: nginx:alpine
     container_name: fuxi-nginx
@@ -88,11 +162,9 @@ services:
     volumes:
       - ./nginx.conf:/etc/nginx/nginx.conf:ro
       - ./certs:/etc/nginx/ssl:ro
-      - ./certs:/etc/ssl/certs:ro
-      - ./certs:/etc/ssl/certs:ro
       - nginx_logs:/var/log/nginx
     healthcheck:
-      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost/api/health"]
+      test: ["CMD", "nginx", "-t"]
       interval: 30s
       timeout: 10s
       retries: 3

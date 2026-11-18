@@ -1,5 +1,5 @@
 use leptos::prelude::*;
-use wasm_bindgen::{closure::Closure, JsCast};
+use wasm_bindgen::{JsCast, closure::Closure};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Breakpoint {

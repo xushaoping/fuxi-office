@@ -4,6 +4,8 @@ use quick_xml::Reader;
 use quick_xml::events::Event;
 use std::collections::{HashMap, HashSet};
 
+const FUXI_TRACE_NS: &str = "urn:fuxi:dmn:traceability:v1";
+
 #[derive(Debug, Clone)]
 struct XmlNode {
     local: String,
@@ -154,6 +156,20 @@ fn text(node: &XmlNode) -> String {
 }
 fn reference(node: &XmlNode) -> Result<String> {
     required(node, "href").map(|href| href.strip_prefix('#').unwrap_or(&href).to_owned())
+}
+
+fn requirement_ids(node: &XmlNode) -> Vec<String> {
+    node.children
+        .iter()
+        .filter(|child| child.local == "extensionElements")
+        .flat_map(|extensions| extensions.children.iter())
+        .filter(|trace| trace.local == "traceability" && trace.namespace == FUXI_TRACE_NS)
+        .flat_map(|trace| trace.children.iter())
+        .filter(|reference| {
+            reference.local == "requirementRef" && reference.namespace == FUXI_TRACE_NS
+        })
+        .filter_map(|reference| reference.attrs.get("id").cloned())
+        .collect()
 }
 
 pub fn parse_dmn(xml: &str) -> Result<DmnModel> {
@@ -312,6 +328,7 @@ fn parse_decision(node: &XmlNode, ids: &mut HashSet<String>) -> Result<Decision>
             .cloned(),
         requirements,
         knowledge_requirements: parse_knowledge_requirements(node)?,
+        requirement_ids: requirement_ids(node),
         logic,
     })
 }
@@ -710,6 +727,7 @@ fn parse_table(node: &XmlNode) -> Result<DecisionTable> {
                                 .unwrap_or_else(|| text(entry))
                         })
                         .collect(),
+                    requirement_ids: requirement_ids(child),
                 });
             }
             _ => {}

@@ -1,0 +1,21 @@
+# id<TAB>requirement<TAB>decision_name<TAB>output_type<TAB>expression_type<TAB>dependencies
+plan-01	评估申请人的年龄与信用分并输出授信等级。	CreditGrade	string	decisionTable	Age,CreditScore
+plan-02	计算订单折扣，输入订单金额和会员等级。	OrderDiscount	number	decisionTable	OrderAmount,MemberLevel
+plan-03	判断库存是否足以满足当前订单。	InventoryAvailable	boolean	literalExpression	Stock,OrderQuantity
+plan-04	根据风险分数确定是否需要人工复核。	ManualReviewRequired	boolean	decisionTable	RiskScore
+plan-05	计算运费，依据目的地区域和包裹重量。	ShippingFee	number	decisionTable	Region,Weight
+plan-06	校验用户是否满足贷款申请的基础条件。	BasicEligibility	boolean	decisionTable	Age,MonthlyIncome
+plan-07	结合商品价格与促销等级计算应付金额。	PayableAmount	number	literalExpression	Price,PromotionLevel
+plan-08	判断账户余额是否足以完成退款。	RefundAllowed	boolean	literalExpression	Balance,RefundAmount
+plan-09	按设备温度和压力输出运行状态。	MachineStatus	string	decisionTable	Temperature,Pressure
+plan-10	计算员工季度奖金，综合绩效等级和基础薪资。	QuarterlyBonus	number	literalExpression	PerformanceGrade,BaseSalary
+plan-11	确定客户投诉的处理优先级。	ComplaintPriority	string	decisionTable	Severity,CustomerTier
+plan-12	判断发票金额是否需要额外审批。	InvoiceApprovalRequired	boolean	decisionTable	InvoiceAmount
+plan-13	计算会员积分，按消费金额和会员等级累加。	RewardPoints	number	literalExpression	Spend,MemberLevel
+plan-14	确定包裹是否符合标准配送条件。	StandardDeliveryAllowed	boolean	decisionTable	Destination,PackageSize
+plan-15	根据年龄、收入和负债计算风险等级。	ApplicantRisk	string	decisionTable	Age,Income,Debt
+plan-16	判断设备保修是否仍在有效期内。	WarrantyValid	boolean	literalExpression	PurchaseDate,CurrentDate
+plan-17	计算请假申请可批准的天数。	ApprovedLeaveDays	number	decisionTable	RequestedDays,LeaveBalance
+plan-18	依据质量检查结果决定产品是否可以出厂。	ReleaseDecision	string	decisionTable	DefectCount,InspectionGrade
+plan-19	评估客户是否符合免运费条件。	FreeShippingEligible	boolean	decisionTable	OrderAmount,Membership
+plan-20	根据逾期天数和欠款金额确定催收级别。	CollectionStage	string	decisionTable	OverdueDays,OutstandingAmount

@@ -7,6 +7,7 @@ use crate::models::{DecisionServiceApiKey, PublishedDecisionService};
 #[component]
 pub fn ServiceCredentialsPanel(
     published_services: ReadSignal<Vec<PublishedDecisionService>>,
+    can_manage_service: Signal<bool>,
     selected_service_id: ReadSignal<Option<String>>,
     service_keys: ReadSignal<Vec<DecisionServiceApiKey>>,
     service_key_name: ReadSignal<String>,
@@ -38,12 +39,13 @@ pub fn ServiceCredentialsPanel(
                     placeholder="凭证名称，例如 order-service"
                     prop:value=service_key_name
                     on:input=move |event| set_service_key_name.set(event_target_value(&event))
-                    disabled=move || service_key_busy.get() || selected_service_id.get().is_none()
+                    disabled=move || !can_manage_service.get() || service_key_busy.get() || selected_service_id.get().is_none()
                 />
                 <button
                     class="button button-primary"
                     on:click=move |event| on_create_service_key.run(event)
-                    disabled=move || service_key_busy.get() || selected_service_id.get().is_none() || service_key_name.get().trim().is_empty()
+                    disabled=move || !can_manage_service.get() || service_key_busy.get() || selected_service_id.get().is_none() || service_key_name.get().trim().is_empty()
+                    title=move || if can_manage_service.get() { "生成服务调用凭证" } else { "仅项目所有者、管理员或审批者可管理调用凭证" }
                 >{move || if service_key_busy.get() { "处理中..." } else { "生成调用凭证" }}</button>
             </div>
             <Show when=move || service_key_secret.get().is_some()>
@@ -113,10 +115,10 @@ pub fn ServiceCredentialsPanel(
                             <button
                                 type="button"
                                 class="button button-quiet danger-action"
-                                title="删除并立即停用凭证"
                                 aria-label="删除并立即停用凭证"
                                 on:click=move |_| on_revoke_service_key.run(key.id)
-                                disabled=move || service_key_busy.get() || key.revoked_at.is_some()
+                                disabled=move || !can_manage_service.get() || service_key_busy.get() || key.revoked_at.is_some()
+                                title=move || if can_manage_service.get() { "删除并立即停用凭证" } else { "仅项目所有者、管理员或审批者可管理调用凭证" }
                             >"删除"</button>
                         </div>
                     </For>

@@ -1,6 +1,12 @@
 /target
+/docs_bak
 /deploy
 .github
+!.github/
+.github/*
+!.github/workflows/
+.github/workflows/*
+!.github/workflows/ci.yml
 dist/
 .env*
 !.env.example
@@ -13,6 +19,7 @@ fuxi-dmn*.tar.gz
 /script/binaryen-*.tar.gz
 /script/*.swift
 .claude/
+/script/binaryen-version_132-x86_64-linux.tar.gz
 deploy/multi-instance/*.env
 !deploy/multi-instance/*.env.example
 /backups

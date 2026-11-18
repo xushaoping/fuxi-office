@@ -1,0 +1,522 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>伏羲智能决策工作台 v0.1.0 - 产品介绍</title>
+    <style>
+        @page {
+            size: A4;
+            margin: 2cm;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Helvetica Neue", Arial, sans-serif;
+            line-height: 1.6;
+            color: #333;
+            max-width: 900px;
+            margin: 0 auto;
+            padding: 20px;
+            font-size: 14px;
+        }
+
+        h1 {
+            color: #1a1a1a;
+            border-bottom: 3px solid #0066cc;
+            padding-bottom: 10px;
+            margin-top: 30px;
+            font-size: 32px;
+        }
+
+        h2 {
+            color: #0066cc;
+            margin-top: 25px;
+            font-size: 24px;
+            border-bottom: 2px solid #e0e0e0;
+            padding-bottom: 8px;
+        }
+
+        h3 {
+            color: #0088cc;
+            margin-top: 20px;
+            font-size: 18px;
+        }
+
+        h4 {
+            color: #555;
+            margin-top: 15px;
+            font-size: 16px;
+        }
+
+        p {
+            margin: 10px 0;
+            text-align: justify;
+        }
+
+        ul, ol {
+            margin: 10px 0;
+            padding-left: 30px;
+        }
+
+        li {
+            margin: 5px 0;
+        }
+
+        strong {
+            color: #000;
+            font-weight: 600;
+        }
+
+        code {
+            background-color: #f5f5f5;
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-family: "Consolas", "Monaco", "Courier New", monospace;
+            font-size: 13px;
+        }
+
+        pre {
+            background-color: #f8f8f8;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+            padding: 15px;
+            overflow-x: auto;
+            font-size: 13px;
+        }
+
+        pre code {
+            background-color: transparent;
+            padding: 0;
+        }
+
+        table {
+            border-collapse: collapse;
+            width: 100%;
+            margin: 15px 0;
+            font-size: 13px;
+        }
+
+        th, td {
+            border: 1px solid #ddd;
+            padding: 10px;
+            text-align: left;
+        }
+
+        th {
+            background-color: #0066cc;
+            color: white;
+            font-weight: 600;
+        }
+
+        tr:nth-child(even) {
+            background-color: #f9f9f9;
+        }
+
+        hr {
+            border: none;
+            border-top: 2px solid #e0e0e0;
+            margin: 30px 0;
+        }
+
+        blockquote {
+            border-left: 4px solid #0066cc;
+            padding-left: 15px;
+            margin-left: 0;
+            color: #555;
+            font-style: italic;
+        }
+
+        .emoji {
+            font-size: 1.2em;
+        }
+
+        /* 打印样式 */
+        @media print {
+            body {
+                font-size: 12px;
+            }
+
+            h1 {
+                font-size: 28px;
+                page-break-before: always;
+            }
+
+            h1:first-of-type {
+                page-break-before: avoid;
+            }
+
+            h2 {
+                font-size: 20px;
+                page-break-after: avoid;
+            }
+
+            h3 {
+                font-size: 16px;
+                page-break-after: avoid;
+            }
+
+            table, pre {
+                page-break-inside: avoid;
+            }
+
+            a {
+                color: #0066cc;
+                text-decoration: none;
+            }
+        }
+
+        /* 封面样式 */
+        .cover {
+            text-align: center;
+            padding: 100px 0;
+            page-break-after: always;
+        }
+
+        .cover h1 {
+            font-size: 48px;
+            color: #0066cc;
+            border: none;
+            margin-bottom: 20px;
+        }
+
+        .cover .subtitle {
+            font-size: 20px;
+            color: #666;
+            margin: 20px 0;
+        }
+
+        .cover .version {
+            font-size: 16px;
+            color: #999;
+            margin-top: 50px;
+        }
+    </style>
+</head>
+<body>
+    <div class="cover">
+        <h1>伏羲智能决策工作台</h1>
+        <p class="subtitle">OPEN SOURCE · AI DECISION AUTOMATION</p>
+        <p class="subtitle">让业务规则从自然语言出发，经过多智能体协作、结构化建模、<br>确定性校验与人工治理，成为可执行、可解释、可审计的决策服务</p>
+        <p class="version">版本 v0.1.0 · 2026-11-18</p>
+    </div>
+
+    <h1 id="v020">伏羲智能决策工作台 v0.1.0</h1>
+<h2 id="open-source-ai-decision-automation">OPEN SOURCE · AI DECISION AUTOMATION</h2>
+<p><strong>让业务规则从自然语言出发，经过多智能体协作、结构化建模、确定性校验与人工治理，成为可执行、可解释、可审计的决策服务。</strong></p>
+<hr />
+<h2 id="_1">核心创新</h2>
+<h3 id="_2">🤖 多智能体协作</h3>
+<p>不再是单一 Agent，而是 Analyst、Architect、Engineer、Tester 并行工作，心跳监控与失联恢复</p>
+<h3 id="rag">🧠 RAG 语义检索</h3>
+<p>向量检索 + 关键词检索 + RRF 融合，自动注入相关上下文</p>
+<h3 id="l3">📊 L3 闭环自动化</h3>
+<p>从 L2（单点辅助）升级到 L3（半自动闭环）：漂移检测 → 优化建议 → Shadow 评估 → 效果追踪</p>
+<h3 id="dmn-15">✅ DMN 1.5 标准</h3>
+<p>标准化、可移植的决策表达，确定性执行引擎保证生产可靠性</p>
+<h3 id="_3">🔄 全链路治理</h3>
+<p>版本、验收、运行、反馈、解释、归因完整闭环</p>
+<hr />
+<h2 id="_4">一、项目背景</h2>
+<p>企业的贷款审批、订单优惠、航班延误处置、风控分级等业务，通常依赖制度文件、Excel 规则表和人工经验。传统规则落地存在四类问题：</p>
+<p>• <strong>认知门槛高</strong>：业务人员需要同时理解自然语言、技术 DSL、DMN XML 和 FEEL 表达式
+• <strong>沟通成本高</strong>：规则从需求到上线跨越建模、开发、测试、审批多个环节
+• <strong>维护风险大</strong>：变更容易引起引用丢失、边界遗漏、版本不可追溯和线上结果难解释
+• <strong>LLM 直接决策不可控</strong>：直接让大模型回答业务结果，存在随机性、幻觉、不可审计和难以回放的问题</p>
+<h3 id="_5">伏羲的解决思路</h3>
+<p>使用<strong>多智能体协作</strong>理解和生成结构化决策模型，再由确定性的 DMN/FEEL 引擎进行校验、执行和审计。AI 提升建模效率，规则引擎保证生产可靠性。</p>
+<hr />
+<h2 id="v020_1">二、项目定位与目标（v0.1.0 升级）</h2>
+<p>伏羲是一个全栈 Rust 实现的企业级 DMN 决策自动化平台，<strong>智能化成熟度已达 L3（半自动闭环）</strong>。平台将"自然语言需求"转换成"可验证、可版本化、可发布、可观测的决策服务"。</p>
+<h3 id="_6">核心能力</h3>
+<p>• <strong>多智能体协作编排</strong>：Analyst、Architect、Engineer、Tester 等多角色并行工作，支持心跳监控、失联恢复、取消传播
+• <strong>RAG 知识增强</strong>：知识分块（约 400 token）、向量索引、混合检索（关键词+向量+RRF），自动注入相关上下文
+• <strong>阶段化人在回路</strong>：需求分析 → 澄清确认 → 方案规划 → 模型生成，每步可控可验证
+• <strong>结构化中间层</strong>：以 DSL 作为中间表示，统一连接 Agent、编译器和运行时
+• <strong>多层确定性校验</strong>：DSL → DMN 编译 → FEEL 语法 → 依赖完整性 → 契约测试 → 历史回归
+• <strong>完整运营闭环</strong>：决策解释、偏差归因、漂移检测、优化建议、Shadow 评估、效果追踪
+• <strong>全链路可追溯</strong>：从 Agent 输入、DSL、DMN 制品、测试、审批到运行轨迹和业务反馈</p>
+<hr />
+<h2 id="v020_2">三、总体技术架构（v0.1.0 升级）</h2>
+<h3 id="_7">分层架构</h3>
+<p><strong>交互层</strong>
+- Leptos CSR / WebAssembly 工作台
+- 自然语言输入 · 模型与验收可视化
+- 运营 Copilot（自然语言查询指标）</p>
+<p><strong>服务层</strong>
+- Axum API · JWT 认证 · 项目级 RBAC
+- SSE 流式反馈 · 决策服务端点
+- 批量业务结果回传</p>
+<p><strong>智能层</strong>（⭐ v0.1.0 重大升级）
+- <strong>多智能体协作编排</strong>：并行执行、心跳监控、失联恢复
+- <strong>RAG 语义检索</strong>：向量索引 + 关键词 + RRF 融合
+- <strong>阶段化工作流</strong>：需求分析 → 澄清 → 规划 → DSL 生成 → 增量修改
+- <strong>Tester Agent</strong>：自动生成测试提案 + LLM-as-Judge 复核</p>
+<p><strong>编译层</strong>
+- Decision DSL → 结构校验
+- DMN 1.5 XML 生成
+- FEEL 预编译与依赖分析</p>
+<p><strong>运行层</strong>（⭐ v0.1.0 新增）
+- 确定性 DMN/FEEL 执行 · 规则命中 · 执行轨迹
+- <strong>决策解释生成</strong>（按需自然语言解释）
+- <strong>偏差归因</strong>（智能归因候选 + 人工复核）
+- <strong>漂移检测</strong>（每日扫描 + 事件驱动）
+- <strong>优化闭环</strong>（建议 → 模拟 → Shadow → 效果追踪）</p>
+<p><strong>数据层</strong>（⭐ v0.1.0 优化）
+- PostgreSQL 14+ / pgvector
+- <strong>按月分区存储</strong>（决策运行）
+- <strong>日粒度物化视图</strong>（统计加速）
+- <strong>三角色权限隔离</strong>（postgres / fuxi_owner / fuxi）</p>
+<h3 id="_8">技术栈</h3>
+<table>
+<thead>
+<tr>
+<th>领域</th>
+<th>实现</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>后端</td>
+<td>Rust 1.90、Axum 0.8、Tokio、SQLx、PostgreSQL 14+</td>
+</tr>
+<tr>
+<td>前端</td>
+<td>Leptos 0.8 CSR、WebAssembly、leptos_router</td>
+</tr>
+<tr>
+<td>智能体</td>
+<td>OpenAI/Anthropic 兼容接口、多智能体编排、RAG 检索</td>
+</tr>
+<tr>
+<td>决策引擎</td>
+<td>DMN 1.5、FEEL 1.3 词法分析、递归下降解析、解释执行</td>
+</tr>
+<tr>
+<td>工程治理</td>
+<td>hCaptcha、JWT、Argon2、项目级 RBAC、提示词版本管理</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="v020_3">四、核心功能与应用场景（v0.1.0 升级）</h2>
+<h3 id="_9">智能建模能力</h3>
+<p><strong>多智能体协作编排</strong>
+- Analyst、Architect、Engineer、Tester 并行工作
+- 心跳监控、失联恢复、取消传播
+- 编排历史查看与任务取消</p>
+<p><strong>RAG 知识增强</strong>
+- 知识分块（约 400 token）、向量索引
+- 混合检索（关键词 + 向量 + RRF）
+- Top-5 命中率、MRR、nDCG 评测</p>
+<p><strong>阶段化工作流</strong>
+- 需求分析：生成业务摘要、关键规则、输入输出、风险和澄清问题
+- 澄清确认：业务人员回答澄清问题
+- 方案规划：生成决策清单、依赖关系、命中策略
+- 模型生成：DSL → DMN 1.5 XML，语法高亮与结构树可视化</p>
+<p><strong>增量修改</strong>
+- 基于原始需求和当前 DSL 生成增量补丁
+- 保护未变更元素，显式识别影响范围
+- 支持结构化重试与错误自动修复</p>
+<h3 id="_10">质量保障能力</h3>
+<p><strong>多层校验门禁</strong>
+- DSL 结构校验 → DMN 编译 → FEEL 语法 → 依赖完整性 → 契约测试</p>
+<p><strong>Tester Agent</strong>（⭐ v0.1.0 新增）
+- 基于需求条目/约束自动生成测试提案
+- LLM-as-Judge 辅助复核
+- 人工审阅与采信率评测</p>
+<p><strong>历史回归门禁</strong>（⭐ v0.1.0 新增）
+- 有基线的版本发布前必须通过历史回归
+- 全部用例通过才能发布</p>
+<p><strong>静态分析</strong>
+- 规则冲突检测（UNIQUE/ANY）
+- 不可达规则（FIRST）
+- 覆盖缺口识别</p>
+<h3 id="v020_4">生产运营能力（⭐ v0.1.0 重大升级）</h3>
+<p><strong>决策解释</strong>
+- 按需生成自然语言解释（绑定版本与运行记录）
+- 支持盲审标注、可读性评估
+- 多 Reviewer 多数票机制</p>
+<p><strong>业务反馈闭环</strong>
+- 批量自动回传业务结果（≤100 条/批次）
+- 智能偏差归因（规则级候选 + 置信度）
+- 人工复核（正确/错误/不确定）
+- 归因评测（Top-1 准确率、校准误差）</p>
+<p><strong>漂移检测与事件驱动</strong>
+- 每日自动扫描失败率、偏差率、输入分布、规则命中率
+- 事件驱动触发优化提案
+- 窗口标注与阈值回放评测</p>
+<p><strong>优化建议闭环</strong>
+- 基于分析自动生成结构化建议
+- 历史样本模拟（影响面评估）
+- Shadow 资格评估（低风险项目、限定发现类型、最低样本数）
+- 自动创建草稿（试点）→ 效果追踪</p>
+<p><strong>运营 Copilot</strong>
+- 自然语言查询项目指标（运行量、成功率、失败率、偏差率、耗时）
+- 意图识别与澄清
+- 结构化指标返回</p>
+<p><strong>提示词版本管理</strong>（⭐ v0.1.0 新增）
+- 版本控制、Golden 评测、激活回滚
+- 提示词审计历史
+- 激活后必须重启应用实例</p>
+<h3 id="_11">典型应用场景</h3>
+<table>
+<thead>
+<tr>
+<th>场景</th>
+<th>输入</th>
+<th>输出</th>
+<th>特点</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>零售贷款审批</strong></td>
+<td>年龄、收入、信用分、债务、就业月数</td>
+<td>Approve / Reject / ManualReview</td>
+<td>规则解释、边界测试、版本回溯</td>
+</tr>
+<tr>
+<td><strong>订单折扣计算</strong></td>
+<td>客户等级、订单金额、商品类别、促销状态</td>
+<td>折扣比例、优惠金额</td>
+<td>多条件组合、动态调整</td>
+</tr>
+<tr>
+<td><strong>航班延误处置</strong></td>
+<td>延误时长、天气、航线、旅客类型</td>
+<td>改签、退款、住宿、餐食</td>
+<td>复杂决策流、应急预案</td>
+</tr>
+<tr>
+<td><strong>风控与合规</strong></td>
+<td>外部评分、客户标签、制度政策</td>
+<td>风险分级、准入判断</td>
+<td>知识增强、制度绑定</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="v020_5">五、v0.1.0 核心创新点</h2>
+<h3 id="01-l2-l3">01 · 多智能体协作编排（L2 → L3 升级）</h3>
+<p>不再是单一 Agent 线性流水线，而是多角色并行协作，支持心跳监控、失联恢复、取消传播。</p>
+<h3 id="02-rag">02 · RAG 语义检索（知识增强升级）</h3>
+<p>从全文注入升级到分块 + 向量索引 + 混合检索（关键词 + 向量 + RRF），显著提升检索准确率。</p>
+<h3 id="03">03 · 决策解释生成（可解释性）</h3>
+<p>按需生成自然语言解释，支持版本绑定、盲审标注、可读性评估，提升业务信任度。</p>
+<h3 id="04">04 · 偏差归因闭环（反馈闭环）</h3>
+<p>批量回传业务结果 → 智能归因候选 → 人工复核 → 归因评测，形成完整反馈闭环。</p>
+<h3 id="05">05 · 漂移检测与事件驱动（自动化运维）</h3>
+<p>每日自动扫描失败率、偏差率、输入分布、规则命中率，事件驱动触发优化提案。</p>
+<h3 id="06">06 · 优化建议真实化（闭环完整化）</h3>
+<p>从占位实现升级到：生成建议 → 历史样本模拟 → Shadow 资格评估 → 自动创建草稿 → 效果追踪。</p>
+<h3 id="07-copilot">07 · 运营 Copilot（自然语言运维）</h3>
+<p>自然语言查询项目指标，意图识别与澄清，降低运维门槛。</p>
+<h3 id="08">08 · 提示词版本管理（资产化）</h3>
+<p>提示词版本控制、Golden 评测、激活回滚、审计历史，提升提示词质量与稳定性。</p>
+<h3 id="09">09 · 数据存储优化（性能与治理）</h3>
+<p>按月分区存储、日粒度物化视图、三角色权限隔离，提升查询性能与数据安全。</p>
+<h3 id="10">10 · 完整评测体系（质量保障）</h3>
+<p>RAG 检索、Agent 编排、偏差归因、漂移检测、决策解释、Tester 提案，全部提供独立评测工具与 Wilson 95% 置信区间。</p>
+<hr />
+<p>这套架构的关键价值在于：<strong>把 LLM 的不确定性限制在"候选生成"边界内，把生产系统最需要的可重复、可验证、可回滚和可解释交给确定性工程。同时通过多智能体协作、RAG 检索、完整闭环，实现从 L2（单点辅助）到 L3（半自动闭环）的智能化升级。</strong></p>
+<hr />
+<h2 id="_12">六、项目演示</h2>
+<h3 id="_13">在线地址</h3>
+<p>https://fuxioffice.cn/</p>
+<h3 id="_14">演示账号</h3>
+<table>
+<thead>
+<tr>
+<th>角色</th>
+<th>用户名</th>
+<th>密码</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>管理员</td>
+<td>admin</td>
+<td>admin1234</td>
+</tr>
+<tr>
+<td>普通用户</td>
+<td>fuxi</td>
+<td>admin1234</td>
+</tr>
+</tbody>
+</table>
+<p>⚠️ 以上为公开演示账号；正式部署时请立即修改初始密码，并为不同操作者分配独立账号。</p>
+<h3 id="_15">推荐演示路径</h3>
+<p><strong>1 · 进入工作台</strong><br />
+打开线上地址并登录，进入项目空间；优先使用管理员账号观察完整菜单与治理能力。</p>
+<p><strong>2 · 多智能体协作建模</strong><br />
+输入贷款审批需求，观察 Analyst、Architect、Engineer 多角色并行工作；查看编排历史与心跳监控。</p>
+<p><strong>3 · RAG 知识增强</strong><br />
+在知识库中添加术语定义或业务背景，观察建模时自动注入相关上下文。</p>
+<p><strong>4 · 决策建模与验收</strong><br />
+确认方案后生成 DSL 并编译为 DMN 1.5 XML；执行自动生成的测试用例，业务批准后发布。</p>
+<p><strong>5 · 运行与解释</strong><br />
+调用已发布决策服务，查看输出、执行轨迹；按需生成决策解释，审阅可读性。</p>
+<p><strong>6 · 偏差归因与优化</strong><br />
+回传业务结果，查看智能归因候选；人工复核正确性；查看优化建议并执行 Shadow 评估。</p>
+<p><strong>7 · 漂移检测与 Copilot</strong><br />
+配置漂移规则，查看每日扫描窗口与事件；使用 Copilot 自然语言查询项目指标。</p>
+<p><strong>8 · 增量修改与审查</strong><br />
+在当前 DSL 和原始需求上下文中提出"将风险阈值从 0.55 调整为 0.50"，对比变更审查和回滚草稿。</p>
+<h3 id="_16">推荐演示输入</h3>
+<p>创建一个名为 <code>RetailLoanApproval</code> 的零售贷款审批模型。输入 <code>ApplicantAge</code>、<code>AnnualIncome</code>、<code>CreditScore</code>、<code>MonthlyDebtPayment</code>、<code>RequestedAmount</code>、<code>EmploymentMonths</code> 和 <code>ExistingCustomer</code>。计算 <code>DebtToIncomeRatio</code>；<code>CreditScore</code> 小于 600 或 <code>DebtToIncomeRatio</code> 大于 0.55 为 High，小于 720 或 <code>EmploymentMonths</code> 小于 12 为 Medium，其他为 Low。最终输出 Approve、Reject 或 ManualReview，并保留所有决策依赖。</p>
+<h3 id="_17">推荐测试输入</h3>
+<pre class="codehilite"><code class="language-json">{
+  &quot;ApplicantAge&quot;: 32,
+  &quot;AnnualIncome&quot;: 120000,
+  &quot;CreditScore&quot;: 760,
+  &quot;MonthlyDebtPayment&quot;: 1800,
+  &quot;RequestedAmount&quot;: 200000,
+  &quot;EmploymentMonths&quot;: 48,
+  &quot;ExistingCustomer&quot;: true
+}
+</code></pre>
+
+<hr />
+<h2 id="_18">七、开源项目价值</h2>
+<p>• <strong>对业务人员</strong>：用业务语言建模，减少学习 DMN、XML 和 FEEL 的成本；通过决策解释理解决策逻辑。</p>
+<p>• <strong>对研发团队</strong>：结构化 DSL、编译器和测试门禁降低规则代码维护成本；多智能体协作提升建模效率。</p>
+<p>• <strong>对管理与合规</strong>：版本、审批、审计、回滚和执行轨迹形成治理闭环；偏差归因与漂移检测提升运营质量。</p>
+<p>• <strong>对平台建设</strong>：Rust 单体二进制易部署，领域模块清晰，便于后续拆分服务。</p>
+<p>• <strong>对 AI 应用研究</strong>：提供"多智能体协作 + RAG 检索 + 确定性运行时 + 人在回路 + 完整闭环"的可落地样例。</p>
+<hr />
+<h2 id="_19">八、代码与文档索引</h2>
+<h3 id="_20">核心模块</h3>
+<p>• <strong>多智能体编排</strong>：<code>src/agent_runtime/orchestration.rs</code><br />
+• <strong>RAG 检索</strong>：<code>src/rag/chunker.rs</code>、<code>src/rag/retriever.rs</code>、<code>src/rag/patterns.rs</code><br />
+• <strong>Agent 与工作流</strong>：<code>src/nl_dsl/agent.rs</code>、<code>src/workflow.rs</code>、<code>src/workflow_api.rs</code><br />
+• <strong>DSL 与 DMN</strong>：<code>src/nl_dsl/dsl.rs</code>、<code>src/nl_dsl/dmn.rs</code>、<code>src/dmn/compile.rs</code><br />
+• <strong>FEEL 与运行时</strong>：<code>src/feel/</code>、<code>src/dmn/runtime.rs</code><br />
+• <strong>决策解释</strong>：<code>src/decision_explanation.rs</code><br />
+• <strong>偏差归因</strong>：<code>src/deviation_attribution.rs</code><br />
+• <strong>漂移检测</strong>：<code>src/drift_detection.rs</code><br />
+• <strong>优化闭环</strong>：<code>src/optimization_proposal.rs</code>、<code>src/optimization_shadow.rs</code><br />
+• <strong>数据存储</strong>：<code>src/storage/partitions.rs</code>、<code>src/storage/materialized_views.rs</code><br />
+• <strong>版本与权限</strong>：<code>src/version_review.rs</code>、<code>src/project_access.rs</code></p>
+<h3 id="_21">文档</h3>
+<p>• <strong>v0.1.0 变更日志</strong>：<code>docs/CHANGELOG_v0.1.0.md</code><br />
+• <strong>升级方案</strong>：<code>docs/伏羲智能决策工作台-全链路智能化升级方案.md</code><br />
+• <strong>用户操作手册</strong>：<code>docs/user-operation-manual.md</code><br />
+• <strong>配置文档</strong>：<code>docs/configuration.md</code><br />
+• <strong>API 参考</strong>：<code>docs/api-reference.md</code><br />
+• <strong>评测文档</strong>：<code>docs/evaluation.md</code></p>
+<hr />
+<h2 id="_22">结语</h2>
+<p>伏羲不是让 AI 替代规则系统，而是让 AI 成为规则系统的自然语言建模入口。通过<strong>"多智能体协作、RAG 检索、DSL 表达、编译器校验、确定性执行、人工治理、运行反馈、偏差归因、漂移检测、优化闭环"</strong>的组合，企业可以把分散在文档和经验中的决策知识，逐步沉淀为可执行、可解释、可审计的数字化资产。</p>
+<p><strong>v0.1.0 实现了从 L2（单点辅助）到 L3（半自动闭环）的重大升级</strong>，形成了完整的智能化决策自动化闭环。</p>
+<hr />
+<p><strong>线上演示</strong>：https://fuxioffice.cn/<br />
+<strong>文档版本</strong>：v0.1.0 · 2026-11-18</p>
+
+    <hr>
+    <footer style="text-align: center; color: #999; font-size: 12px; margin-top: 50px;">
+        <p>线上演示：<a href="https://fuxioffice.cn/">https://fuxioffice.cn/</a></p>
+        <p>文档版本：v0.1.0 · 2026-11-18</p>
+    </footer>
+</body>
+</html>

@@ -34,6 +34,10 @@ pub fn ExecutionTraceView(trace: ExecutionTrace) -> impl IntoView {
                     let rule_ids = step.matched_rule_ids.clone();
                     let rule_text = rule_ids.join("、");
                     let has_rules = !rule_ids.is_empty();
+                    let requirement_ids = step.requirement_ids.clone();
+                    let requirement_text = requirement_ids.join("、");
+                    let has_requirements = !requirement_ids.is_empty();
+                    let rule_requirements = step.matched_rule_requirements.clone();
                     view! {
                     <article class=format!("trace-step trace-outcome-{}", step.outcome)>
                         <div class="trace-step-index">{format!("{:02}", step.order)}</div>
@@ -58,6 +62,12 @@ pub fn ExecutionTraceView(trace: ExecutionTrace) -> impl IntoView {
                                 <Show when=move || has_rules>
                                     <small>{format!("规则：{rule_text}")}</small>
                                 </Show>
+                                <Show when=move || has_requirements>
+                                    <small>{format!("决策需求：{requirement_text}")}</small>
+                                </Show>
+                                <For each=move || rule_requirements.clone() key=|item| item.rule_id.clone() let:item>
+                                    <small>{format!("规则 {} 需求：{}", item.rule_id, if item.requirement_ids.is_empty() { "未关联".into() } else { item.requirement_ids.join("、") })}</small>
+                                </For>
                             </div>
                             <code>{serde_json::to_string_pretty(&step.result).unwrap_or_default()}</code>
                         </div>

@@ -353,6 +353,8 @@ pub struct Decision {
     pub required_decisions: Vec<String>,
     #[serde(default)]
     pub required_knowledge: Vec<String>,
+    #[serde(default)]
+    pub requirement_ids: Vec<String>,
     pub logic: BoxedExpression,
 }
 
@@ -769,6 +771,8 @@ pub struct DtRule {
     pub output_entries: Vec<String>,
     #[serde(default)]
     pub annotation: Option<String>,
+    #[serde(default)]
+    pub requirement_ids: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

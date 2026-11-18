@@ -1,7 +1,9 @@
 use serde_json::{Map, Value};
 
 use crate::dmn::{DecisionLogic, DecisionService, DecisionStatus, DmnModel, DmnResult};
-use crate::models::{DecisionTraceStep, ExecutionTrace, ExecutionTraceMessage};
+use crate::models::{
+    DecisionTraceStep, ExecutionTrace, ExecutionTraceMessage, MatchedRuleRequirementTrace,
+};
 use crate::version_verification::feel_value_to_json;
 
 pub fn build_execution_trace(
@@ -51,6 +53,33 @@ pub fn build_execution_trace(
                 &evaluated.matched_rule_ids,
                 &value,
             );
+            let matched_rule_requirements = definition
+                .and_then(|decision| match &decision.logic {
+                    DecisionLogic::DecisionTable(table) => Some(table),
+                    _ => None,
+                })
+                .map(|table| {
+                    evaluated
+                        .matched_rule_ids
+                        .iter()
+                        .filter_map(|rule_id| {
+                            table
+                                .rules
+                                .iter()
+                                .enumerate()
+                                .find(|(index, rule)| {
+                                    rule.id.as_deref().unwrap_or("") == rule_id
+                                        || (rule.id.is_none()
+                                            && format!("rule-{}", index + 1) == *rule_id)
+                                })
+                                .map(|(_, rule)| MatchedRuleRequirementTrace {
+                                    rule_id: rule_id.clone(),
+                                    requirement_ids: rule.requirement_ids.clone(),
+                                })
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
             DecisionTraceStep {
                 order: index + 1,
                 decision_id: evaluated.decision_id.clone(),
@@ -60,6 +89,10 @@ pub fn build_execution_trace(
                 outcome: outcome.into(),
                 dependencies,
                 matched_rule_ids: evaluated.matched_rule_ids.clone(),
+                requirement_ids: definition
+                    .map(|decision| decision.requirement_ids.clone())
+                    .unwrap_or_default(),
+                matched_rule_requirements,
                 result: value,
                 explanation,
             }
@@ -302,10 +335,10 @@ mod tests {
     #[test]
     fn trace_preserves_dependency_order_and_rule_explanation() {
         let model = parse_dmn(&format!(
-            r##"<definitions xmlns="{DMN_NAMESPACE}" name="EligibilityModel">
+            r##"<definitions xmlns="{DMN_NAMESPACE}" xmlns:fuxi="urn:fuxi:dmn:traceability:v1" name="EligibilityModel">
             <inputData id="age" name="age"><variable name="age" typeRef="number"/></inputData>
             <decision id="segment" name="Segment"><informationRequirement><requiredInput href="#age"/></informationRequirement><literalExpression><text>if age >= 18 then "adult" else "minor"</text></literalExpression></decision>
-            <decision id="eligibility" name="Eligibility"><informationRequirement><requiredDecision href="#segment"/></informationRequirement><decisionTable hitPolicy="UNIQUE"><input><inputExpression><text>Segment</text></inputExpression></input><output name="result"/><rule id="adult-rule"><inputEntry><text>"adult"</text></inputEntry><outputEntry><text>"approved"</text></outputEntry></rule></decisionTable></decision>
+            <decision id="eligibility" name="Eligibility"><extensionElements><fuxi:traceability><fuxi:requirementRef id="req-goal-a1"/></fuxi:traceability></extensionElements><informationRequirement><requiredDecision href="#segment"/></informationRequirement><decisionTable hitPolicy="UNIQUE"><input><inputExpression><text>Segment</text></inputExpression></input><output name="result"/><rule id="adult-rule"><extensionElements><fuxi:traceability><fuxi:requirementRef id="req-rule-b2"/></fuxi:traceability></extensionElements><inputEntry><text>"adult"</text></inputEntry><outputEntry><text>"approved"</text></outputEntry></rule></decisionTable></decision>
             </definitions>"##
         ))
         .unwrap();
@@ -326,6 +359,15 @@ mod tests {
         assert_eq!(trace.decisions[1].dependencies, ["Segment"]);
         assert_eq!(trace.decisions[1].outcome, "rule_match");
         assert_eq!(trace.decisions[1].matched_rule_ids, ["adult-rule"]);
+        assert_eq!(trace.decisions[1].requirement_ids, ["req-goal-a1"]);
+        assert_eq!(
+            trace.decisions[1].matched_rule_requirements[0].rule_id,
+            "adult-rule"
+        );
+        assert_eq!(
+            trace.decisions[1].matched_rule_requirements[0].requirement_ids,
+            ["req-rule-b2"]
+        );
         assert!(trace.explanation.contains("命中规则 adult-rule"));
         assert_eq!(trace.output["Eligibility"], "approved");
     }

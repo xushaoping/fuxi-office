@@ -17,6 +17,8 @@ CREATE TABLE IF NOT EXISTS decision_workflows (
     confirmed_at TIMESTAMPTZ,
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+ALTER TABLE decision_workflows
+    ADD COLUMN IF NOT EXISTS tester_report_json JSONB;
 
 COMMIT;
 

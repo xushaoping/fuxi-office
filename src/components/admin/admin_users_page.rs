@@ -19,6 +19,8 @@ fn system_role_options() -> Vec<SelectOption> {
 pub fn AdminUsersPage() -> impl IntoView {
     let token = auth_token();
     let navigate = use_navigate();
+    let navigate_to_intelligence = navigate.clone();
+    let navigate_to_prompts = navigate.clone();
     let app_state = expect_context::<AppState>();
     let users = RwSignal::new(Vec::<AdminUser>::new());
     let username = RwSignal::new(String::new());
@@ -166,6 +168,13 @@ pub fn AdminUsersPage() -> impl IntoView {
                         <strong>"伏羲智能决策建模工作台"</strong>
                     </div>
                 </div>
+                <nav class="admin-topbar-actions admin-page-nav" aria-label="页面导航">
+                    <button class="button button-quiet" on:click=move |_| navigate_to_prompts("/admin/prompts", Default::default())>
+                        "提示词管理"
+                    </button>
+                    <button class="button button-quiet" on:click=move |_| navigate_to_intelligence("/admin/intelligence", Default::default())>
+                        "智能运营指标"
+                    </button>
                 <button class="button button-quiet" on:click=move |_| {
                     if !app_state.ui.workspace_dirty.get_untracked()
                         || web_sys::window().is_some_and(|window| {
@@ -177,6 +186,7 @@ pub fn AdminUsersPage() -> impl IntoView {
                 }>
                     <span aria-hidden="true">"←"</span> "返回工作台"
                 </button>
+                </nav>
             </header>
             <div class="admin-content">
                 <section class="admin-heading">
@@ -229,8 +239,6 @@ pub fn AdminUsersPage() -> impl IntoView {
                             <For each=move || users.get() key=|user| user.username.clone() let:user>
                                 {
                                     let role_value = user.role.clone();
-                                    let role_label = if role_value == "admin" { "超级管理员" } else { "普通用户" };
-                                    let role_class = if role_value == "admin" { "admin-role-badge admin-role-badge-primary" } else { "admin-role-badge" };
                                     let username_for_delete = user.username.clone();
                                     let username_for_select = user.username.clone();
                                     let username_for_disabled = user.username.clone();
@@ -253,7 +261,6 @@ pub fn AdminUsersPage() -> impl IntoView {
                                                 <div><strong>{user.username.clone()}</strong><small>{format!("加入于 {}", user.created_at.format("%Y-%m-%d"))}</small></div>
                                             </div>
                                             <div class="admin-user-role">
-                                                <span class=role_class>{role_label}</span>
                                                 <WorkbenchSelect
                                                     class="admin-user-role-select"
                                                     label="修改系统角色"
@@ -261,7 +268,10 @@ pub fn AdminUsersPage() -> impl IntoView {
                                                     value=role_signal
                                                     disabled=Signal::derive(move || username_for_select == "admin" || busy.get())
                                                     placeholder=Signal::derive(|| "请选择系统角色".to_string())
-                                                    on_change=Callback::new(move |new_role| update_role(user_for_role_update.clone(), new_role))
+                                                    on_change=Callback::new(move |new_role| update_role(
+                                                        user_for_role_update.clone(),
+                                                        new_role,
+                                                    ))
                                                 />
                                             </div>
                                             <div class="admin-user-actions">

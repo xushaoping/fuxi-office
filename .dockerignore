@@ -18,7 +18,8 @@ docs
 backups
 deploy
 
-# Keep the Linux Binaryen archive used by the builder.
+# Default builds download checksum-verified Binaryen. Allow the documented
+# local amd64 archive; other local archives need an exact exception and SHA256.
 script/*.tar.gz
 !script/binaryen-version_132-x86_64-linux.tar.gz
 

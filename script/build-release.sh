@@ -30,10 +30,20 @@ else
     exit "$build_status"
 fi
 
-# 2. 外壳页面：手动复制项目根模板为 site/index.html
-cp index.html target/site/index.html
+# 2. Bind every asset URL to this bundle, so a previous cached client cannot
+# accidentally load a different release's WASM or API contract.
+asset_version="$(python3 script/verify-release-artifacts.py --stamp-only)"
+python3 - "$asset_version" <<'PY'
+from pathlib import Path
+import sys
+source = Path('index.html').read_text(encoding='utf-8')
+if '__FUXI_ASSET_VERSION__' not in source:
+    raise SystemExit('release index template is missing its asset version placeholder')
+Path('target/site/index.html').write_text(source.replace('__FUXI_ASSET_VERSION__', sys.argv[1]), encoding='utf-8')
+PY
 
 # 3. 后端二进制（与前端共用同一 Cargo 包，单独编译）
-cargo build --release
+FUXI_ASSET_VERSION="$asset_version" cargo build --release --locked --bin fuxi-dmn
+python3 script/verify-release-artifacts.py --output target/site/release-manifest.json
 
 echo "构建完成：target/release/fuxi-dmn + target/site/"

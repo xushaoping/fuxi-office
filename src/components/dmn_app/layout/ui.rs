@@ -22,9 +22,7 @@ pub(super) fn WorkbenchIcon(name: &'static str) -> impl IntoView {
         "folder" => {
             "M3 7V5a2 2 0 0 1 2-2h5l2 3h7a2 2 0 0 1 2 2v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7Z"
         }
-        "project" => {
-            ""
-        }
+        "project" => "",
         "check" => "m5 12 4 4L19 6",
         "arrow" => "m9 5 7 7-7 7",
         "lock" => "M7 10V7a5 5 0 0 1 10 0v3M5 10h14v11H5V10Zm7 4v3",

@@ -265,24 +265,15 @@ def build_story():
         PageBreak(),
     ])
 
-    story.extend([p("六、项目演示", "H1F"), p("在线地址", "H2F"), p('<link href="https://fuxioffice.cn/" color="#4D56C7"><b>https://fuxioffice.cn/</b></link>'), p("演示账号", "H2F")])
-    account_data = [
-        [p("角色", "TableHead"), p("用户名", "TableHead"), p("密码", "TableHead")],
-        [plain("管理员", "TableCell"), plain("admin", "TableCell"), plain("admin1234", "TableCell")],
-        [plain("普通用户", "TableCell"), plain("fuxi", "TableCell"), plain("admin1234", "TableCell")],
-    ]
-    account_table = Table(account_data, colWidths=[56 * mm, 56 * mm, 56 * mm])
-    account_table.setStyle(TableStyle([
-        ("BACKGROUND", (0, 0), (-1, 0), SLATE),
-        ("BACKGROUND", (0, 1), (-1, -1), PALE),
-        ("BOX", (0, 0), (-1, -1), 0.7, BORDER),
-        ("INNERGRID", (0, 0), (-1, -1), 0.7, BORDER),
-        ("LEFTPADDING", (0, 0), (-1, -1), 9),
-        ("RIGHTPADDING", (0, 0), (-1, -1), 9),
-        ("TOPPADDING", (0, 0), (-1, -1), 7),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 7),
-    ]))
-    story.extend([account_table, Spacer(1, 3 * mm), p("以上为公开演示账号；正式部署时请立即修改初始密码，并为不同操作者分配独立账号。", "SmallF"), p("推荐演示路径", "H2F")])
+    story.extend([
+        p("六、项目演示", "H1F"),
+        p("在线地址", "H2F"),
+        p('<link href="https://fuxioffice.cn/" color="#4D56C7"><b>https://fuxioffice.cn/</b></link>'),
+        p("访问方式", "H2F"),
+        plain("请通过演示环境页面获取当前访问方式。账号由部署管理员管理；本文档不包含共享密码。"),
+        Spacer(1, 3 * mm),
+        p("推荐演示路径", "H2F"),
+    ])
     steps = [
         ("1", "进入工作台", "打开线上地址并登录，进入项目空间；优先使用管理员账号观察完整菜单与治理能力。"),
         ("2", "需求与方案", "输入贷款审批需求，观察 Agent 完成需求分析、澄清、方案规划；分析完成后页面自动定位到待确认问题。"),

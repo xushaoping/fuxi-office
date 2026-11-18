@@ -1,0 +1,6 @@
+BEGIN;
+
+ALTER TABLE agent_runs
+    ADD COLUMN IF NOT EXISTS usage_json JSONB;
+
+COMMIT;

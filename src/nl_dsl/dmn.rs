@@ -9,6 +9,7 @@ const DMNDI_NS: &str = "https://www.omg.org/spec/DMN/20231201/DMNDI/";
 const DI_NS: &str = "https://www.omg.org/spec/DMN/20231201/DI/";
 const DC_NS: &str = "https://www.omg.org/spec/DMN/20231201/DC/";
 const FEEL_NS: &str = "https://www.omg.org/spec/DMN/20231201/FEEL/";
+const FUXI_TRACE_NS: &str = "urn:fuxi:dmn:traceability:v1";
 
 /// quick-xml 写入器别名
 type XmlWriter = Writer<Cursor<Vec<u8>>>;
@@ -26,6 +27,7 @@ pub fn generate_dmn_xml(defs: &Definitions) -> anyhow::Result<String> {
     defs_start.push_attribute(("xmlns:di", DI_NS));
     defs_start.push_attribute(("xmlns:dc", DC_NS));
     defs_start.push_attribute(("xmlns:feel", FEEL_NS));
+    defs_start.push_attribute(("xmlns:fuxi", FUXI_TRACE_NS));
     writer.write_event(Event::Start(defs_start))?;
 
     let mut dmn_gen = DmnGenerator::new();
@@ -139,12 +141,12 @@ impl DmnGenerator {
         start.push_attribute(("isCollection", is_collection.to_string().as_str()));
         w.write_event(Event::Start(start))?;
 
-        self.write_item_type(&item.type_, w)?;
+        Self::write_item_type(&item.type_, w)?;
         w.write_event(Event::End(BytesEnd::new("dmn:itemDefinition")))?;
         Ok(())
     }
 
-    fn write_item_type(&mut self, item_type: &ItemType, w: &mut XmlWriter) -> anyhow::Result<()> {
+    fn write_item_type(item_type: &ItemType, w: &mut XmlWriter) -> anyhow::Result<()> {
         match item_type {
             ItemType::Simple { type_ref } => {
                 write_text(w, "dmn:typeRef", &prefix_type(type_ref))?;
@@ -164,7 +166,7 @@ impl DmnGenerator {
                 if matches!(item_type.as_ref(), ItemType::List { .. }) {
                     anyhow::bail!("嵌套列表类型暂不支持生成 DMN XML");
                 }
-                self.write_item_type(item_type, w)?;
+                Self::write_item_type(item_type, w)?;
             }
             ItemType::Enumeration { type_ref, values } => {
                 write_text(w, "dmn:typeRef", &prefix_type(type_ref))?;
@@ -213,6 +215,7 @@ impl DmnGenerator {
         if let Some(d) = &dec.description {
             write_text(w, "dmn:description", d)?;
         }
+        write_requirement_trace(&dec.requirement_ids, w)?;
         let mut var = BytesStart::new("dmn:variable");
         var.push_attribute(("name", dec.name.as_str()));
         var.push_attribute((
@@ -553,6 +556,7 @@ impl DmnGenerator {
                     let mut rule_start = BytesStart::new("dmn:rule");
                     rule_start.push_attribute(("id", rid.as_str()));
                     w.write_event(Event::Start(rule_start))?;
+                    write_requirement_trace(&rule.requirement_ids, w)?;
 
                     for entry in &rule.input_entries {
                         let eid = self.next_id("inputEntry");
@@ -772,6 +776,22 @@ impl DmnGenerator {
             })
             .unwrap_or((0.0, 0.0))
     }
+}
+
+fn write_requirement_trace(ids: &[String], w: &mut XmlWriter) -> anyhow::Result<()> {
+    if ids.is_empty() {
+        return Ok(());
+    }
+    w.write_event(Event::Start(BytesStart::new("dmn:extensionElements")))?;
+    w.write_event(Event::Start(BytesStart::new("fuxi:traceability")))?;
+    for id in ids {
+        let mut reference = BytesStart::new("fuxi:requirementRef");
+        reference.push_attribute(("id", id.as_str()));
+        w.write_event(Event::Empty(reference))?;
+    }
+    w.write_event(Event::End(BytesEnd::new("fuxi:traceability")))?;
+    w.write_event(Event::End(BytesEnd::new("dmn:extensionElements")))?;
+    Ok(())
 }
 
 // ---------- 自由辅助函数 ----------
@@ -1247,5 +1267,47 @@ decisions:
             result.decision_by_name("Premium").unwrap().value,
             FeelValue::Number(15.0)
         );
+    }
+
+    #[test]
+    fn requirement_traceability_round_trips_for_decisions_and_rules() {
+        let definitions = parse_definitions(
+            r#"
+name: trace-model
+inputs:
+  - name: age
+    typeRef: number
+decisions:
+  - name: Eligibility
+    typeRef: string
+    requiredInputs: [age]
+    requirementIds: [req-goal-a1]
+    logic:
+      type: decisionTable
+      inputs:
+        - expression: age
+      outputs:
+        - name: result
+          typeRef: string
+      rules:
+        - inputEntries: [">= 18"]
+          outputEntries: ['"eligible"']
+          requirementIds: [req-goal-a1]
+"#,
+        )
+        .unwrap();
+        let xml = generate_dmn_xml(&definitions).unwrap();
+        let model = parse_dmn(&xml).unwrap();
+        let crate::dmn::DecisionLogic::DecisionTable(table) = &model.decisions[0].logic else {
+            panic!("expected decision table");
+        };
+        assert_eq!(model.decisions[0].requirement_ids, ["req-goal-a1"]);
+        assert_eq!(table.rules[0].requirement_ids, ["req-goal-a1"]);
+        let restored = parse_dmn(&model.to_dmn_xml().unwrap()).unwrap();
+        let crate::dmn::DecisionLogic::DecisionTable(table) = &restored.decisions[0].logic else {
+            panic!("expected decision table after serialization");
+        };
+        assert_eq!(restored.decisions[0].requirement_ids, ["req-goal-a1"]);
+        assert_eq!(table.rules[0].requirement_ids, ["req-goal-a1"]);
     }
 }

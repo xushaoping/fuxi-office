@@ -1,9 +1,12 @@
 use super::error::{DmnError, Result};
 use super::model::*;
 
+const FUXI_TRACE_NS: &str = "urn:fuxi:dmn:traceability:v1";
+
 impl DmnModel {
     pub fn to_dmn_xml(&self) -> Result<String> {
         let mut output = format!("<definitions xmlns=\"{}\"", DMN_NAMESPACE);
+        output.push_str(&format!(" xmlns:fuxi=\"{}\"", FUXI_TRACE_NS));
         attribute(&mut output, "name", self.name.as_deref());
         attribute(&mut output, "namespace", self.namespace.as_deref());
         attribute(
@@ -65,6 +68,7 @@ impl DmnModel {
             attribute(&mut output, "id", Some(&decision.id));
             attribute(&mut output, "name", Some(&decision.name));
             output.push('>');
+            write_requirement_trace(&mut output, &decision.requirement_ids);
             if decision.variable.is_some() || decision.type_ref.is_some() {
                 output.push_str("<variable");
                 attribute(
@@ -151,6 +155,19 @@ fn write_knowledge_requirements(output: &mut String, requirements: &[KnowledgeRe
         reference_element(output, "requiredKnowledge", &requirement.required_knowledge);
         output.push_str("</knowledgeRequirement>");
     }
+}
+
+fn write_requirement_trace(output: &mut String, requirement_ids: &[String]) {
+    if requirement_ids.is_empty() {
+        return;
+    }
+    output.push_str("<extensionElements><fuxi:traceability>");
+    for id in requirement_ids {
+        output.push_str("<fuxi:requirementRef");
+        attribute(output, "id", Some(id));
+        output.push_str("/>");
+    }
+    output.push_str("</fuxi:traceability></extensionElements>");
 }
 
 fn write_bkm_logic(output: &mut String, logic: &DecisionLogic) -> Result<()> {
@@ -405,6 +422,7 @@ fn write_table(output: &mut String, table: &DecisionTable) {
         output.push_str("<rule");
         attribute(output, "id", rule.id.as_deref());
         output.push('>');
+        write_requirement_trace(output, &rule.requirement_ids);
         for entry in &rule.input_entries {
             text_element(output, "inputEntry", entry);
         }

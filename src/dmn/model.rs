@@ -59,6 +59,8 @@ pub struct Decision {
     pub requirements: Vec<InformationRequirement>,
     #[serde(default)]
     pub knowledge_requirements: Vec<KnowledgeRequirement>,
+    #[serde(default)]
+    pub requirement_ids: Vec<String>,
     pub logic: DecisionLogic,
 }
 
@@ -240,6 +242,8 @@ pub struct DecisionRule {
     pub input_entries: Vec<String>,
     pub output_entries: Vec<String>,
     pub annotation_entries: Vec<String>,
+    #[serde(default)]
+    pub requirement_ids: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

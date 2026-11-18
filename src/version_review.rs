@@ -3,6 +3,10 @@ use serde_json::Value;
 use crate::models::{VersionChangeReview, VersionDiffEntry, VersionRiskFinding};
 use crate::nl_dsl::Definitions;
 
+pub mod behavior_comparison;
+pub mod optimization_simulation;
+pub mod regression_testing;
+
 pub fn build_change_review(
     base: Option<&Definitions>,
     updated: &Definitions,
@@ -211,6 +215,98 @@ fn json_value(value: &str) -> Value {
     Value::String(value.to_string())
 }
 
+fn is_numeric_unary_test(value: &str) -> bool {
+    let value = value.trim();
+    let number = ["<=", ">=", "<", ">", "="]
+        .iter()
+        .find_map(|operator| value.strip_prefix(operator))
+        .unwrap_or(value)
+        .trim();
+    number.parse::<f64>().is_ok_and(|number| number.is_finite())
+}
+
+fn is_pure_numeric_threshold_change(change: &VersionDiffEntry) -> bool {
+    if change.change_type != "update" || !change.element_type.eq_ignore_ascii_case("decision") {
+        return false;
+    }
+    let (Some(before), Some(after)) = (change.before.as_object(), change.after.as_object()) else {
+        return false;
+    };
+    let mut before_contract = before.clone();
+    let mut after_contract = after.clone();
+    let (Some(before_logic), Some(after_logic)) = (
+        before_contract.remove("logic"),
+        after_contract.remove("logic"),
+    ) else {
+        return false;
+    };
+    if before_contract != after_contract {
+        return false;
+    }
+    let (Some(before_logic), Some(after_logic)) =
+        (before_logic.as_object(), after_logic.as_object())
+    else {
+        return false;
+    };
+    if before_logic.get("type").and_then(Value::as_str) != Some("decisionTable") {
+        return false;
+    }
+    let mut before_table = before_logic.clone();
+    let mut after_table = after_logic.clone();
+    let (Some(before_rules), Some(after_rules)) = (
+        before_table
+            .remove("rules")
+            .and_then(|rules| rules.as_array().cloned()),
+        after_table
+            .remove("rules")
+            .and_then(|rules| rules.as_array().cloned()),
+    ) else {
+        return false;
+    };
+    if before_table != after_table || before_rules.len() != after_rules.len() {
+        return false;
+    }
+    let mut threshold_changed = false;
+    for (before_rule, after_rule) in before_rules.iter().zip(&after_rules) {
+        let (Some(before_rule), Some(after_rule)) =
+            (before_rule.as_object(), after_rule.as_object())
+        else {
+            return false;
+        };
+        let mut before_rule_contract = before_rule.clone();
+        let mut after_rule_contract = after_rule.clone();
+        let (Some(before_inputs), Some(after_inputs)) = (
+            before_rule_contract
+                .remove("inputEntries")
+                .and_then(|inputs| inputs.as_array().cloned()),
+            after_rule_contract
+                .remove("inputEntries")
+                .and_then(|inputs| inputs.as_array().cloned()),
+        ) else {
+            return false;
+        };
+        if before_rule_contract != after_rule_contract || before_inputs.len() != after_inputs.len()
+        {
+            return false;
+        }
+        for (before_input, after_input) in before_inputs.iter().zip(&after_inputs) {
+            if before_input == after_input {
+                continue;
+            }
+            let (Some(before_input), Some(after_input)) =
+                (before_input.as_str(), after_input.as_str())
+            else {
+                return false;
+            };
+            if !is_numeric_unary_test(before_input) || !is_numeric_unary_test(after_input) {
+                return false;
+            }
+            threshold_changed = true;
+        }
+    }
+    threshold_changed
+}
+
 fn risk_finding(change: &VersionDiffEntry) -> Option<VersionRiskFinding> {
     let path = change.path.to_ascii_lowercase();
     let kind = change.element_type.to_ascii_lowercase();
@@ -225,6 +321,12 @@ fn risk_finding(change: &VersionDiffEntry) -> Option<VersionRiskFinding> {
             "high",
             "MODEL_IDENTITY_CHANGED",
             "模型名称或命名空间变化可能破坏外部集成",
+        )
+    } else if is_pure_numeric_threshold_change(change) {
+        (
+            "low",
+            "NUMERIC_THRESHOLD_CHANGED",
+            "仅调整决策表数值阈值，表结构、输出和决策契约保持不变",
         )
     } else if path.contains("logic")
         || path.contains("rules")
@@ -279,6 +381,79 @@ fn risk_rank(level: &str) -> u8 {
 mod tests {
     use super::*;
     use crate::nl_dsl::parse_definitions;
+    use serde_json::json;
+
+    fn numeric_threshold_change() -> VersionDiffEntry {
+        VersionDiffEntry {
+            change_type: "update".into(),
+            element_type: "decision".into(),
+            element: "Eligibility".into(),
+            path: String::new(),
+            before: json!({
+                "name": "Eligibility",
+                "typeRef": "string",
+                "requiredInputs": ["Age"],
+                "requiredDecisions": [],
+                "requiredKnowledge": [],
+                "logic": {
+                    "type": "decisionTable",
+                    "hitPolicy": "unique",
+                    "inputs": [{"expression": "Age", "typeRef": "number"}],
+                    "outputs": [{"name": "result", "typeRef": "string"}],
+                    "rules": [{
+                        "inputEntries": [">= 18"],
+                        "outputEntries": ["\"Eligible\""],
+                        "annotation": "Adult"
+                    }]
+                }
+            }),
+            after: json!({
+                "name": "Eligibility",
+                "typeRef": "string",
+                "requiredInputs": ["Age"],
+                "requiredDecisions": [],
+                "requiredKnowledge": [],
+                "logic": {
+                    "type": "decisionTable",
+                    "hitPolicy": "unique",
+                    "inputs": [{"expression": "Age", "typeRef": "number"}],
+                    "outputs": [{"name": "result", "typeRef": "string"}],
+                    "rules": [{
+                        "inputEntries": [">= 21"],
+                        "outputEntries": ["\"Eligible\""],
+                        "annotation": "Adult"
+                    }]
+                }
+            }),
+            reason: String::new(),
+        }
+    }
+
+    #[test]
+    fn numeric_threshold_only_rule_change_is_low_risk() {
+        let finding = risk_finding(&numeric_threshold_change()).expect("risk finding");
+        assert_eq!(finding.level, "low");
+        assert_eq!(finding.code, "NUMERIC_THRESHOLD_CHANGED");
+        assert!(is_numeric_unary_test("<= 12.5"));
+        assert!(is_numeric_unary_test("-3"));
+        assert!(!is_numeric_unary_test("Age >= 18"));
+        assert!(!is_numeric_unary_test("-"));
+    }
+
+    #[test]
+    fn threshold_change_stays_high_risk_when_outputs_or_contracts_change() {
+        let mut output_changed = numeric_threshold_change();
+        output_changed.after["logic"]["rules"][0]["outputEntries"][0] = json!("\"Ineligible\"");
+        assert_eq!(risk_finding(&output_changed).unwrap().level, "high");
+
+        let mut contract_changed = numeric_threshold_change();
+        contract_changed.after["requiredInputs"] = json!(["Age", "Region"]);
+        assert_eq!(risk_finding(&contract_changed).unwrap().level, "high");
+
+        let mut non_numeric = numeric_threshold_change();
+        non_numeric.after["logic"]["rules"][0]["inputEntries"][0] = json!("Age >= minimum_age");
+        assert_eq!(risk_finding(&non_numeric).unwrap().level, "high");
+    }
 
     fn model() -> Definitions {
         parse_definitions(

@@ -16,7 +16,6 @@ pub(crate) struct AppState {
     pub(crate) login_rate_limits: Arc<Mutex<HashMap<String, RateLimitWindow>>>,
     pub(crate) captcha_verify_limits: Arc<Mutex<HashMap<String, RateLimitWindow>>>,
     pub(crate) trust_proxy_headers: bool,
-    pub(crate) boot_time: Instant,
 }
 
 #[derive(Debug, Clone)]

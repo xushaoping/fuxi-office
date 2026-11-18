@@ -1,0 +1,22 @@
+# Synthetic obvious-case contract fixtures only; not business-labeled acceptance data.
+# id	assessment	requirement	input_json	expected_output_json	rationale
+p01	plausible	Applicant age >= 18 means eligibility is approved.	{"age":25}	{"eligibility":"approved"}	Adult applicant meets the confirmed threshold
+p02	plausible	Risk low means decision approved.	{"risk":"low"}	{"decision":"approved"}	Risk level and rule result agree
+p03	plausible	Region east means route east.	{"region":"east"}	{"route":"east"}	Input and route result agree
+p04	plausible	Amount <= 1000 means fee is waived.	{"amount":500}	{"fee":"waived"}	Amount meets the waiver condition
+p05	plausible	Member true means discount is 10.	{"member":true}	{"discount":10}	Member flag and discount rule agree
+p06	plausible	Score >= 80 means grade is A.	{"score":90}	{"grade":"A"}	Score meets the grade threshold
+p07	plausible	Currency CNY means settlement currency is CNY.	{"currency":"CNY"}	{"settlementCurrency":"CNY"}	Currency rule and result agree
+s01	suspicious	Applicant age >= 18 means eligibility is approved.	{"age":25}	{"eligibility":"denied"}	Result contradicts the explicit rule
+s02	suspicious	Risk low means decision approved.	{"risk":"low"}	{"decision":"rejected"}	Output contradicts the low-risk rule
+s03	suspicious	Region east means route east.	{"region":"east"}	{"route":"west"}	Route conflicts with the input region
+s04	suspicious	Amount <= 1000 means fee is waived.	{"amount":500}	{"fee":"charged"}	Output conflicts with the waiver condition
+s05	suspicious	Member true means discount is 10.	{"member":true}	{"discount":0}	Discount conflicts with the confirmed rule
+s06	suspicious	Score >= 80 means grade is A.	{"score":90}	{"grade":"C"}	Grade is below the explicit threshold result
+s07	suspicious	Currency CNY means settlement currency is CNY.	{"currency":"CNY"}	{"settlementCurrency":"USD"}	Settlement currency conflicts with the rule
+i01	insufficient_evidence	Assess the application fairly.	{"age":25}	{"eligibility":"approved"}	No age threshold or output rule is stated
+i02	insufficient_evidence	Choose an appropriate decision.	{"risk":"low"}	{"decision":"approved"}	No mapping from risk level to decision is defined
+i03	insufficient_evidence	Handle regional requests consistently.	{"region":"east"}	{"route":"east"}	No relationship between region and route is stated
+i04	insufficient_evidence	Determine whether a fee applies.	{"amount":500}	{"fee":"waived"}	No fee threshold or exception is provided
+i05	insufficient_evidence	Apply a suitable member benefit.	{"member":true}	{"discount":10}	No discount amount is specified
+i06	insufficient_evidence	Assign a grade based on the case.	{"score":90}	{"grade":"A"}	No score bands are provided

@@ -136,7 +136,9 @@ fn captcha_glyph(character: char) -> [&'static str; 7] {
         '?' => [
             "01110", "10001", "00001", "00010", "00100", "00000", "00100",
         ],
-        _ => ["00000", "00000", "00000", "00000", "00000", "00000", "00000"],
+        _ => [
+            "00000", "00000", "00000", "00000", "00000", "00000", "00000",
+        ],
     }
 }
 
@@ -294,11 +296,7 @@ fn captcha_client_binding(secret: &str, client_key: &str) -> [u8; 32] {
     )
 }
 
-fn captcha_work_is_valid(
-    challenge: &[u8; 16],
-    difficulty: u8,
-    nonce: &str,
-) -> bool {
+fn captcha_work_is_valid(challenge: &[u8; 16], difficulty: u8, nonce: &str) -> bool {
     let Ok(nonce) = nonce.parse::<u64>() else {
         return false;
     };
@@ -681,7 +679,7 @@ pub(crate) async fn login(
     };
 
     // 2. 校验密码
-    if let Err(_) = verify_password(&user.password_hash, &payload.password) {
+    if verify_password(&user.password_hash, &payload.password).is_err() {
         eprintln!(
             "[审计] 登录失败 - 密码错误 - 客户端: {}, 用户名: {}",
             client_key, username
@@ -743,6 +741,435 @@ pub(crate) async fn get_me(
     ))
 }
 
+pub(crate) async fn list_model_performance_metrics(
+    State(state): State<AppState>,
+    Extension(claims): Extension<Claims>,
+) -> Result<Json<Vec<crate::models::ModelPerformanceMetricView>>, (StatusCode, String)> {
+    require_admin(&state, &claims).await?;
+    let metrics = sqlx::query_as::<_, crate::models::ModelPerformanceMetricView>(
+        r#"
+        SELECT model_name, task_type, sample_count, success_count,
+               success_rate::FLOAT8, avg_latency_ms,
+               estimated_cost_usd::FLOAT8, last_updated
+        FROM model_performance_metrics
+        WHERE sample_count > 0
+        ORDER BY task_type ASC, success_rate DESC, avg_latency_ms ASC, model_name ASC
+        "#,
+    )
+    .fetch_all(&state.db)
+    .await
+    .map_err(|error| database_failure("读取模型性能指标", &error))?;
+    Ok(Json(metrics))
+}
+
+pub(crate) async fn list_decision_explanation_admin_metrics(
+    State(state): State<AppState>,
+    Extension(claims): Extension<Claims>,
+) -> Result<Json<Vec<crate::models::DecisionExplanationAdminMetricView>>, (StatusCode, String)> {
+    require_admin(&state, &claims).await?;
+    let schema_ready = sqlx::query_scalar::<_, bool>(
+        "SELECT EXISTS (SELECT 1 FROM pg_attribute WHERE attrelid = to_regclass('public.decision_run_explanations') AND attname = 'generation_revision' AND NOT attisdropped) AND EXISTS (SELECT 1 FROM pg_attribute WHERE attrelid = to_regclass('public.decision_run_explanation_reviews') AND attname = 'explanation_revision' AND NOT attisdropped)",
+    )
+    .fetch_one(&state.db)
+    .await
+    .map_err(|error| database_failure("检查决策解释指标表结构", &error))?;
+    if !schema_ready {
+        return Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            "决策解释指标所需数据库迁移尚未应用，请按部署文档执行决策解释迁移 092、094、096 和 097 后重试".into(),
+        ));
+    }
+    let metrics = sqlx::query_as::<_, crate::models::DecisionExplanationAdminMetricView>(
+        r#"
+        WITH recent_explanations AS (
+            SELECT id, generation_revision, model, prompt_version, status, created_at, completed_at,
+                   GREATEST(
+                       (EXTRACT(EPOCH FROM completed_at - created_at) * 1000)::BIGINT,
+                       0
+                   ) AS latency_ms
+            FROM decision_run_explanations
+            WHERE created_at >= NOW() - INTERVAL '30 days'
+        ), generation_metrics AS (
+            SELECT model, prompt_version,
+                   COUNT(*)::BIGINT AS total_count,
+                   COUNT(*) FILTER (WHERE status = 'succeeded')::BIGINT AS succeeded_count,
+                   COUNT(*) FILTER (WHERE status = 'failed')::BIGINT AS failed_count,
+                   COUNT(*) FILTER (WHERE status = 'running')::BIGINT AS running_count,
+                   COUNT(*) FILTER (
+                       WHERE status = 'succeeded' AND completed_at IS NOT NULL
+                   )::BIGINT AS latency_sample_count,
+                   percentile_disc(0.50) WITHIN GROUP (ORDER BY latency_ms)
+                       FILTER (WHERE status = 'succeeded' AND completed_at IS NOT NULL)::BIGINT
+                       AS p50_latency_ms,
+                   percentile_disc(0.95) WITHIN GROUP (ORDER BY latency_ms)
+                       FILTER (WHERE status = 'succeeded' AND completed_at IS NOT NULL)::BIGINT
+                       AS p95_latency_ms
+            FROM recent_explanations
+            GROUP BY model, prompt_version
+        ), review_metrics AS (
+            SELECT model, prompt_version,
+                   COUNT(*)::BIGINT AS review_count,
+                   COUNT(DISTINCT explanation_id)::BIGINT AS reviewed_explanation_count,
+                   COUNT(*) FILTER (WHERE review_label = 'readable')::BIGINT
+                       AS readable_count,
+                   COUNT(*) FILTER (WHERE review_label = 'needs_revision')::BIGINT
+                       AS needs_revision_count,
+                   COUNT(*) FILTER (WHERE review_label = 'inconclusive')::BIGINT
+                       AS inconclusive_count
+            FROM (
+                SELECT explanation.model, explanation.prompt_version, review.explanation_id,
+                       review.review_label,
+                       review.created_at,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY review.explanation_id, review.explanation_revision, review.reviewer_username
+                           ORDER BY review.created_at, review.id
+                       ) AS reviewer_vote
+                FROM recent_explanations explanation
+                JOIN decision_run_explanation_reviews review
+                  ON review.explanation_id = explanation.id
+                 AND review.explanation_revision = explanation.generation_revision
+                 AND explanation.status = 'succeeded'
+            ) first_reviews
+            WHERE reviewer_vote = 1
+              AND created_at >= NOW() - INTERVAL '30 days'
+            GROUP BY model, prompt_version
+        )
+        SELECT generation.model, generation.prompt_version,
+               generation.total_count, generation.succeeded_count,
+               generation.failed_count, generation.running_count,
+               generation.latency_sample_count, generation.p50_latency_ms,
+               generation.p95_latency_ms,
+               COALESCE(review.review_count, 0)::BIGINT AS review_count,
+               COALESCE(review.reviewed_explanation_count, 0)::BIGINT
+                   AS reviewed_explanation_count,
+               COALESCE(review.readable_count, 0)::BIGINT AS readable_count,
+               COALESCE(review.needs_revision_count, 0)::BIGINT AS needs_revision_count,
+               COALESCE(review.inconclusive_count, 0)::BIGINT AS inconclusive_count
+        FROM generation_metrics generation
+        LEFT JOIN review_metrics review
+          ON review.model IS NOT DISTINCT FROM generation.model
+         AND review.prompt_version = generation.prompt_version
+        ORDER BY generation.prompt_version DESC, generation.model NULLS LAST
+        "#,
+    )
+    .fetch_all(&state.db)
+    .await
+    .map_err(|error| database_failure("读取决策解释指标", &error))?;
+    Ok(Json(metrics))
+}
+
+type ExperimentGroupCounts = HashMap<(String, String), (Option<(i64, i64)>, Option<(i64, i64)>)>;
+
+fn experiment_totals_by_group<'a>(
+    rows: impl IntoIterator<Item = (&'a str, &'a str, &'a str, i64, i64)>,
+) -> ExperimentGroupCounts {
+    rows.into_iter().fold(HashMap::new(), |mut totals, row| {
+        let (task_type, experiment_name, variant, sample_count, success_count) = row;
+        let entry = totals
+            .entry((task_type.to_string(), experiment_name.to_string()))
+            .or_insert((None, None));
+        let counts = (success_count, sample_count);
+        match variant {
+            "treatment" => entry.0 = Some(counts),
+            "control" => entry.1 = Some(counts),
+            _ => {}
+        }
+        totals
+    })
+}
+
+pub(crate) async fn list_model_experiment_metrics(
+    State(state): State<AppState>,
+    Extension(claims): Extension<Claims>,
+) -> Result<Json<Vec<crate::models::ModelExperimentMetricView>>, (StatusCode, String)> {
+    require_admin(&state, &claims).await?;
+    let rows = sqlx::query_as::<
+        _,
+        (
+            String,
+            String,
+            String,
+            i64,
+            i64,
+            f64,
+            i64,
+            Option<i16>,
+            i64,
+            i64,
+            Option<f64>,
+        ),
+    >(
+        r#"
+        WITH latest_project_runs AS (
+            SELECT DISTINCT ON (stage, experiment_name, project_id)
+                   stage, experiment_name, experiment_variant, project_id, status,
+                   started_at, finished_at
+            FROM agent_runs
+            WHERE experiment_name IS NOT NULL
+              AND experiment_variant IS NOT NULL
+              AND status IN ('succeeded', 'failed')
+              AND finished_at IS NOT NULL
+            ORDER BY stage, experiment_name, project_id, started_at DESC, id DESC
+        ), experiment_audit AS (
+            SELECT stage, experiment_name,
+                   MIN(experiment_treatment_percent) AS treatment_percent,
+                   COUNT(DISTINCT experiment_treatment_percent)::BIGINT
+                       AS treatment_percent_config_count,
+                   COUNT(*) FILTER (
+                       WHERE experiment_treatment_percent IS NOT NULL
+                         AND experiment_bucket IS NOT NULL
+                   )::BIGINT AS audit_sample_count,
+                   COUNT(*) FILTER (
+                       WHERE experiment_treatment_percent IS NOT NULL
+                         AND experiment_bucket IS NOT NULL
+                         AND ((experiment_bucket < experiment_treatment_percent)
+                              = (experiment_variant = 'treatment'))
+                   )::BIGINT AS consistent_assignment_count
+            FROM agent_runs
+            WHERE experiment_name IS NOT NULL
+              AND experiment_variant IS NOT NULL
+              AND status IN ('succeeded', 'failed')
+              AND finished_at IS NOT NULL
+            GROUP BY stage, experiment_name
+        )
+        SELECT stage, experiment_name, experiment_variant AS variant,
+               COUNT(*)::BIGINT AS sample_count,
+               COUNT(*) FILTER (WHERE status = 'succeeded')::BIGINT AS success_count,
+               COALESCE(
+                   COUNT(*) FILTER (WHERE status = 'succeeded')::FLOAT8 * 100
+                       / NULLIF(COUNT(*), 0),
+                   0
+               ) AS success_rate,
+               COALESCE(
+                   AVG(EXTRACT(EPOCH FROM (finished_at - started_at)) * 1000)::BIGINT,
+                   0
+               ) AS avg_latency_ms,
+               audit.treatment_percent,
+               audit.treatment_percent_config_count,
+               audit.audit_sample_count,
+               CASE WHEN audit.audit_sample_count = 0 THEN NULL
+                    ELSE audit.consistent_assignment_count::FLOAT8 * 100
+                         / audit.audit_sample_count
+               END AS assignment_integrity_percent
+        FROM latest_project_runs
+        JOIN experiment_audit audit USING (stage, experiment_name)
+        GROUP BY stage, experiment_name, experiment_variant, audit.treatment_percent,
+                 audit.treatment_percent_config_count, audit.audit_sample_count,
+                 audit.consistent_assignment_count
+        ORDER BY stage, experiment_name, experiment_variant
+        "#,
+    )
+    .fetch_all(&state.db)
+    .await
+    .map_err(|error| database_failure("读取模型实验指标", &error))?;
+    let experiment_totals = experiment_totals_by_group(rows.iter().map(|row| {
+        (
+            row.0.as_str(),
+            row.1.as_str(),
+            row.2.as_str(),
+            row.3.max(0),
+            row.4.max(0),
+        )
+    }));
+    let experiment_effects = experiment_totals
+        .into_iter()
+        .map(|(group, (treatment, control))| {
+            let counts = treatment.zip(control);
+            let comparison_sample_size_reached =
+                counts.is_some_and(|((_, treatment_size), (_, control_size))| {
+                    treatment_size >= crate::agent_runtime::MIN_EXPERIMENT_SAMPLE_SIZE
+                        && control_size >= crate::agent_runtime::MIN_EXPERIMENT_SAMPLE_SIZE
+                });
+            let interval = counts.and_then(
+                |((treatment_successes, treatment_size), (control_successes, control_size))| {
+                    crate::agent_runtime::wilson_difference_confidence_interval(
+                        treatment_successes as u64,
+                        treatment_size as u64,
+                        control_successes as u64,
+                        control_size as u64,
+                    )
+                },
+            );
+            let significant = counts.is_some_and(
+                |((treatment_successes, treatment_size), (control_successes, control_size))| {
+                    crate::agent_runtime::treatment_effect_is_significant(
+                        treatment_successes as u64,
+                        treatment_size as u64,
+                        control_successes as u64,
+                        control_size as u64,
+                    )
+                },
+            );
+            (
+                group,
+                (
+                    interval.map(|value| value.0 * 100.0),
+                    interval.map(|value| value.1 * 100.0),
+                    comparison_sample_size_reached,
+                    significant,
+                ),
+            )
+        })
+        .collect::<HashMap<_, _>>();
+    let metrics = rows
+        .into_iter()
+        .filter_map(
+            |(
+                task_type,
+                experiment_name,
+                variant,
+                sample_count,
+                success_count,
+                success_rate,
+                avg_latency_ms,
+                treatment_percent,
+                treatment_percent_config_count,
+                audit_sample_count,
+                assignment_integrity_percent,
+            )| {
+                let (ci_lower, ci_upper) = crate::agent_runtime::wilson_confidence_interval(
+                    success_count.max(0) as u64,
+                    sample_count.max(0) as u64,
+                )?;
+                Some(crate::models::ModelExperimentMetricView {
+                    task_type: task_type.clone(),
+                    experiment_name: experiment_name.clone(),
+                    variant,
+                    sample_count,
+                    success_count,
+                    success_rate,
+                    success_rate_ci_lower: ci_lower * 100.0,
+                    success_rate_ci_upper: ci_upper * 100.0,
+                    minimum_sample_size_reached: sample_count
+                        >= crate::agent_runtime::MIN_EXPERIMENT_SAMPLE_SIZE,
+                    treatment_minus_control_ci_lower: experiment_effects
+                        .get(&(task_type.clone(), experiment_name.clone()))
+                        .and_then(|effect| effect.0),
+                    treatment_minus_control_ci_upper: experiment_effects
+                        .get(&(task_type.clone(), experiment_name.clone()))
+                        .and_then(|effect| effect.1),
+                    comparison_sample_size_reached: experiment_effects
+                        .get(&(task_type.clone(), experiment_name.clone()))
+                        .is_some_and(|effect| effect.2),
+                    treatment_effect_significant: experiment_effects
+                        .get(&(task_type.clone(), experiment_name.clone()))
+                        .is_some_and(|effect| effect.3),
+                    avg_latency_ms,
+                    treatment_percent,
+                    treatment_percent_config_count,
+                    audit_sample_count,
+                    assignment_integrity_percent,
+                })
+            },
+        )
+        .collect();
+    Ok(Json(metrics))
+}
+
+pub(crate) async fn list_model_usage_metrics(
+    State(state): State<AppState>,
+    Extension(claims): Extension<Claims>,
+) -> Result<Json<Vec<crate::models::ModelUsageMetricView>>, (StatusCode, String)> {
+    require_admin(&state, &claims).await?;
+    let metrics = sqlx::query_as::<_, crate::models::ModelUsageMetricView>(
+        r#"
+        SELECT stage AS task_type,
+               COUNT(*)::BIGINT AS run_count,
+               COALESCE(
+                   SUM(COALESCE(NULLIF(usage_json->>'transport_attempt_count', '')::BIGINT, 0)),
+                   0
+               )::BIGINT AS transport_attempt_count,
+               COALESCE(SUM((usage_json->>'request_count')::BIGINT), 0)::BIGINT
+                   AS request_count,
+               COALESCE(SUM((usage_json->>'prompt_tokens')::BIGINT), 0)::BIGINT
+                   AS prompt_tokens,
+               COALESCE(SUM((usage_json->>'completion_tokens')::BIGINT), 0)::BIGINT
+                   AS completion_tokens,
+               COALESCE(SUM((usage_json->>'total_tokens')::BIGINT), 0)::BIGINT
+                   AS total_tokens,
+               SUM(NULLIF(usage_json->>'estimated_cost_usd', '')::FLOAT8)
+                   FILTER (WHERE usage_json ? 'estimated_cost_usd') AS estimated_cost_usd,
+               COUNT(*) FILTER (WHERE usage_json ? 'estimated_cost_usd')::BIGINT
+                   AS estimated_cost_run_count,
+               MAX(finished_at) AS last_updated
+        FROM agent_runs
+        WHERE finished_at >= NOW() - INTERVAL '30 days'
+          AND usage_json IS NOT NULL
+          AND (
+              COALESCE((usage_json->>'request_count')::BIGINT, 0) > 0
+              OR COALESCE(NULLIF(usage_json->>'transport_attempt_count', '')::BIGINT, 0) > 0
+          )
+        GROUP BY stage
+        ORDER BY stage
+        "#,
+    )
+    .fetch_all(&state.db)
+    .await
+    .map_err(|error| database_failure("读取模型 token 用量", &error))?;
+    Ok(Json(metrics))
+}
+
+pub(crate) async fn list_business_quality_metrics(
+    State(state): State<AppState>,
+    Extension(claims): Extension<Claims>,
+) -> Result<Json<Vec<crate::models::AdminBusinessQualityMetricView>>, (StatusCode, String)> {
+    require_admin(&state, &claims).await?;
+    let metrics = sqlx::query_as::<_, crate::models::AdminBusinessQualityMetricView>(
+        r#"
+        WITH project_runs AS (
+            SELECT run.project_id,
+                   run.status,
+                   run.outcome_assessment,
+                   run.executed_at
+            FROM decision_runs run
+            WHERE run.executed_at >= NOW() - INTERVAL '30 days'
+        )
+        SELECT project.id AS project_id,
+               project.name AS project_name,
+               project.owner_username,
+               COUNT(runs.project_id)::BIGINT AS total_runs,
+               COUNT(runs.project_id) FILTER (WHERE runs.status = 'succeeded')::BIGINT
+                   AS succeeded_runs,
+               COUNT(runs.project_id) FILTER (
+                   WHERE runs.status = 'succeeded'
+                     AND runs.outcome_assessment IN ('confirmed', 'mismatch')
+               )::BIGINT AS conclusive_outcome_runs,
+               COUNT(runs.project_id) FILTER (
+                   WHERE runs.status = 'succeeded'
+                     AND runs.outcome_assessment = 'mismatch'
+               )::BIGINT AS mismatch_runs,
+               COALESCE(
+                   COUNT(runs.project_id) FILTER (
+                       WHERE runs.status = 'succeeded'
+                         AND runs.outcome_assessment IS NOT NULL
+                   )::FLOAT8 * 100
+                   / NULLIF(COUNT(runs.project_id) FILTER (WHERE runs.status = 'succeeded'), 0),
+                   0
+               ) AS feedback_coverage_percent,
+               COALESCE(
+                   COUNT(runs.project_id) FILTER (
+                       WHERE runs.status = 'succeeded'
+                         AND runs.outcome_assessment = 'mismatch'
+                   )::FLOAT8 * 100
+                   / NULLIF(COUNT(runs.project_id) FILTER (
+                       WHERE runs.status = 'succeeded'
+                         AND runs.outcome_assessment IN ('confirmed', 'mismatch')
+                   ), 0),
+                   0
+               ) AS mismatch_rate_percent,
+               MAX(runs.executed_at) AS last_run_at
+        FROM decision_projects project
+        JOIN project_runs runs ON runs.project_id = project.id
+        GROUP BY project.id, project.name, project.owner_username
+        ORDER BY last_run_at DESC, project.id
+        "#,
+    )
+    .fetch_all(&state.db)
+    .await
+    .map_err(|error| database_failure("读取业务效果指标", &error))?;
+    Ok(Json(metrics))
+}
+
 pub(crate) async fn ensure_admin_user(db: &sqlx::PgPool) -> Result<(), sqlx::Error> {
     let password = std::env::var("ADMIN_PASSWORD")
         .map_err(|_| sqlx::Error::Protocol("ADMIN_PASSWORD 必须设置且不能使用默认值".into()))?;
@@ -756,12 +1183,18 @@ pub(crate) async fn ensure_admin_user(db: &sqlx::PgPool) -> Result<(), sqlx::Err
         ));
     }
     let hash = hash_password(&password)
-        .map_err(|error| sqlx::Error::Protocol(format!("admin 密码加密失败: {error}").into()))?;
+        .map_err(|error| sqlx::Error::Protocol(format!("admin 密码加密失败: {error}")))?;
     sqlx::query(
         "INSERT INTO users (username, password_hash, role) VALUES ('admin', $1, 'admin')
-         ON CONFLICT (username) DO UPDATE SET role = 'admin'",
+         ON CONFLICT (username) DO UPDATE SET
+             role = 'admin',
+             password_hash = CASE
+                 WHEN users.password_hash LIKE $2 THEN EXCLUDED.password_hash
+                 ELSE users.password_hash
+             END",
     )
     .bind(hash)
+    .bind("$2%")
     .execute(db)
     .await
     .map(|_| ())
@@ -963,6 +1396,26 @@ mod tests {
     use super::*;
 
     #[test]
+    fn experiment_effect_counts_are_scoped_by_task_and_name() {
+        let totals = experiment_totals_by_group([
+            ("requirement_analysis", "trial", "treatment", 30, 24),
+            ("requirement_analysis", "trial", "control", 30, 15),
+            ("decision_planning", "trial", "treatment", 30, 9),
+            ("decision_planning", "trial", "control", 30, 15),
+        ]);
+
+        assert_eq!(totals.len(), 2);
+        assert_eq!(
+            totals.get(&("requirement_analysis".into(), "trial".into())),
+            Some(&(Some((24, 30)), Some((15, 30))))
+        );
+        assert_eq!(
+            totals.get(&("decision_planning".into(), "trial".into())),
+            Some(&(Some((9, 30)), Some((15, 30))))
+        );
+    }
+
+    #[test]
     fn bearer_scheme_is_case_insensitive_and_rejects_empty_tokens() {
         let mut headers = axum::http::HeaderMap::new();
         headers.insert("Authorization", "bearer token-value".parse().unwrap());
@@ -978,10 +1431,7 @@ mod tests {
         headers.insert("X-Real-IP", "203.0.113.10".parse().unwrap());
         let peer_addr = Some("127.0.0.1:3000".parse().unwrap());
 
-        assert_eq!(
-            client_key(&headers, peer_addr, true),
-            "203.0.113.10"
-        );
+        assert_eq!(client_key(&headers, peer_addr, true), "203.0.113.10");
         assert_eq!(client_key(&headers, peer_addr, false), "127.0.0.1");
     }
 
@@ -1137,9 +1587,8 @@ mod tests {
             let (expression, answer) = generate_captcha_expression();
             let characters: Vec<_> = expression.chars().collect();
             assert_eq!(characters.len(), 5);
-            assert!(characters
-                .iter()
-                .all(|character| character.is_ascii_digit() || matches!(character, '+' | '-' | 'X' | '=' | '?')));
+            assert!(characters.iter().all(|character| character.is_ascii_digit()
+                || matches!(character, '+' | '-' | 'X' | '=' | '?')));
             assert_eq!(characters[3], '=');
             assert_eq!(characters[4], '?');
 

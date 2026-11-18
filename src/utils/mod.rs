@@ -1,7 +1,7 @@
 //! Browser-facing utility hooks.
 
-mod responsive;
 mod keyboard;
+mod responsive;
 
 pub use keyboard::use_keyboard_shortcut;
-pub use responsive::{use_breakpoint, Breakpoint};
+pub use responsive::{Breakpoint, use_breakpoint};

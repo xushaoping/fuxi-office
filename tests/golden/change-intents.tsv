@@ -1,0 +1,21 @@
+# id<TAB>requirement<TAB>target<TAB>field<TAB>expected_value
+change-01	将理赔资格决策的描述更新为：核验保单与事故后判断赔付资格。	decision:ClaimEligibility	description	核验保单与事故后判断赔付资格。
+change-02	将理赔资格决策的描述更新为：根据有效保单和损失金额判断是否批准。	decision:ClaimEligibility	description	根据有效保单和损失金额判断是否批准。
+change-03	将理赔资格决策的描述更新为：评估事故类型及申报损失是否符合规则。	decision:ClaimEligibility	description	评估事故类型及申报损失是否符合规则。
+change-04	将理赔资格决策的描述更新为：按保单状态、事故类型和损失金额评定申请。	decision:ClaimEligibility	description	按保单状态、事故类型和损失金额评定申请。
+change-05	将理赔资格决策的描述更新为：为保险理赔输出批准或拒绝结论。	decision:ClaimEligibility	description	为保险理赔输出批准或拒绝结论。
+change-06	将理赔资格决策的描述更新为：使用保单和事故信息确定理赔资格。	decision:ClaimEligibility	description	使用保单和事故信息确定理赔资格。
+change-07	将理赔资格决策的描述更新为：依照现行理赔规则检查损失申报。	decision:ClaimEligibility	description	依照现行理赔规则检查损失申报。
+change-08	将理赔资格决策的描述更新为：筛查符合承保条件的事故理赔请求。	decision:ClaimEligibility	description	筛查符合承保条件的事故理赔请求。
+change-09	将理赔资格决策的描述更新为：依据事故信息和损失金额评估申请。	decision:ClaimEligibility	description	依据事故信息和损失金额评估申请。
+change-10	将理赔资格决策的描述更新为：判断申报损失是否满足保险审批规则。	decision:ClaimEligibility	description	判断申报损失是否满足保险审批规则。
+change-11	将理赔资格决策的描述更新为：对保险事故申请进行资格判断。	decision:ClaimEligibility	description	对保险事故申请进行资格判断。
+change-12	将理赔资格决策的描述更新为：结合保单状态与事故损失给出结论。	decision:ClaimEligibility	description	结合保单状态与事故损失给出结论。
+change-13	将理赔资格决策的描述更新为：核查报案信息并确定是否符合赔付条件。	decision:ClaimEligibility	description	核查报案信息并确定是否符合赔付条件。
+change-14	将理赔资格决策的描述更新为：将事故风险与申报金额纳入理赔审核。	decision:ClaimEligibility	description	将事故风险与申报金额纳入理赔审核。
+change-15	将理赔资格决策的描述更新为：依赖有效保单信息处理保险事故申请。	decision:ClaimEligibility	description	依赖有效保单信息处理保险事故申请。
+change-16	将理赔资格决策的描述更新为：依据事故类别及损失上限审核理赔。	decision:ClaimEligibility	description	依据事故类别及损失上限审核理赔。
+change-17	将理赔资格决策的描述更新为：检查理赔请求是否符合保单约定。	decision:ClaimEligibility	description	检查理赔请求是否符合保单约定。
+change-18	将理赔资格决策的描述更新为：根据理赔材料生成资格审核结果。	decision:ClaimEligibility	description	根据理赔材料生成资格审核结果。
+change-19	将理赔资格决策的描述更新为：比较事故申报与保单承保范围。	decision:ClaimEligibility	description	比较事故申报与保单承保范围。
+change-20	将理赔资格决策的描述更新为：评估保险理赔是否可以进入批准流程。	decision:ClaimEligibility	description	评估保险理赔是否可以进入批准流程。

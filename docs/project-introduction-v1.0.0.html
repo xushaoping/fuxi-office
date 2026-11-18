@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>伏羲智能决策工作台 v0.1.0 - 产品介绍</title>
+    <title>伏羲智能决策工作台 v1.0.0 - 产品介绍</title>
     <style>
         @page {
             size: A4;
@@ -197,10 +197,10 @@
         <h1>伏羲智能决策工作台</h1>
         <p class="subtitle">OPEN SOURCE · AI DECISION AUTOMATION</p>
         <p class="subtitle">让业务规则从自然语言出发，经过多智能体协作、结构化建模、<br>确定性校验与人工治理，成为可执行、可解释、可审计的决策服务</p>
-        <p class="version">版本 v0.1.0 · 2026-11-18</p>
+        <p class="version">版本 v1.0.0 · 2026-11-18</p>
     </div>
 
-    <h1 id="v020">伏羲智能决策工作台 v0.1.0</h1>
+    <h1 id="v020">伏羲智能决策工作台 v1.0.0</h1>
 <h2 id="open-source-ai-decision-automation">OPEN SOURCE · AI DECISION AUTOMATION</h2>
 <p><strong>让业务规则从自然语言出发，经过多智能体协作、结构化建模、确定性校验与人工治理，成为可执行、可解释、可审计的决策服务。</strong></p>
 <hr />
@@ -225,7 +225,7 @@
 <h3 id="_5">伏羲的解决思路</h3>
 <p>使用<strong>多智能体协作</strong>理解和生成结构化决策模型，再由确定性的 DMN/FEEL 引擎进行校验、执行和审计。AI 提升建模效率，规则引擎保证生产可靠性。</p>
 <hr />
-<h2 id="v020_1">二、项目定位与目标（v0.1.0 升级）</h2>
+<h2 id="v020_1">二、项目定位与目标（v1.0.0 升级）</h2>
 <p>伏羲是一个全栈 Rust 实现的企业级 DMN 决策自动化平台，<strong>智能化成熟度已达 L3（半自动闭环）</strong>。平台将"自然语言需求"转换成"可验证、可版本化、可发布、可观测的决策服务"。</p>
 <h3 id="_6">核心能力</h3>
 <p>• <strong>多智能体协作编排</strong>：Analyst、Architect、Engineer、Tester 等多角色并行工作，支持心跳监控、失联恢复、取消传播
@@ -236,7 +236,7 @@
 • <strong>完整运营闭环</strong>：决策解释、偏差归因、漂移检测、优化建议、Shadow 评估、效果追踪
 • <strong>全链路可追溯</strong>：从 Agent 输入、DSL、DMN 制品、测试、审批到运行轨迹和业务反馈</p>
 <hr />
-<h2 id="v020_2">三、总体技术架构（v0.1.0 升级）</h2>
+<h2 id="v020_2">三、总体技术架构（v1.0.0 升级）</h2>
 <h3 id="_7">分层架构</h3>
 <p><strong>交互层</strong>
 - Leptos CSR / WebAssembly 工作台
@@ -246,7 +246,7 @@
 - Axum API · JWT 认证 · 项目级 RBAC
 - SSE 流式反馈 · 决策服务端点
 - 批量业务结果回传</p>
-<p><strong>智能层</strong>（⭐ v0.1.0 重大升级）
+<p><strong>智能层</strong>（⭐ v1.0.0 重大升级）
 - <strong>多智能体协作编排</strong>：并行执行、心跳监控、失联恢复
 - <strong>RAG 语义检索</strong>：向量索引 + 关键词 + RRF 融合
 - <strong>阶段化工作流</strong>：需求分析 → 澄清 → 规划 → DSL 生成 → 增量修改
@@ -255,13 +255,13 @@
 - Decision DSL → 结构校验
 - DMN 1.5 XML 生成
 - FEEL 预编译与依赖分析</p>
-<p><strong>运行层</strong>（⭐ v0.1.0 新增）
+<p><strong>运行层</strong>（⭐ v1.0.0 新增）
 - 确定性 DMN/FEEL 执行 · 规则命中 · 执行轨迹
 - <strong>决策解释生成</strong>（按需自然语言解释）
 - <strong>偏差归因</strong>（智能归因候选 + 人工复核）
 - <strong>漂移检测</strong>（每日扫描 + 事件驱动）
 - <strong>优化闭环</strong>（建议 → 模拟 → Shadow → 效果追踪）</p>
-<p><strong>数据层</strong>（⭐ v0.1.0 优化）
+<p><strong>数据层</strong>（⭐ v1.0.0 优化）
 - PostgreSQL 14+ / pgvector
 - <strong>按月分区存储</strong>（决策运行）
 - <strong>日粒度物化视图</strong>（统计加速）
@@ -298,7 +298,7 @@
 </tbody>
 </table>
 <hr />
-<h2 id="v020_3">四、核心功能与应用场景（v0.1.0 升级）</h2>
+<h2 id="v020_3">四、核心功能与应用场景（v1.0.0 升级）</h2>
 <h3 id="_9">智能建模能力</h3>
 <p><strong>多智能体协作编排</strong>
 - Analyst、Architect、Engineer、Tester 并行工作
@@ -320,18 +320,18 @@
 <h3 id="_10">质量保障能力</h3>
 <p><strong>多层校验门禁</strong>
 - DSL 结构校验 → DMN 编译 → FEEL 语法 → 依赖完整性 → 契约测试</p>
-<p><strong>Tester Agent</strong>（⭐ v0.1.0 新增）
+<p><strong>Tester Agent</strong>（⭐ v1.0.0 新增）
 - 基于需求条目/约束自动生成测试提案
 - LLM-as-Judge 辅助复核
 - 人工审阅与采信率评测</p>
-<p><strong>历史回归门禁</strong>（⭐ v0.1.0 新增）
+<p><strong>历史回归门禁</strong>（⭐ v1.0.0 新增）
 - 有基线的版本发布前必须通过历史回归
 - 全部用例通过才能发布</p>
 <p><strong>静态分析</strong>
 - 规则冲突检测（UNIQUE/ANY）
 - 不可达规则（FIRST）
 - 覆盖缺口识别</p>
-<h3 id="v020_4">生产运营能力（⭐ v0.1.0 重大升级）</h3>
+<h3 id="v020_4">生产运营能力（⭐ v1.0.0 重大升级）</h3>
 <p><strong>决策解释</strong>
 - 按需生成自然语言解释（绑定版本与运行记录）
 - 支持盲审标注、可读性评估
@@ -354,7 +354,7 @@
 - 自然语言查询项目指标（运行量、成功率、失败率、偏差率、耗时）
 - 意图识别与澄清
 - 结构化指标返回</p>
-<p><strong>提示词版本管理</strong>（⭐ v0.1.0 新增）
+<p><strong>提示词版本管理</strong>（⭐ v1.0.0 新增）
 - 版本控制、Golden 评测、激活回滚
 - 提示词审计历史
 - 激活后必须重启应用实例</p>
@@ -396,7 +396,7 @@
 </tbody>
 </table>
 <hr />
-<h2 id="v020_5">五、v0.1.0 核心创新点</h2>
+<h2 id="v020_5">五、v1.0.0 核心创新点</h2>
 <h3 id="01-l2-l3">01 · 多智能体协作编排（L2 → L3 升级）</h3>
 <p>不再是单一 Agent 线性流水线，而是多角色并行协作，支持心跳监控、失联恢复、取消传播。</p>
 <h3 id="02-rag">02 · RAG 语义检索（知识增强升级）</h3>
@@ -499,7 +499,7 @@
 • <strong>数据存储</strong>：<code>src/storage/partitions.rs</code>、<code>src/storage/materialized_views.rs</code><br />
 • <strong>版本与权限</strong>：<code>src/version_review.rs</code>、<code>src/project_access.rs</code></p>
 <h3 id="_21">文档</h3>
-<p>• <strong>v0.1.0 变更日志</strong>：<code>docs/CHANGELOG_v0.1.0.md</code><br />
+<p>• <strong>v1.0.0 变更日志</strong>：<code>docs/CHANGELOG_v1.0.0.md</code><br />
 • <strong>升级方案</strong>：<code>docs/伏羲智能决策工作台-全链路智能化升级方案.md</code><br />
 • <strong>用户操作手册</strong>：<code>docs/user-operation-manual.md</code><br />
 • <strong>配置文档</strong>：<code>docs/configuration.md</code><br />
@@ -508,15 +508,15 @@
 <hr />
 <h2 id="_22">结语</h2>
 <p>伏羲不是让 AI 替代规则系统，而是让 AI 成为规则系统的自然语言建模入口。通过<strong>"多智能体协作、RAG 检索、DSL 表达、编译器校验、确定性执行、人工治理、运行反馈、偏差归因、漂移检测、优化闭环"</strong>的组合，企业可以把分散在文档和经验中的决策知识，逐步沉淀为可执行、可解释、可审计的数字化资产。</p>
-<p><strong>v0.1.0 实现了从 L2（单点辅助）到 L3（半自动闭环）的重大升级</strong>，形成了完整的智能化决策自动化闭环。</p>
+<p><strong>v1.0.0 实现了从 L2（单点辅助）到 L3（半自动闭环）的重大升级</strong>，形成了完整的智能化决策自动化闭环。</p>
 <hr />
 <p><strong>线上演示</strong>：https://fuxioffice.cn/<br />
-<strong>文档版本</strong>：v0.1.0 · 2026-11-18</p>
+<strong>文档版本</strong>：v1.0.0 · 2026-11-18</p>
 
     <hr>
     <footer style="text-align: center; color: #999; font-size: 12px; margin-top: 50px;">
         <p>线上演示：<a href="https://fuxioffice.cn/">https://fuxioffice.cn/</a></p>
-        <p>文档版本：v0.1.0 · 2026-11-18</p>
+        <p>文档版本：v1.0.0 · 2026-11-18</p>
     </footer>
 </body>
 </html>

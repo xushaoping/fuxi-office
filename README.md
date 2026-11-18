@@ -1,14 +1,14 @@
 # 伏羲智能决策工作台
 
-企业级 DMN 决策自动化平台，全栈 Rust 实现。用户以自然语言描述业务规则，系统通过多智能体协作生成结构化 DSL，经多层校验后编译为标准 DMN 1.5 XML，并提供完整的版本管理、业务验收、发布运行和数据分析能力。
+伏羲是一款全栈 Rust 构建的企业级 DMN 决策自动化平台。用户以自然语言描述业务规则，平台通过多智能体协作生成结构化决策 DSL，并经多层校验编译为符合 DMN 1.5 标准的 XML 模型；同时覆盖版本管理、业务验收、发布运行与数据分析，形成完整的决策治理闭环。
 
 **线上演示**：[https://fuxioffice.cn/](https://fuxioffice.cn/)
 
 ## 版本状态
 
-- **当前版本**: v0.1.0 (release)
+- **当前版本**: v1.0.0 (release)
 - **智能化成熟度**: L3（半自动闭环）
-- **详细变更**: [v0.1.0 变更日志](docs/CHANGELOG_v0.1.0.md) 
+- **详细变更**: [v1.0.0 变更日志](docs/CHANGELOG_v1.0.0.md) 
 
 **注意**: 工作区包含未提交变更，生产部署前需完成完整验收。
 
@@ -306,7 +306,7 @@ curl -X POST http://127.0.0.1:3000/api/projects/{id}/orchestrations/{oid}/cancel
 - [知识库示例](docs/knowledge-base-examples.md) - 知识库录入与使用
 
 ### 技术文档
-- [v0.1.0 变更日志](docs/CHANGELOG_v0.1.0.md) - 详细变更记录
+- [v1.0.0 变更日志](docs/CHANGELOG_v1.0.0.md) - 详细变更记录
 - [配置文档](docs/configuration.md) - 完整环境变量说明
 - [API 参考](docs/api-reference.md) - 完整 API 文档
 - [部署文档](docs/deployment.md) - 生产部署指南

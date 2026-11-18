@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-生成伏羲智能决策工作台产品介绍 PDF
+生成伏羲智能决策平台产品介绍 PDF
 使用 markdown 转 HTML，然后可以用浏览器打印为 PDF
 """
 
@@ -27,7 +27,7 @@ def generate_html_from_markdown(md_file, output_html):
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>伏羲智能决策工作台 v0.2.0 - 产品介绍</title>
+    <title>伏羲智能决策平台 v1.0.0 - 产品介绍</title>
     <style>
         @page {{
             size: A4;
@@ -218,7 +218,7 @@ def generate_html_from_markdown(md_file, output_html):
 </head>
 <body>
     <div class="cover">
-        <h1>伏羲智能决策工作台</h1>
+        <h1>伏羲智能决策平台</h1>
         <p class="subtitle">OPEN SOURCE · AI DECISION AUTOMATION</p>
         <p class="subtitle">让业务规则从自然语言出发，经过多智能体协作、结构化建模、<br>确定性校验与人工治理，成为可执行、可解释、可审计的决策服务</p>
         <p class="version">版本 v0.2.0 · 2026-11-18</p>

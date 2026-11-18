@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-使用 reportlab 生成伏羲智能决策工作台产品介绍 PDF
+使用 reportlab 生成伏羲智能决策平台产品介绍 PDF
 """
 
 from reportlab.lib.pagesizes import A4
@@ -84,7 +84,7 @@ def create_pdf(output_file):
 
     # 封面
     story.append(Spacer(1, 3*cm))
-    story.append(Paragraph("伏羲智能决策工作台", title_style))
+    story.append(Paragraph("伏羲智能决策平台", title_style))
     story.append(Spacer(1, 0.5*cm))
     story.append(Paragraph("OPEN SOURCE · AI DECISION AUTOMATION",
                           ParagraphStyle('subtitle', parent=body_style, alignment=TA_CENTER, fontSize=12)))

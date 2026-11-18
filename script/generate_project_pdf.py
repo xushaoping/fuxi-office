@@ -116,7 +116,7 @@ def header_footer(canvas, doc):
         canvas.line(21 * mm, 284 * mm, 189 * mm, 284 * mm)
         canvas.setFont("Fuxi", 7.5)
         canvas.setFillColor(MUTED)
-        canvas.drawString(21 * mm, 289 * mm, "伏羲智能决策工作台 · 项目介绍")
+        canvas.drawString(21 * mm, 289 * mm, "伏羲智能决策平台 · 项目介绍")
         canvas.drawRightString(189 * mm, 12 * mm, f"{doc.page}")
     canvas.restoreState()
 
@@ -129,7 +129,7 @@ def build_story():
         Image(str(LOGO), width=38 * mm, height=27.6 * mm),
         Spacer(1, 8 * mm),
         p("OPEN SOURCE · AI DECISION AUTOMATION", "CoverEyebrow"),
-        p("伏羲智能决策工作台", "CoverTitle"),
+        p("伏羲智能决策平台", "CoverTitle"),
         p("让业务规则从自然语言出发，经过结构化建模、确定性校验与人工治理，成为可执行、可解释、可审计的决策服务。", "CoverLead"),
         Spacer(1, 4 * mm),
     ])
@@ -324,8 +324,8 @@ def main():
         rightMargin=21 * mm,
         topMargin=20 * mm,
         bottomMargin=18 * mm,
-        title="伏羲智能决策工作台 - 项目介绍",
-        author="伏羲智能决策工作台",
+        title="伏羲智能决策平台 - 项目介绍",
+        author="伏羲智能决策平台",
     )
     frame = Frame(doc.leftMargin, doc.bottomMargin, doc.width, doc.height, id="normal")
     doc.addPageTemplates([PageTemplate(id="all", frames=[frame], onPage=header_footer)])

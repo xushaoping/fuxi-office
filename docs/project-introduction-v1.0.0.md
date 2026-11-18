@@ -1,4 +1,4 @@
-# 伏羲智能决策工作台 v1.0.0
+# 伏羲智能决策平台 v1.0.0
 
 ## OPEN SOURCE · AI DECISION AUTOMATION
 

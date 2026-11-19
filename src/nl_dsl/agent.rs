@@ -2957,6 +2957,7 @@ impl LlmAgent {
         let mut last_error = String::new();
         let mut last_repair_error: Option<String> = None;
         let mut last_error_category = None;
+        let mut repair_repeat_tracker = RepairRepeatTracker::default();
 
         for attempt in 1..=max_retries {
             if tx.is_some_and(|sender| sender.is_closed()) {
@@ -3101,14 +3102,13 @@ impl LlmAgent {
                                 last_error = format!("DMN 模型核验失败: {error}");
                                 let category = self.classify_repair_error(&last_error).await;
                                 let previous_category = last_error_category;
-                                if repeated_repair_category(&mut last_error_category, category) {
+                                if repair_repeat_tracker.record(category, &last_error) {
                                     self.record_repair_outcome(&last_error, category, "partial")
                                         .await;
-                                    emit_step(tx, "同类 DMN / FEEL 错误连续两轮未修复，已停止自动重试，请人工检查诊断。").await;
-                                    return Err(anyhow!(
-                                        "{}",
-                                        repeated_repair_failure_message(category, &last_error)
-                                    ));
+                                    let failure =
+                                        repeated_repair_failure_message(category, &last_error);
+                                    emit_step(tx, &failure).await;
+                                    return Err(anyhow!("{failure}"));
                                 }
                                 self.advance_repair_memory(
                                     &mut last_repair_error,
@@ -3116,6 +3116,7 @@ impl LlmAgent {
                                     &last_error,
                                 )
                                 .await;
+                                last_error_category = category;
                                 println!("⚠️ {}. 反馈给 LLM 重试...", last_error);
                                 emit_step(tx, "⚠️ DMN / FEEL 核验失败，正在要求 LLM 修复...").await;
                                 let err_feedback = format!(
@@ -3152,14 +3153,13 @@ impl LlmAgent {
                             last_error = format!("DSL 逻辑校验失败: {}", e);
                             let category = self.classify_repair_error(&last_error).await;
                             let previous_category = last_error_category;
-                            if repeated_repair_category(&mut last_error_category, category) {
+                            if repair_repeat_tracker.record(category, &last_error) {
                                 self.record_repair_outcome(&last_error, category, "partial")
                                     .await;
-                                emit_step(tx, "同类 DSL 语义错误连续两轮未修复，已停止自动重试，请人工检查诊断。").await;
-                                return Err(anyhow!(
-                                    "{}",
-                                    repeated_repair_failure_message(category, &last_error)
-                                ));
+                                let failure =
+                                    repeated_repair_failure_message(category, &last_error);
+                                emit_step(tx, &failure).await;
+                                return Err(anyhow!("{failure}"));
                             }
                             self.advance_repair_memory(
                                 &mut last_repair_error,
@@ -3167,6 +3167,7 @@ impl LlmAgent {
                                 &last_error,
                             )
                             .await;
+                            last_error_category = category;
                             println!("⚠️ {}. 反馈给 LLM 重试...", e);
                             emit_step(tx, "⚠️ DSL 逻辑校验失败，反馈给 LLM 重试...").await;
 
@@ -3227,18 +3228,12 @@ impl LlmAgent {
                     last_error = format!("JSON 反序列化失败: {}{}", serde_err, context_info);
                     let category = self.classify_repair_error(&last_error).await;
                     let previous_category = last_error_category;
-                    if repeated_repair_category(&mut last_error_category, category) {
+                    if repair_repeat_tracker.record(category, &last_error) {
                         self.record_repair_outcome(&last_error, category, "partial")
                             .await;
-                        emit_step(
-                            tx,
-                            "同类 DSL 结构错误连续两轮未修复，已停止自动重试，请人工检查诊断。",
-                        )
-                        .await;
-                        return Err(anyhow!(
-                            "{}",
-                            repeated_repair_failure_message(category, &last_error)
-                        ));
+                        let failure = repeated_repair_failure_message(category, &last_error);
+                        emit_step(tx, &failure).await;
+                        return Err(anyhow!("{failure}"));
                     }
                     self.advance_repair_memory(
                         &mut last_repair_error,
@@ -3246,6 +3241,7 @@ impl LlmAgent {
                         &last_error,
                     )
                     .await;
+                    last_error_category = category;
                     println!("⚠️ {}. 反馈给 LLM 重试...", last_error);
                     emit_step(tx, "⚠️ JSON 反序列化失败，反馈给 LLM 重试...").await;
 
@@ -3295,14 +3291,32 @@ impl LlmAgent {
     }
 }
 
-fn repeated_repair_category(
-    last_category: &mut Option<repair::ErrorCategory>,
+#[derive(Default)]
+struct RepairRepeatTracker {
     category: Option<repair::ErrorCategory>,
-) -> bool {
-    let repeated = category.is_some() && *last_category == category;
-    *last_category = category;
-    repeated
+    signature: Option<String>,
+    occurrences: usize,
 }
+
+impl RepairRepeatTracker {
+    fn record(&mut self, category: Option<repair::ErrorCategory>, error: &str) -> bool {
+        let Some(category) = category else {
+            *self = Self::default();
+            return false;
+        };
+        let signature = repair::error_signature(error);
+        if self.category == Some(category) && self.signature.as_deref() == Some(&signature) {
+            self.occurrences += 1;
+        } else {
+            self.category = Some(category);
+            self.signature = Some(signature);
+            self.occurrences = 1;
+        }
+        self.occurrences >= MAX_IDENTICAL_REPAIR_FAILURES
+    }
+}
+
+const MAX_IDENTICAL_REPAIR_FAILURES: usize = 3;
 
 const MAX_REPAIR_DIAGNOSTIC_BYTES: usize = 4000;
 
@@ -3327,7 +3341,9 @@ fn repeated_repair_failure_message(
     } else {
         diagnostic.to_string()
     };
-    format!("修复策略无效：错误类别 {code} 连续两轮未消除，需人工检查。最后一次诊断：{diagnostic}")
+    format!(
+        "相同诊断（错误类别 {code}）连续失败 3 次，已尝试 2 轮定向修复，仍未消除；请人工检查。最后一次诊断：{diagnostic}"
+    )
 }
 
 fn take_superseded_repair_error(
@@ -4354,24 +4370,41 @@ mod tests {
     }
 
     #[test]
-    fn repeated_repair_categories_stop_only_consecutive_same_category_errors() {
-        let mut previous = None;
-        assert!(!repeated_repair_category(
-            &mut previous,
-            Some(repair::ErrorCategory::E1Structure)
+    fn repeated_repair_errors_allow_two_targeted_repairs_before_stopping() {
+        let e6 = repair::ErrorCategory::E6Compilation;
+        let first = "FEEL evaluation failed: Expected RParen, got Gt";
+        let changed = "FEEL evaluation failed: Expected RParen, got LessThan";
+
+        let mut tracker = RepairRepeatTracker::default();
+        assert!(!tracker.record(Some(e6), first));
+        assert!(!tracker.record(Some(e6), first));
+        assert!(tracker.record(Some(e6), first));
+
+        let mut tracker = RepairRepeatTracker::default();
+        assert!(!tracker.record(Some(e6), first));
+        assert!(!tracker.record(Some(e6), changed));
+        assert!(!tracker.record(Some(e6), changed));
+        assert!(tracker.record(Some(e6), changed));
+
+        let mut tracker = RepairRepeatTracker::default();
+        assert!(!tracker.record(Some(e6), first));
+        assert!(!tracker.record(Some(repair::ErrorCategory::E4Syntax), first));
+        assert!(!tracker.record(Some(e6), first));
+        assert!(!tracker.record(None, first));
+        assert!(!tracker.record(Some(e6), first));
+
+        let mut tracker = RepairRepeatTracker::default();
+        assert!(!tracker.record(
+            Some(e6),
+            "FEEL error line 3 column 8: Expected RParen, got Gt"
         ));
-        assert!(repeated_repair_category(
-            &mut previous,
-            Some(repair::ErrorCategory::E1Structure)
+        assert!(!tracker.record(
+            Some(e6),
+            "FEEL error line 10 column 2: Expected RParen, got Gt"
         ));
-        assert!(!repeated_repair_category(
-            &mut previous,
-            Some(repair::ErrorCategory::E2Reference)
-        ));
-        assert!(!repeated_repair_category(&mut previous, None));
-        assert!(!repeated_repair_category(
-            &mut previous,
-            Some(repair::ErrorCategory::E2Reference)
+        assert!(tracker.record(
+            Some(e6),
+            "FEEL error line 12 column 4: Expected RParen, got Gt"
         ));
     }
 
@@ -4381,7 +4414,8 @@ mod tests {
             Some(repair::ErrorCategory::E6Compilation),
             "DMN 模型核验失败: FEEL compilation failed near decision riskLevel",
         );
-        assert!(message.contains("错误类别 E6 连续两轮未消除"));
+        assert!(message.contains("相同诊断（错误类别 E6）连续失败 3 次"));
+        assert!(message.contains("已尝试 2 轮定向修复"));
         assert!(message.contains("FEEL compilation failed near decision riskLevel"));
 
         let message = repeated_repair_failure_message(

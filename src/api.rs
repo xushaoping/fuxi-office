@@ -6375,10 +6375,12 @@ async fn generate_complex_dsl_consensus(
                     completed.push((model.clone(), candidate.clone()));
                 }
                 if let Some(tx) = progress_tx {
-                    let status = if result.is_ok() {
-                        "已完成 DSL 生成和结构校验"
-                    } else {
-                        "DSL 生成或结构校验失败"
+                    let status = match &result {
+                        Ok(_) => "已完成 DSL / DMN 编译及需求追溯校验".to_string(),
+                        Err(error) => format!(
+                            "DSL 生成或校验失败：{}",
+                            dsl_vote_diagnostic_excerpt(error, 1_000)
+                        ),
                     };
                     let _ = tx
                         .send(StreamEvent::Step(format!("模型 {model} {status}")))
@@ -6409,10 +6411,8 @@ async fn generate_complex_dsl_consensus(
             "所有模型均已返回，DSL 共识已达成".to_string()
         } else if plurality.is_some() {
             "DSL 未形成严格多数；将选择最高票且通过编译的候选（平票按配置顺序），进入业务验收并重点复核模型分歧".to_string()
-        } else if consensus.stopped_early {
-            "剩余模型已无法形成多数，且没有有效候选可进入验收，请检查模型输出或重试".to_string()
         } else {
-            "没有可进入验收的有效 DSL 候选，请检查模型输出或重试".to_string()
+            dsl_vote_failure_message(&consensus.outcomes)
         };
         let _ = tx.send(StreamEvent::Step(message)).await;
     }
@@ -6434,6 +6434,45 @@ async fn generate_complex_dsl_consensus(
 }
 
 #[cfg(not(target_family = "wasm"))]
+fn dsl_vote_diagnostic_excerpt(message: &str, max_chars: usize) -> String {
+    let mut characters = message.chars();
+    let mut excerpt = characters.by_ref().take(max_chars).collect::<String>();
+    if characters.next().is_some() {
+        excerpt.push_str("…（诊断已截断）");
+    }
+    excerpt
+}
+
+#[cfg(not(target_family = "wasm"))]
+fn dsl_vote_failure_message(outcomes: &[VoteOutcome]) -> String {
+    let mut message = "没有可进入验收的有效 DSL 候选，请根据以下模型诊断修复或重试".to_string();
+    for outcome in outcomes.iter().take(3) {
+        if let Err(error) = &outcome.result {
+            message.push_str(&format!(
+                "\n模型 {}：{}",
+                dsl_vote_diagnostic_excerpt(&outcome.model, 120),
+                dsl_vote_diagnostic_excerpt(error, 1_000)
+            ));
+        }
+    }
+    message
+}
+
+#[cfg(not(target_family = "wasm"))]
+fn require_generated_dsl(
+    (generated, consensus): (
+        Option<nl_dsl::agent::GeneratedDsl>,
+        Option<Consensus<DslVoteCandidate>>,
+    ),
+) -> anyhow::Result<nl_dsl::agent::GeneratedDsl> {
+    generated.ok_or_else(|| {
+        anyhow::anyhow!(dsl_vote_failure_message(
+            consensus.as_ref().map_or(&[], |vote| &vote.outcomes)
+        ))
+    })
+}
+
+#[cfg(not(target_family = "wasm"))]
 fn canonical_dsl_vote_candidate(yaml: String) -> Result<DslVoteCandidate, String> {
     let (definitions, _) = compile_generated_dsl(&yaml)?;
     let normalized =
@@ -6447,26 +6486,7 @@ fn plurality_dsl_candidate(
     outcomes: &[VoteOutcome],
     candidates: &[(String, DslVoteCandidate)],
 ) -> Option<DslVoteCandidate> {
-    let mut groups = BTreeMap::<String, (f64, usize)>::new();
-    for (index, outcome) in outcomes.iter().enumerate() {
-        let Ok(result) = &outcome.result else {
-            continue;
-        };
-        let Some(signature) = result.get("signature").and_then(serde_json::Value::as_str) else {
-            continue;
-        };
-        let group = groups.entry(signature.to_string()).or_insert((0.0, index));
-        group.0 += outcome.weight;
-    }
-    let signature = groups
-        .into_iter()
-        .max_by(|left, right| {
-            left.1
-                .0
-                .total_cmp(&right.1.0)
-                .then_with(|| right.1.1.cmp(&left.1.1))
-        })?
-        .0;
+    let signature = plurality_dsl_signature(outcomes)?;
     outcomes.iter().find_map(|outcome| {
         let Ok(result) = &outcome.result else {
             return None;
@@ -6482,6 +6502,138 @@ fn plurality_dsl_candidate(
             })
             .flatten()
     })
+}
+
+#[cfg(not(target_family = "wasm"))]
+fn plurality_dsl_signature(outcomes: &[VoteOutcome]) -> Option<String> {
+    let mut groups = BTreeMap::<String, (f64, usize)>::new();
+    for (index, outcome) in outcomes.iter().enumerate() {
+        let Ok(result) = &outcome.result else {
+            continue;
+        };
+        let Some(signature) = result.get("signature").and_then(serde_json::Value::as_str) else {
+            continue;
+        };
+        let group = groups.entry(signature.to_string()).or_insert((0.0, index));
+        group.0 += outcome.weight;
+    }
+    Some(
+        groups
+            .into_iter()
+            .max_by(|left, right| {
+                left.1
+                    .0
+                    .total_cmp(&right.1.0)
+                    .then_with(|| right.1.1.cmp(&left.1.1))
+            })?
+            .0,
+    )
+}
+
+#[cfg(not(target_family = "wasm"))]
+fn dsl_vote_resolution(consensus: &Consensus<DslVoteCandidate>) -> Value {
+    let selected_signature = consensus
+        .decision
+        .as_ref()
+        .map(|candidate| candidate.signature.clone())
+        .or_else(|| plurality_dsl_signature(&consensus.outcomes));
+    let valid_count = consensus
+        .outcomes
+        .iter()
+        .filter(|outcome| outcome.result.is_ok())
+        .count();
+    let selected_models = consensus
+        .outcomes
+        .iter()
+        .filter(|outcome| {
+            selected_signature.is_some()
+                && outcome
+                    .result
+                    .as_ref()
+                    .ok()
+                    .and_then(|result| result["signature"].as_str())
+                    == selected_signature.as_deref()
+        })
+        .map(|outcome| outcome.model.clone())
+        .collect::<Vec<_>>();
+    let selected_weight = consensus
+        .outcomes
+        .iter()
+        .filter(|outcome| {
+            selected_signature.is_some()
+                && outcome
+                    .result
+                    .as_ref()
+                    .ok()
+                    .and_then(|result| result["signature"].as_str())
+                    == selected_signature.as_deref()
+        })
+        .map(|outcome| outcome.weight)
+        .sum::<f64>();
+    let total_weight = consensus
+        .outcomes
+        .iter()
+        .map(|outcome| outcome.weight)
+        .sum::<f64>();
+    let strict_majority = consensus.decision.is_some();
+    json!({
+        "strategy": if strict_majority { "strict_majority" }
+            else if valid_count == 1 { "single_valid_candidate" }
+            else if selected_signature.is_some() { "plurality_with_configuration_order_tiebreak" }
+            else { "no_valid_candidate" },
+        "strictMajority": strict_majority,
+        "requiresBusinessConfirmation": !strict_majority,
+        "totalModelCount": consensus.outcomes.len(),
+        "validModelCount": valid_count,
+        "selectedSignature": selected_signature,
+        "selectedModels": selected_models,
+        "selectedWeight": selected_weight,
+        "selectedShare": if total_weight > 0.0 { selected_weight / total_weight } else { 0.0 },
+    })
+}
+
+#[cfg(not(target_family = "wasm"))]
+fn add_dsl_vote_review_finding(
+    review: &mut crate::models::VersionChangeReview,
+    resolution: Option<&Value>,
+) {
+    let Some(resolution) = resolution else {
+        return;
+    };
+    if resolution["strictMajority"] == true || resolution["selectedSignature"].is_null() {
+        return;
+    }
+    let valid = resolution["validModelCount"].as_u64().unwrap_or_default();
+    let total = resolution["totalModelCount"].as_u64().unwrap_or_default();
+    let support = resolution["selectedModels"].as_array().map_or(0, Vec::len);
+    let single = valid == 1;
+    let (level, code, message) = if single {
+        (
+            "high",
+            "DSL_SINGLE_VALID_CANDIDATE",
+            format!(
+                "{total} 个模型中仅 1 个生成了通过校验的候选，且所选候选仅获 {support}/{total} 个模型支持，缺少独立模型交叉验证。保存前请重点检查业务边界、默认行为及高风险规则。"
+            ),
+        )
+    } else {
+        (
+            "medium",
+            "DSL_NO_STRICT_MAJORITY",
+            format!(
+                "{total} 个模型中有 {valid} 个返回有效候选；所选候选获 {support}/{total} 个模型支持，未形成严格多数。候选按票数选择，平票按配置顺序；保存前请确认业务规则及边界案例。"
+            ),
+        )
+    };
+    if single || review.overall_risk == "low" {
+        review.overall_risk = level.into();
+    }
+    review.confirmation_required = true;
+    review.findings.push(crate::models::VersionRiskFinding {
+        level: level.into(),
+        code: code.into(),
+        message,
+        element: String::new(),
+    });
 }
 
 #[cfg(not(target_family = "wasm"))]
@@ -6616,11 +6768,12 @@ async fn generate_dsl(
     .await;
     if let Ok((_, Some(consensus))) = &generated {
         if let Some(run_id) = run_id.run_id {
-            if let Err(error) = crate::workflow_api::record_model_vote(
+            if let Err(error) = crate::workflow_api::record_model_vote_with_resolution(
                 &app_state.db,
                 run_id,
                 "dsl_generation",
                 consensus,
+                Some(dsl_vote_resolution(consensus)),
             )
             .await
             {
@@ -6628,10 +6781,11 @@ async fn generate_dsl(
             }
         }
     }
-    let generated = generated.and_then(|(generated, _)| {
-        generated
-            .ok_or_else(|| anyhow::anyhow!("没有可进入验收的有效 DSL 候选，请检查模型输出或重试"))
-    });
+    let model_selection = generated
+        .as_ref()
+        .ok()
+        .and_then(|(_, consensus)| consensus.as_ref().map(dsl_vote_resolution));
+    let generated = generated.and_then(require_generated_dsl);
     let outcome = match generated {
         Ok(generated) => {
             if let Err(message) = ensure_generation_snapshot(&app_state.db, &req).await {
@@ -6642,6 +6796,7 @@ async fn generate_dsl(
                         "ok": true,
                         "nl_dsl": yaml,
                         "knowledgeCitations": knowledge_citations,
+                        "modelSelection": model_selection,
                     })),
                     Err(message) => Err((StatusCode::UNPROCESSABLE_ENTITY, message)),
                 }
@@ -7466,19 +7621,24 @@ fn generate_dsl_sse(
         .await;
         if let Ok((_, Some(consensus))) = &generated {
             if let Some(run_id) = run_id.run_id {
-                if let Err(error) =
-                    crate::workflow_api::record_model_vote(&db, run_id, "dsl_generation", consensus)
-                        .await
+                if let Err(error) = crate::workflow_api::record_model_vote_with_resolution(
+                    &db,
+                    run_id,
+                    "dsl_generation",
+                    consensus,
+                    Some(dsl_vote_resolution(consensus)),
+                )
+                .await
                 {
                     eprintln!("记录 DSL 多模型投票失败: {error}");
                 }
             }
         }
-        let generated = generated.and_then(|(generated, _)| {
-            generated.ok_or_else(|| {
-                anyhow::anyhow!("没有可进入验收的有效 DSL 候选，请检查模型输出或重试")
-            })
-        });
+        let model_selection = generated
+            .as_ref()
+            .ok()
+            .and_then(|(_, consensus)| consensus.as_ref().map(dsl_vote_resolution));
+        let generated = generated.and_then(require_generated_dsl);
         let outcome = match generated {
             Ok(generated) => match ensure_generation_snapshot(&db, &req).await {
                 Ok(()) => match apply_requirement_traceability(&generated.yaml, &traceability_plan)
@@ -7487,6 +7647,7 @@ fn generate_dsl_sse(
                         "ok": true,
                         "nl_dsl": yaml,
                         "knowledgeCitations": knowledge_citations,
+                        "modelSelection": model_selection,
                     })),
                     Err(error) => Err(error),
                 },
@@ -7611,11 +7772,12 @@ pub(crate) async fn run_pipeline(
     .await;
     if let Ok((_, Some(consensus))) = &generated {
         if let Some(run_id) = run_id.run_id {
-            if let Err(error) = crate::workflow_api::record_model_vote(
+            if let Err(error) = crate::workflow_api::record_model_vote_with_resolution(
                 &app_state.db,
                 run_id,
                 "dsl_generation",
                 consensus,
+                Some(dsl_vote_resolution(consensus)),
             )
             .await
             {
@@ -7623,10 +7785,11 @@ pub(crate) async fn run_pipeline(
             }
         }
     }
-    let generated = generated.and_then(|(generated, _)| {
-        generated
-            .ok_or_else(|| anyhow::anyhow!("没有可进入验收的有效 DSL 候选，请检查模型输出或重试"))
-    });
+    let model_selection = generated
+        .as_ref()
+        .ok()
+        .and_then(|(_, consensus)| consensus.as_ref().map(dsl_vote_resolution));
+    let generated = generated.and_then(require_generated_dsl);
     let generated = match generated {
         Ok(generated) => generated,
         Err(e) => {
@@ -7674,9 +7837,11 @@ pub(crate) async fn run_pipeline(
     };
 
     let change_summary = change_summary(req.existing_dsl.as_deref(), &defs);
-    let change_review = pending_change_review(req.existing_dsl.as_deref(), &defs, req.base_version);
+    let mut change_review =
+        pending_change_review(req.existing_dsl.as_deref(), &defs, req.base_version);
+    add_dsl_vote_review_finding(&mut change_review, model_selection.as_ref());
 
-    let output = json!({"ok": true, "dsl": dsl_text, "xml": xml, "changeSummary": change_summary, "changeReview": change_review, "knowledgeCitations": knowledge_citations});
+    let output = json!({"ok": true, "dsl": dsl_text, "xml": xml, "changeSummary": change_summary, "changeReview": change_review, "knowledgeCitations": knowledge_citations, "modelSelection": model_selection});
     finish_dsl_generation_run(&app_state.db, run_id, &dsl_agent, Ok(output.clone())).await;
     (StatusCode::OK, Json(output)).into_response()
 }
@@ -7884,19 +8049,24 @@ fn run_pipeline_sse(
         .await;
         if let Ok((_, Some(consensus))) = &generated {
             if let Some(run_id) = run_id.run_id {
-                if let Err(error) =
-                    crate::workflow_api::record_model_vote(&db, run_id, "dsl_generation", consensus)
-                        .await
+                if let Err(error) = crate::workflow_api::record_model_vote_with_resolution(
+                    &db,
+                    run_id,
+                    "dsl_generation",
+                    consensus,
+                    Some(dsl_vote_resolution(consensus)),
+                )
+                .await
                 {
                     eprintln!("记录 DSL 多模型投票失败: {error}");
                 }
             }
         }
-        let generated = generated.and_then(|(generated, _)| {
-            generated.ok_or_else(|| {
-                anyhow::anyhow!("没有可进入验收的有效 DSL 候选，请检查模型输出或重试")
-            })
-        });
+        let model_selection = generated
+            .as_ref()
+            .ok()
+            .and_then(|(_, consensus)| consensus.as_ref().map(dsl_vote_resolution));
+        let generated = generated.and_then(require_generated_dsl);
         let generated = match generated {
             Ok(generated) => generated,
             Err(e) => {
@@ -7957,7 +8127,8 @@ fn run_pipeline_sse(
             }
         };
         let change_summary = change_summary(None, &defs);
-        let change_review = pending_change_review(None, &defs, req.base_version);
+        let mut change_review = pending_change_review(None, &defs, req.base_version);
+        add_dsl_vote_review_finding(&mut change_review, model_selection.as_ref());
         let definition_value = serde_json::to_value(&defs).unwrap_or(Value::Null);
         let definition_digest = format!("{:x}", sha2::Sha256::digest(definition_value.to_string()));
         let _ = tx2
@@ -8161,6 +8332,7 @@ fn run_pipeline_sse(
             "changeReview": change_review,
             "knowledgeCitations": knowledge_citations,
             "testerStaticAnalysis": tester_static_analysis,
+            "modelSelection": model_selection,
             "degradation": degradation,
             "simpleDirectPreview": simple_direct,
         });
@@ -9570,6 +9742,15 @@ decisions:
 
         assert!(consensus.decision.is_some());
         assert_eq!(consensus.confidence, 1.0);
+        let resolution = dsl_vote_resolution(&consensus);
+        assert_eq!(resolution["strategy"], "strict_majority");
+        assert_eq!(resolution["selectedModels"], json!(["model-a", "model-b"]));
+        assert_eq!(resolution["selectedWeight"], 2.0);
+        assert_eq!(resolution["selectedShare"], 1.0);
+        let mut review = crate::models::VersionChangeReview::default();
+        let unchanged_review = review.clone();
+        add_dsl_vote_review_finding(&mut review, Some(&resolution));
+        assert_eq!(review, unchanged_review);
     }
 
     #[test]
@@ -9618,6 +9799,195 @@ decisions:
         let selected = plurality_dsl_candidate(&outcomes, &candidates).unwrap();
         assert_eq!(selected.signature, "a");
         assert_eq!(selected.yaml, "candidate a");
+    }
+
+    #[tokio::test]
+    async fn complex_dsl_preserves_last_valid_candidate_for_acceptance_after_two_failures() {
+        let candidate = canonical_dsl_vote_candidate(include_str!("loan.yaml").to_string())
+            .expect("candidate must pass compilation");
+        let expected_yaml = candidate.yaml.clone();
+        let completed = vec![("model-c".to_string(), candidate.clone())];
+        let models = ["model-a", "model-b", "model-c"]
+            .into_iter()
+            .map(|model| VoteCandidate {
+                model: model.into(),
+                weight: 1.0,
+            })
+            .collect();
+        let consensus = parallel_vote_until_majority_by(
+            models,
+            move |model| {
+                let candidate = candidate.clone();
+                async move {
+                    if model == "model-c" {
+                        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                        Ok(candidate)
+                    } else {
+                        Err("FEEL compilation failed".into())
+                    }
+                }
+            },
+            |candidate: &DslVoteCandidate| Ok(candidate.signature.clone()),
+        )
+        .await
+        .unwrap();
+
+        assert!(consensus.requires_human_review);
+        assert!(consensus.decision.is_none());
+        let resolution = dsl_vote_resolution(&consensus);
+        assert_eq!(resolution["strategy"], "single_valid_candidate");
+        assert_eq!(resolution["strictMajority"], false);
+        assert_eq!(resolution["requiresBusinessConfirmation"], true);
+        assert_eq!(resolution["validModelCount"], 1);
+        assert_eq!(resolution["totalModelCount"], 3);
+        assert_eq!(resolution["selectedModels"], json!(["model-c"]));
+        assert_eq!(resolution["selectedWeight"], 1.0);
+        assert_eq!(resolution["selectedShare"], 1.0 / 3.0);
+        let mut review = crate::models::VersionChangeReview::default();
+        add_dsl_vote_review_finding(&mut review, Some(&resolution));
+        assert_eq!(review.overall_risk, "high");
+        assert!(review.confirmation_required);
+        assert_eq!(review.findings[0].code, "DSL_SINGLE_VALID_CANDIDATE");
+        assert!(review.findings[0].message.contains("仅获 1/3 个模型支持"));
+        let selected = plurality_dsl_candidate(&consensus.outcomes, &completed)
+            .expect("the remaining compiled candidate must reach business acceptance");
+        assert_eq!(resolution["selectedSignature"], selected.signature);
+        let generated = require_generated_dsl((
+            Some(nl_dsl::agent::GeneratedDsl {
+                yaml: selected.yaml,
+            }),
+            Some(consensus),
+        ))
+        .unwrap();
+        assert_eq!(generated.yaml, expected_yaml);
+    }
+
+    #[tokio::test]
+    async fn complex_dsl_resolution_and_fallback_agree_when_votes_tie() {
+        let candidates = vec![
+            (
+                "model-a".to_string(),
+                DslVoteCandidate {
+                    signature: "z".into(),
+                    yaml: "first".into(),
+                },
+            ),
+            (
+                "model-b".to_string(),
+                DslVoteCandidate {
+                    signature: "a".into(),
+                    yaml: "second".into(),
+                },
+            ),
+            (
+                "model-c".to_string(),
+                DslVoteCandidate {
+                    signature: "b".into(),
+                    yaml: "third".into(),
+                },
+            ),
+        ];
+        let models = candidates
+            .iter()
+            .map(|(model, _)| VoteCandidate {
+                model: model.clone(),
+                weight: 1.0,
+            })
+            .collect();
+        let responses = candidates.clone();
+        let consensus = parallel_vote_until_majority_by(
+            models,
+            move |model| {
+                let candidate = responses
+                    .iter()
+                    .find(|(name, _)| name == &model)
+                    .unwrap()
+                    .1
+                    .clone();
+                async move { Ok(candidate) }
+            },
+            |candidate: &DslVoteCandidate| Ok(candidate.signature.clone()),
+        )
+        .await
+        .unwrap();
+        let mut completion_order = candidates;
+        completion_order.reverse();
+        let selected = plurality_dsl_candidate(&consensus.outcomes, &completion_order).unwrap();
+        let resolution = dsl_vote_resolution(&consensus);
+        assert_eq!(selected.yaml, "first");
+        assert_eq!(resolution["selectedSignature"], selected.signature);
+        assert_eq!(resolution["selectedModels"], json!(["model-a"]));
+        assert_eq!(resolution["selectedWeight"], 1.0);
+        assert!((resolution["selectedShare"].as_f64().unwrap() - (1.0 / 3.0)).abs() < 1e-9);
+        assert_eq!(
+            resolution["strategy"],
+            "plurality_with_configuration_order_tiebreak"
+        );
+        assert_eq!(resolution["strictMajority"], false);
+        assert!(consensus.decision.is_none());
+        assert_eq!(consensus.confidence, 0.0);
+
+        let mut review = crate::models::VersionChangeReview {
+            overall_risk: "high".into(),
+            ..Default::default()
+        };
+        add_dsl_vote_review_finding(&mut review, Some(&resolution));
+        assert_eq!(
+            review.overall_risk, "high",
+            "an existing higher risk must be preserved"
+        );
+        assert!(review.confirmation_required);
+        assert_eq!(review.findings[0].code, "DSL_NO_STRICT_MAJORITY");
+    }
+
+    #[test]
+    fn complex_dsl_failure_preserves_bounded_model_diagnostics_in_final_error() {
+        let outcomes = [
+            (
+                "model-a",
+                "FEEL evaluation failed: Expected RParen, got Gt".to_string(),
+            ),
+            ("model-b", "模型调用已超时".to_string()),
+            ("model-c", "诊断".repeat(2_000)),
+        ]
+        .into_iter()
+        .map(|(model, error)| VoteOutcome {
+            model: model.into(),
+            weight: 1.0,
+            result: Err(error),
+        })
+        .collect();
+        let consensus = Consensus {
+            decision: None,
+            confidence: 0.0,
+            requires_human_review: true,
+            early_majority: false,
+            stopped_early: false,
+            stop_reason: None,
+            outcomes,
+        };
+        let resolution = dsl_vote_resolution(&consensus);
+        assert_eq!(resolution["strategy"], "no_valid_candidate");
+        assert!(resolution["selectedSignature"].is_null());
+        assert_eq!(resolution["selectedModels"], json!([]));
+        let mut review = crate::models::VersionChangeReview::default();
+        add_dsl_vote_review_finding(&mut review, Some(&resolution));
+        assert!(
+            review.findings.is_empty(),
+            "all failed candidates must remain a generation failure"
+        );
+        let expected_message = dsl_vote_failure_message(&consensus.outcomes);
+        let error = require_generated_dsl((None, Some(consensus)))
+            .err()
+            .unwrap()
+            .to_string();
+
+        assert_eq!(error, expected_message);
+        assert!(error.contains("模型 model-a：FEEL evaluation failed: Expected RParen, got Gt"));
+        assert!(error.contains("模型 model-b：模型调用已超时"));
+        assert!(error.contains("模型 model-c："));
+        assert!(error.ends_with("…（诊断已截断）"));
+        assert!(error.chars().count() < 1_500);
     }
 
     #[test]

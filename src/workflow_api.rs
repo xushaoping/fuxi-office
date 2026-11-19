@@ -1652,6 +1652,8 @@ pub(crate) fn is_retryable_agent_failure(message: &str) -> bool {
     }
     [
         "未返回有效需求分析候选",
+        "没有可进入验收的有效 dsl 候选",
+        "剩余模型已无法形成多数，且没有有效候选可进入验收",
         "http 429",
         "http 500",
         "http 502",
@@ -1886,11 +1888,26 @@ pub(crate) async fn record_model_vote<T: Serialize>(
     task_type: &str,
     consensus: &Consensus<T>,
 ) -> Result<(), sqlx::Error> {
+    record_model_vote_with_resolution(db, run_id, task_type, consensus, None).await
+}
+
+pub(crate) async fn record_model_vote_with_resolution<T: Serialize>(
+    db: &sqlx::PgPool,
+    run_id: i64,
+    task_type: &str,
+    consensus: &Consensus<T>,
+    resolution: Option<Value>,
+) -> Result<(), sqlx::Error> {
     let models_used: Vec<String> = consensus
         .outcomes
         .iter()
         .map(|outcome| outcome.model.clone())
         .collect();
+    let mut divergence = json!({"outcomes": consensus.outcomes});
+    let final_decision = model_vote_final_decision(&consensus.decision, resolution.as_ref());
+    if let Some(resolution) = resolution {
+        divergence["resolution"] = resolution;
+    }
     sqlx::query(
         r#"
         INSERT INTO agent_model_votes (
@@ -1914,11 +1931,26 @@ pub(crate) async fn record_model_vote<T: Serialize>(
         "stoppedEarly": consensus.stopped_early,
         "stopReason": consensus.stop_reason,
     }))
-    .bind(json!({"outcomes": consensus.outcomes}))
-    .bind(serde_json::to_value(&consensus.decision).unwrap_or(Value::Null))
+    .bind(divergence)
+    .bind(final_decision)
     .execute(db)
     .await
     .map(|_| ())
+}
+
+fn model_vote_final_decision<T: Serialize>(
+    decision: &Option<T>,
+    resolution: Option<&Value>,
+) -> Value {
+    if decision.is_some() {
+        serde_json::to_value(decision).unwrap_or(Value::Null)
+    } else if let Some(signature) =
+        resolution.and_then(|resolution| resolution["selectedSignature"].as_str())
+    {
+        json!({"signature": signature})
+    } else {
+        Value::Null
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -4898,6 +4930,21 @@ mod tests {
     use super::*;
 
     #[test]
+    fn persisted_vote_selection_records_plurality_and_keeps_failed_votes_empty() {
+        let resolution = json!({"selectedSignature": "candidate-abc"});
+        assert_eq!(
+            model_vote_final_decision::<Value>(&None, Some(&resolution)),
+            json!({"signature": "candidate-abc"})
+        );
+        assert_eq!(model_vote_final_decision::<Value>(&None, None), Value::Null);
+        let majority = json!({"answer": "accepted"});
+        assert_eq!(
+            model_vote_final_decision(&Some(majority.clone()), Some(&resolution)),
+            majority
+        );
+    }
+
+    #[test]
     fn pending_requirement_review_reads_successful_vote_outcomes() {
         let divergence = json!({
             "outcomes": [
@@ -5283,6 +5330,22 @@ mod tests {
         ));
         assert!(!is_retryable_agent_failure(
             "澄清主持的模型结果未达成多数共识，已标记为需人工复核"
+        ));
+    }
+
+    #[test]
+    fn missing_dsl_candidates_can_be_manually_retried_but_auth_and_budget_failures_cannot() {
+        assert!(is_retryable_agent_failure(
+            "没有可进入验收的有效 DSL 候选，请根据模型诊断修复或重试\n模型 A：FEEL compilation failed"
+        ));
+        assert!(is_retryable_agent_failure(
+            "剩余模型已无法形成多数，且没有有效候选可进入验收，请检查模型输出或重试"
+        ));
+        assert!(!is_retryable_agent_failure(
+            "没有可进入验收的有效 DSL 候选；HTTP 401 unauthorized"
+        ));
+        assert!(!is_retryable_agent_failure(
+            "没有可进入验收的有效 DSL 候选；Token 预算已用尽"
         ));
     }
 

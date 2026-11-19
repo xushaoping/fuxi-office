@@ -7891,8 +7891,8 @@ pub fn DmnApp() -> impl IntoView {
                     <strong>"运行未完成"</strong>
                     <span>{move || error.get().unwrap_or_default()}</span>
                     <Show when=move || engineer_retry_id.get().is_some()>
-                        <button class="button button-quiet" on:click=retry disabled=move || status.get() == RunStatus::Running title="仅重试已识别的临时模型故障">
-                            "重试临时故障"
+                        <button class="button button-quiet" on:click=retry disabled=move || status.get() == RunStatus::Running title="按原需求重新执行生成；仍受预算和重试次数限制">
+                            "重试生成"
                         </button>
                     </Show>
                 </div>

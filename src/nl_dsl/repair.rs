@@ -135,7 +135,7 @@ impl ErrorCategory {
     }
 }
 
-fn error_signature(error_msg: &str) -> String {
+pub(crate) fn error_signature(error_msg: &str) -> String {
     let diagnostic = error_msg
         .split_once("\n\n出错位置附近的 JSON 内容片段:")
         .or_else(|| error_msg.split_once("\n\n你返回的 JSON 开头片段:"))

@@ -951,9 +951,14 @@ fn should_stop_voting<T>(
     }
     let majority = total_weight / 2.0;
     let has_majority = groups.values().any(|(weight, _)| *weight > majority);
-    let majority_cannot_be_reached = groups
+    let maximum_reachable_weight = groups
         .values()
-        .all(|(weight, _)| *weight + pending_weights.values().sum::<f64>() <= majority);
+        .map(|(weight, _)| *weight)
+        .fold(0.0_f64, f64::max)
+        + pending_weights.values().sum::<f64>();
+    // Without a valid result, pending models can still supply the candidate
+    // needed for business review even when a strict majority is out of reach.
+    let majority_cannot_be_reached = !groups.is_empty() && maximum_reachable_weight <= majority;
     (return_on_majority && has_majority) || majority_cannot_be_reached
 }
 
@@ -1584,6 +1589,103 @@ mod tests {
                     .err()
                     .is_some_and(|error| error.contains("调用已取消"))
         }));
+    }
+
+    #[tokio::test]
+    async fn first_failed_vote_does_not_cancel_remaining_candidate_generation() {
+        let consensus = parallel_vote_until_majority(models(), |model| async move {
+            match model.as_str() {
+                "model-a" => Err("provider unavailable".into()),
+                "model-b" => {
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                    Ok("candidate-b")
+                }
+                _ => {
+                    tokio::time::sleep(Duration::from_millis(40)).await;
+                    Ok("candidate-c")
+                }
+            }
+        })
+        .await
+        .unwrap();
+
+        assert!(consensus.decision.is_none());
+        assert!(!consensus.stopped_early);
+        assert_eq!(consensus.outcomes.len(), 3);
+        assert_eq!(
+            consensus
+                .outcomes
+                .iter()
+                .filter(|outcome| outcome.result.is_ok())
+                .count(),
+            2
+        );
+    }
+
+    #[tokio::test]
+    async fn voting_waits_for_first_valid_candidate_after_other_models_fail() {
+        for failure_kind in ["provider", "panic", "normalization"] {
+            let consensus = parallel_vote_impl(
+                models(),
+                move |model| async move {
+                    if model == "model-c" {
+                        tokio::time::sleep(Duration::from_millis(20)).await;
+                        return Ok("valid");
+                    }
+                    match failure_kind {
+                        "panic" => panic!("model adapter panicked"),
+                        "normalization" => Ok("invalid"),
+                        _ => Err("provider unavailable".into()),
+                    }
+                },
+                true,
+                Duration::from_secs(1),
+                |candidate| {
+                    if *candidate == "invalid" {
+                        anyhow::bail!("invalid candidate");
+                    }
+                    Ok(candidate.to_string())
+                },
+            )
+            .await
+            .unwrap();
+
+            assert!(consensus.decision.is_none(), "{failure_kind}");
+            assert!(consensus.requires_human_review, "{failure_kind}");
+            assert!(!consensus.stopped_early, "{failure_kind}");
+            assert_eq!(consensus.outcomes.len(), 3);
+            assert_eq!(consensus.outcomes[2].result, Ok(serde_json::json!("valid")));
+        }
+    }
+
+    #[tokio::test]
+    async fn waiting_for_first_valid_candidate_still_respects_model_timeout() {
+        let consensus = parallel_vote_impl(
+            models(),
+            |model| async move {
+                if model == "model-c" {
+                    std::future::pending::<Result<&'static str, String>>().await
+                } else {
+                    Err("provider unavailable".into())
+                }
+            },
+            true,
+            Duration::from_millis(20),
+            |candidate| Ok(candidate.to_string()),
+        )
+        .await
+        .unwrap();
+
+        assert!(consensus.decision.is_none());
+        assert!(!consensus.stopped_early);
+        assert_eq!(consensus.outcomes.len(), 3);
+        assert!(
+            consensus.outcomes[2]
+                .result
+                .as_ref()
+                .unwrap_err()
+                .contains("超时")
+        );
     }
 
     #[tokio::test]

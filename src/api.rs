@@ -24,7 +24,8 @@ use crate::models::{
 #[cfg(target_family = "wasm")]
 use crate::workflow::{
     AnalyzeRequirementRequest, ClarificationAnswer, ConfirmDecisionPlanRequest,
-    ContinueClarificationRequest, CreateDecisionPlanRequest, DecisionWorkflowState,
+    ConfirmRequirementReviewRequest, ContinueClarificationRequest, CreateDecisionPlanRequest,
+    DecisionWorkflowState, PendingRequirementReview,
 };
 #[cfg(target_family = "wasm")]
 use js_sys::{Reflect, Uint8Array};
@@ -66,7 +67,9 @@ use std::convert::Infallible;
 use std::sync::Arc;
 
 #[cfg(not(target_family = "wasm"))]
-use crate::agent_runtime::orchestration::{Consensus, VoteCandidate, parallel_vote};
+use crate::agent_runtime::orchestration::{
+    Consensus, VoteCandidate, VoteOutcome, parallel_vote_until_majority_by,
+};
 #[cfg(not(target_family = "wasm"))]
 use crate::agent_runtime::{
     ExperimentAssignment, ModelCandidate, ModelPerformanceMetric, ModelSelectionPolicy, TaskType,
@@ -1841,6 +1844,15 @@ fn project_token_budget_response(error: ProjectTokenBudgetError) -> Response {
             })),
         )
             .into_response(),
+        ProjectTokenBudgetError::Database(sqlx::Error::RowNotFound) => (
+            StatusCode::CONFLICT,
+            Json(json!({
+                "ok": false,
+                "code": "WORKFLOW_ORCHESTRATION_UNAVAILABLE",
+                "error": "需求或方案的上游编排已不可用，请刷新工作流并重新确认方案后重试"
+            })),
+        )
+            .into_response(),
         ProjectTokenBudgetError::InvalidConfiguration(error) => {
             eprintln!("项目 token 预算配置无效，拒绝模型调用：{error}");
             (
@@ -1850,7 +1862,7 @@ fn project_token_budget_response(error: ProjectTokenBudgetError) -> Response {
                 .into_response()
         }
         ProjectTokenBudgetError::Database(error) => {
-            eprintln!("检查项目 token 预算失败: {error}");
+            eprintln!("项目预算或模型运行数据库操作失败: {error}");
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(json!({"ok": false, "error": "检查模型预算失败"})),
@@ -4604,6 +4616,55 @@ pub async fn get_decision_workflow(
 }
 
 #[cfg(target_family = "wasm")]
+pub async fn get_pending_requirement_review(
+    token: &str,
+    project_id: i64,
+) -> Result<Option<PendingRequirementReview>, String> {
+    let url = api_url(&format!(
+        "/api/projects/{project_id}/workflow/pending-review"
+    ))
+    .ok_or_else(|| "网络错误，请稍后重试".to_string())?;
+    let response = reqwest::Client::new()
+        .get(url)
+        .header("Authorization", format!("Bearer {token}"))
+        .send()
+        .await
+        .map_err(|error| format!("读取人工复核候选失败: {error}"))?;
+    if !response.status().is_success() {
+        return Err(project_api_error(response, "读取人工复核候选").await);
+    }
+    response
+        .json::<Option<PendingRequirementReview>>()
+        .await
+        .map_err(|error| format!("人工复核候选响应无效: {error}"))
+}
+
+#[cfg(target_family = "wasm")]
+pub async fn confirm_requirement_review(
+    token: &str,
+    project_id: i64,
+    run_id: i64,
+    model: String,
+) -> Result<DecisionWorkflowState, String> {
+    let url = api_url(&format!("/api/projects/{project_id}/workflow/review"))
+        .ok_or_else(|| "网络错误，请稍后重试".to_string())?;
+    let response = reqwest::Client::new()
+        .post(url)
+        .header("Authorization", format!("Bearer {token}"))
+        .json(&ConfirmRequirementReviewRequest { run_id, model })
+        .send()
+        .await
+        .map_err(|error| format!("提交人工复核失败: {error}"))?;
+    if !response.status().is_success() {
+        return Err(project_api_error(response, "提交人工复核").await);
+    }
+    response
+        .json::<DecisionWorkflowState>()
+        .await
+        .map_err(|error| format!("人工复核响应无效: {error}"))
+}
+
+#[cfg(target_family = "wasm")]
 pub async fn replay_agent_orchestration_events(
     token: &str,
     project_id: i64,
@@ -6155,6 +6216,74 @@ struct DslVoteResult {
 }
 
 #[cfg(not(target_family = "wasm"))]
+async fn relay_dsl_model_steps(
+    model: String,
+    mut model_rx: mpsc::Receiver<StreamEvent>,
+    progress_tx: mpsc::Sender<StreamEvent>,
+) {
+    while let Some(event) = model_rx.recv().await {
+        if let StreamEvent::Step(message) = event {
+            let _ = progress_tx
+                .send(StreamEvent::Step(format!("模型 {model}：{message}")))
+                .await;
+        }
+    }
+}
+
+#[cfg(not(target_family = "wasm"))]
+async fn generate_dsl_vote_candidate(
+    agent: &LlmAgent,
+    model: &str,
+    requirement: &str,
+    plan: &crate::workflow::DecisionPlan,
+    tx: Option<&mpsc::Sender<StreamEvent>>,
+) -> Result<DslVoteCandidate, String> {
+    if let Some(tx) = tx {
+        let _ = tx
+            .send(StreamEvent::Step(format!("模型 {model} 已开始生成 DSL")))
+            .await;
+    }
+
+    let generation = async {
+        let generated = if let Some(progress_tx) = tx {
+            let (model_tx, model_rx) = mpsc::channel(32);
+            let relay = tokio::spawn(relay_dsl_model_steps(
+                model.to_string(),
+                model_rx,
+                progress_tx.clone(),
+            ));
+            let result = agent
+                .generate_dsl_stream(requirement, None, &model_tx)
+                .await;
+            drop(model_tx);
+            let _ = relay.await;
+            result.map_err(|error| error.to_string())?
+        } else {
+            agent
+                .generate_dsl(requirement, None)
+                .await
+                .map_err(|error| error.to_string())?
+        };
+        let yaml = apply_requirement_traceability(&generated.yaml, plan)?;
+        canonical_dsl_vote_candidate(yaml)
+    };
+    tokio::pin!(generation);
+
+    loop {
+        tokio::select! {
+            result = &mut generation => return result,
+            _ = tokio::time::sleep(std::time::Duration::from_secs(10)) => {
+                if let Some(tx) = tx {
+                    let _ = tx
+                        .send(StreamEvent::Step(format!("模型 {model} 仍在生成或校验 DSL")))
+                        .await;
+                }
+            }
+        }
+    }
+}
+
+#[cfg(not(target_family = "wasm"))]
 async fn confirmed_requirement_complexity(
     db: &sqlx::PgPool,
     request: &GenerateRequest,
@@ -6205,38 +6334,98 @@ async fn generate_complex_dsl_consensus(
     if let Some(tx) = tx {
         let _ = tx
             .send(StreamEvent::Step(format!(
-                "复杂需求路由：正在并行调用 {} 个模型生成并交叉验证 DSL",
+                "复杂需求路由：正在并行调用 {} 个模型；达到严格多数后将提前返回",
                 candidates.len()
             )))
             .await;
     }
     let requirement = requirement.to_string();
     let plan = plan.clone();
-    let voting = parallel_vote(candidates, move |model| {
-        let agent = model_agents
-            .iter()
-            .find(|agent| agent.model() == model)
-            .cloned();
-        let requirement = requirement.clone();
-        let plan = plan.clone();
-        async move {
-            let Some(agent) = agent else {
-                return Err(format!("并行模型不存在：{model}"));
-            };
-            let generated = agent
-                .generate_dsl(&requirement, None)
-                .await
-                .map_err(|error| error.to_string())?;
-            let yaml = apply_requirement_traceability(&generated.yaml, &plan)?;
-            canonical_dsl_vote_candidate(yaml)
-        }
-    });
+    let progress_tx = tx.cloned();
+    let completed_candidates = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let candidate_sink = Arc::clone(&completed_candidates);
+    let voting = parallel_vote_until_majority_by(
+        candidates,
+        move |model| {
+            let agent = model_agents
+                .iter()
+                .find(|agent| agent.model() == model)
+                .cloned();
+            let requirement = requirement.clone();
+            let plan = plan.clone();
+            let progress_tx = progress_tx.clone();
+            let candidate_sink = Arc::clone(&candidate_sink);
+            async move {
+                let result = match agent {
+                    Some(agent) => {
+                        generate_dsl_vote_candidate(
+                            &agent,
+                            &model,
+                            &requirement,
+                            &plan,
+                            progress_tx.as_ref(),
+                        )
+                        .await
+                    }
+                    None => Err(format!("并行模型不存在：{model}")),
+                };
+                if let Ok(candidate) = &result
+                    && let Ok(mut completed) = candidate_sink.lock()
+                {
+                    completed.push((model.clone(), candidate.clone()));
+                }
+                if let Some(tx) = progress_tx {
+                    let status = if result.is_ok() {
+                        "已完成 DSL 生成和结构校验"
+                    } else {
+                        "DSL 生成或结构校验失败"
+                    };
+                    let _ = tx
+                        .send(StreamEvent::Step(format!("模型 {model} {status}")))
+                        .await;
+                }
+                result
+            }
+        },
+        |candidate: &DslVoteCandidate| Ok(candidate.signature.clone()),
+    );
     let consensus = voting.await?;
+    let plurality = if consensus.decision.is_none() {
+        let candidates = completed_candidates
+            .lock()
+            .map(|candidates| candidates.clone())
+            .unwrap_or_default();
+        plurality_dsl_candidate(&consensus.outcomes, &candidates)
+    } else {
+        None
+    };
+    if let Some(tx) = tx {
+        let message = if consensus.early_majority {
+            format!(
+                "已获得严格多数 DSL 共识（{:.0}%），停止等待未完成模型",
+                consensus.confidence * 100.0
+            )
+        } else if consensus.decision.is_some() {
+            "所有模型均已返回，DSL 共识已达成".to_string()
+        } else if plurality.is_some() {
+            "DSL 未形成严格多数；将选择最高票且通过编译的候选（平票按配置顺序），进入业务验收并重点复核模型分歧".to_string()
+        } else if consensus.stopped_early {
+            "剩余模型已无法形成多数，且没有有效候选可进入验收，请检查模型输出或重试".to_string()
+        } else {
+            "没有可进入验收的有效 DSL 候选，请检查模型输出或重试".to_string()
+        };
+        let _ = tx.send(StreamEvent::Step(message)).await;
+    }
     let generated = consensus
         .decision
         .as_ref()
         .map(|winner| nl_dsl::agent::GeneratedDsl {
             yaml: winner.yaml.clone(),
+        })
+        .or_else(|| {
+            plurality.map(|candidate| nl_dsl::agent::GeneratedDsl {
+                yaml: candidate.yaml,
+            })
         });
     Ok(DslVoteResult {
         generated,
@@ -6251,6 +6440,48 @@ fn canonical_dsl_vote_candidate(yaml: String) -> Result<DslVoteCandidate, String
         serde_json::to_vec(&definitions).map_err(|error| format!("规范化 DSL 失败：{error}"))?;
     let signature = format!("{:x}", sha2::Sha256::digest(normalized));
     Ok(DslVoteCandidate { signature, yaml })
+}
+
+#[cfg(not(target_family = "wasm"))]
+fn plurality_dsl_candidate(
+    outcomes: &[VoteOutcome],
+    candidates: &[(String, DslVoteCandidate)],
+) -> Option<DslVoteCandidate> {
+    let mut groups = BTreeMap::<String, (f64, usize)>::new();
+    for (index, outcome) in outcomes.iter().enumerate() {
+        let Ok(result) = &outcome.result else {
+            continue;
+        };
+        let Some(signature) = result.get("signature").and_then(serde_json::Value::as_str) else {
+            continue;
+        };
+        let group = groups.entry(signature.to_string()).or_insert((0.0, index));
+        group.0 += outcome.weight;
+    }
+    let signature = groups
+        .into_iter()
+        .max_by(|left, right| {
+            left.1
+                .0
+                .total_cmp(&right.1.0)
+                .then_with(|| right.1.1.cmp(&left.1.1))
+        })?
+        .0;
+    outcomes.iter().find_map(|outcome| {
+        let Ok(result) = &outcome.result else {
+            return None;
+        };
+        (result.get("signature").and_then(serde_json::Value::as_str) == Some(signature.as_str()))
+            .then(|| {
+                candidates
+                    .iter()
+                    .find(|(model, candidate)| {
+                        model == &outcome.model && candidate.signature == signature
+                    })
+                    .map(|(_, candidate)| candidate.clone())
+            })
+            .flatten()
+    })
 }
 
 #[cfg(not(target_family = "wasm"))]
@@ -6398,7 +6629,8 @@ async fn generate_dsl(
         }
     }
     let generated = generated.and_then(|(generated, _)| {
-        generated.ok_or_else(|| anyhow::anyhow!("DSL 多模型投票未达成多数共识，已标记为需人工复核"))
+        generated
+            .ok_or_else(|| anyhow::anyhow!("没有可进入验收的有效 DSL 候选，请检查模型输出或重试"))
     });
     let outcome = match generated {
         Ok(generated) => {
@@ -6568,6 +6800,21 @@ async fn begin_dsl_generation_run(
 }
 
 #[cfg(not(target_family = "wasm"))]
+fn sanitize_jsonb_value(mut value: Value) -> Value {
+    fn sanitize(value: &mut Value) {
+        match value {
+            Value::String(text) => *text = text.replace('\0', "\u{FFFD}"),
+            Value::Array(items) => items.iter_mut().for_each(sanitize),
+            Value::Object(fields) => fields.values_mut().for_each(sanitize),
+            _ => {}
+        }
+    }
+
+    sanitize(&mut value);
+    value
+}
+
+#[cfg(not(target_family = "wasm"))]
 async fn finish_dsl_generation_run(
     db: &sqlx::PgPool,
     run: AgentExecutionRun,
@@ -6597,7 +6844,9 @@ async fn finish_dsl_generation_run(
             )
         }
     };
-    let usage = agent.usage_snapshot();
+    let output_json = output_json.map(sanitize_jsonb_value);
+    let error_json = error_json.map(sanitize_jsonb_value);
+    let usage = sanitize_jsonb_value(agent.usage_snapshot());
     let Some(orchestration_id) = run.orchestration_id else {
         return;
     };
@@ -6750,7 +6999,7 @@ async fn begin_change_intent_run(
             experiment_name, experiment_variant,
             experiment_treatment_percent, experiment_bucket, orchestration_id
         )
-        VALUES ($1, 'change_intent', 'running', $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+        VALUES ($1, 'change_intent', 'running', $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
         RETURNING id
         "#,
     )
@@ -6820,10 +7069,12 @@ async fn finish_change_intent_run(
             )
         }
     };
+    let output = output.map(sanitize_jsonb_value);
+    let error = error.map(sanitize_jsonb_value);
     let Some(orchestration_id) = run.orchestration_id else {
         return;
     };
-    let usage = agent.usage_snapshot();
+    let usage = sanitize_jsonb_value(agent.usage_snapshot());
     let digest = output
         .as_ref()
         .and_then(|value| serde_json::to_vec(value).ok())
@@ -7224,8 +7475,9 @@ fn generate_dsl_sse(
             }
         }
         let generated = generated.and_then(|(generated, _)| {
-            generated
-                .ok_or_else(|| anyhow::anyhow!("DSL 多模型投票未达成多数共识，已标记为需人工复核"))
+            generated.ok_or_else(|| {
+                anyhow::anyhow!("没有可进入验收的有效 DSL 候选，请检查模型输出或重试")
+            })
         });
         let outcome = match generated {
             Ok(generated) => match ensure_generation_snapshot(&db, &req).await {
@@ -7372,7 +7624,8 @@ pub(crate) async fn run_pipeline(
         }
     }
     let generated = generated.and_then(|(generated, _)| {
-        generated.ok_or_else(|| anyhow::anyhow!("DSL 多模型投票未达成多数共识，已标记为需人工复核"))
+        generated
+            .ok_or_else(|| anyhow::anyhow!("没有可进入验收的有效 DSL 候选，请检查模型输出或重试"))
     });
     let generated = match generated {
         Ok(generated) => generated,
@@ -7640,8 +7893,9 @@ fn run_pipeline_sse(
             }
         }
         let generated = generated.and_then(|(generated, _)| {
-            generated
-                .ok_or_else(|| anyhow::anyhow!("DSL 多模型投票未达成多数共识，已标记为需人工复核"))
+            generated.ok_or_else(|| {
+                anyhow::anyhow!("没有可进入验收的有效 DSL 候选，请检查模型输出或重试")
+            })
         });
         let generated = match generated {
             Ok(generated) => generated,
@@ -8119,6 +8373,48 @@ mod tests {
     use super::*;
 
     #[test]
+    fn jsonb_persistence_replaces_embedded_nul_characters() {
+        let value = json!({
+            "output": "before\0after",
+            "nested": ["\0", {"message": "valid"}],
+        });
+
+        let sanitized = sanitize_jsonb_value(value);
+
+        assert_eq!(sanitized["output"], "before\u{FFFD}after");
+        assert_eq!(sanitized["nested"][0], "\u{FFFD}");
+        assert_eq!(sanitized["nested"][1]["message"], "valid");
+    }
+
+    #[tokio::test]
+    async fn dsl_model_progress_relay_forwards_steps_without_mixing_output() {
+        let (model_tx, model_rx) = mpsc::channel(4);
+        let (progress_tx, mut progress_rx) = mpsc::channel(4);
+        let relay = tokio::spawn(relay_dsl_model_steps(
+            "model-a".into(),
+            model_rx,
+            progress_tx,
+        ));
+
+        model_tx
+            .send(StreamEvent::Step("生成尝试 1/4".into()))
+            .await
+            .unwrap();
+        model_tx
+            .send(StreamEvent::Delta("model-specific DSL".into()))
+            .await
+            .unwrap();
+        drop(model_tx);
+        relay.await.unwrap();
+
+        assert!(matches!(
+            progress_rx.recv().await,
+            Some(StreamEvent::Step(message)) if message == "模型 model-a：生成尝试 1/4"
+        ));
+        assert!(progress_rx.try_recv().is_err());
+    }
+
+    #[test]
     fn only_terminal_sse_events_complete_a_stream() {
         assert!(is_terminal_sse_event_name("result"));
         assert!(is_terminal_sse_event_name("workflow_result"));
@@ -8169,6 +8465,21 @@ mod tests {
         let payload: Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(payload["code"], "ORCHESTRATION_RETRY_CONFLICT");
         assert_eq!(payload["ok"], false);
+    }
+
+    #[tokio::test]
+    async fn missing_upstream_orchestration_is_not_reported_as_a_budget_failure() {
+        let response = project_token_budget_response(ProjectTokenBudgetError::Database(
+            sqlx::Error::RowNotFound,
+        ));
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let payload: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(payload["code"], "WORKFLOW_ORCHESTRATION_UNAVAILABLE");
+        assert!(payload["error"].as_str().unwrap().contains("重新确认方案"));
     }
 
     #[cfg(not(target_family = "wasm"))]
@@ -9242,19 +9553,71 @@ decisions:
                 weight: 1.0,
             },
         ];
-        let consensus = parallel_vote(candidates, move |model| {
-            let candidate = if model == "model-a" {
-                first.clone()
-            } else {
-                second.clone()
-            };
-            async move { Ok::<_, String>(candidate) }
-        })
+        let consensus = parallel_vote_until_majority_by(
+            candidates,
+            move |model| {
+                let candidate = if model == "model-a" {
+                    first.clone()
+                } else {
+                    second.clone()
+                };
+                async move { Ok::<_, String>(candidate) }
+            },
+            |candidate: &DslVoteCandidate| Ok(candidate.signature.clone()),
+        )
         .await
-        .expect("two valid model responses should be grouped");
+        .expect("semantically equivalent DSL responses should be grouped");
 
         assert!(consensus.decision.is_some());
         assert_eq!(consensus.confidence, 1.0);
+    }
+
+    #[test]
+    fn complex_dsl_plurality_fallback_selects_compiled_candidate_deterministically() {
+        let candidates = vec![
+            (
+                "model-a".into(),
+                DslVoteCandidate {
+                    signature: "a".into(),
+                    yaml: "candidate a".into(),
+                },
+            ),
+            (
+                "model-b".into(),
+                DslVoteCandidate {
+                    signature: "b".into(),
+                    yaml: "candidate b".into(),
+                },
+            ),
+            (
+                "model-c".into(),
+                DslVoteCandidate {
+                    signature: "a".into(),
+                    yaml: "candidate a second copy".into(),
+                },
+            ),
+        ];
+        let outcomes = vec![
+            VoteOutcome {
+                model: "model-a".into(),
+                weight: 1.0,
+                result: Ok(serde_json::json!({"signature": "a"})),
+            },
+            VoteOutcome {
+                model: "model-b".into(),
+                weight: 1.0,
+                result: Ok(serde_json::json!({"signature": "b"})),
+            },
+            VoteOutcome {
+                model: "model-c".into(),
+                weight: 1.0,
+                result: Ok(serde_json::json!({"signature": "a"})),
+            },
+        ];
+
+        let selected = plurality_dsl_candidate(&outcomes, &candidates).unwrap();
+        assert_eq!(selected.signature, "a");
+        assert_eq!(selected.yaml, "candidate a");
     }
 
     #[test]

@@ -1,12 +1,20 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::{collections::BTreeMap, future::Future, pin::Pin, sync::Arc, time::Duration};
+use std::{
+    collections::{BTreeMap, HashMap},
+    future::Future,
+    pin::Pin,
+    sync::Arc,
+    time::Duration,
+};
 
 use anyhow::anyhow;
 use serde::Serialize;
 use tokio::{
     sync::{Semaphore, mpsc},
-    task::JoinSet,
+    task::{Id, JoinSet},
 };
+
+const VOTE_MODEL_TIMEOUT: Duration = Duration::from_secs(180);
 
 pub type AgentFuture<'a> =
     Pin<Box<dyn Future<Output = Result<AgentOutput, AgentFailure>> + Send + 'a>>;
@@ -645,6 +653,9 @@ pub struct Consensus<T> {
     pub decision: Option<T>,
     pub confidence: f64,
     pub requires_human_review: bool,
+    pub early_majority: bool,
+    pub stopped_early: bool,
+    pub stop_reason: Option<String>,
     pub outcomes: Vec<VoteOutcome>,
 }
 
@@ -657,12 +668,79 @@ where
     F: Fn(String) -> Fut + Send + Sync + 'static,
     Fut: Future<Output = Result<T, String>> + Send + 'static,
 {
+    parallel_vote_impl(candidates, execute, false, VOTE_MODEL_TIMEOUT, |value| {
+        let serialized = serde_json::to_value(value)?;
+        Ok(canonical_json_key(&serialized))
+    })
+    .await
+}
+
+pub async fn parallel_vote_by<T, F, Fut, K>(
+    candidates: Vec<VoteCandidate>,
+    execute: F,
+    key: K,
+) -> anyhow::Result<Consensus<T>>
+where
+    T: Serialize + Send + 'static,
+    F: Fn(String) -> Fut + Send + Sync + 'static,
+    Fut: Future<Output = Result<T, String>> + Send + 'static,
+    K: Fn(&T) -> anyhow::Result<String> + Send + Sync + 'static,
+{
+    parallel_vote_impl(candidates, execute, false, VOTE_MODEL_TIMEOUT, key).await
+}
+
+pub async fn parallel_vote_until_majority<T, F, Fut>(
+    candidates: Vec<VoteCandidate>,
+    execute: F,
+) -> anyhow::Result<Consensus<T>>
+where
+    T: Serialize + Send + 'static,
+    F: Fn(String) -> Fut + Send + Sync + 'static,
+    Fut: Future<Output = Result<T, String>> + Send + 'static,
+{
+    parallel_vote_impl(candidates, execute, true, VOTE_MODEL_TIMEOUT, |value| {
+        let serialized = serde_json::to_value(value)?;
+        Ok(canonical_json_key(&serialized))
+    })
+    .await
+}
+
+pub async fn parallel_vote_until_majority_by<T, F, Fut, K>(
+    candidates: Vec<VoteCandidate>,
+    execute: F,
+    key: K,
+) -> anyhow::Result<Consensus<T>>
+where
+    T: Serialize + Send + 'static,
+    F: Fn(String) -> Fut + Send + Sync + 'static,
+    Fut: Future<Output = Result<T, String>> + Send + 'static,
+    K: Fn(&T) -> anyhow::Result<String> + Send + Sync + 'static,
+{
+    parallel_vote_impl(candidates, execute, true, VOTE_MODEL_TIMEOUT, key).await
+}
+
+async fn parallel_vote_impl<T, F, Fut, K>(
+    candidates: Vec<VoteCandidate>,
+    execute: F,
+    return_on_majority: bool,
+    model_timeout: Duration,
+    key: K,
+) -> anyhow::Result<Consensus<T>>
+where
+    T: Serialize + Send + 'static,
+    F: Fn(String) -> Fut + Send + Sync + 'static,
+    Fut: Future<Output = Result<T, String>> + Send + 'static,
+    K: Fn(&T) -> anyhow::Result<String> + Send + Sync + 'static,
+{
     let candidates: Vec<_> = candidates
         .into_iter()
-        .filter(|candidate| {
-            !candidate.model.trim().is_empty()
-                && candidate.weight.is_finite()
-                && candidate.weight > 0.0
+        .filter_map(|mut candidate| {
+            let model = candidate.model.trim();
+            if model.is_empty() || !candidate.weight.is_finite() || candidate.weight <= 0.0 {
+                return None;
+            }
+            candidate.model = model.to_string();
+            Some(candidate)
         })
         .collect();
     if candidates.len() < 2 {
@@ -676,44 +754,126 @@ where
         return Err(anyhow!("并行共识不能重复使用同一模型"));
     }
     let total_weight: f64 = candidates.iter().map(|candidate| candidate.weight).sum();
+    if !total_weight.is_finite() {
+        return Err(anyhow!("并行共识模型总权重超出可计算范围"));
+    }
 
     let mut tasks = JoinSet::new();
     let execute = Arc::new(execute);
+    let mut pending = HashMap::<Id, String>::new();
+    let mut pending_weights = BTreeMap::<String, f64>::new();
+    let candidate_order = candidates
+        .iter()
+        .enumerate()
+        .map(|(index, candidate)| (candidate.model.clone(), index))
+        .collect::<HashMap<_, _>>();
     for candidate in candidates {
         let execute = Arc::clone(&execute);
         let model = candidate.model.clone();
         let weight = candidate.weight;
-        tasks.spawn(async move {
-            let result = execute(model.clone()).await;
-            (model, weight, result)
+        pending_weights.insert(model.clone(), weight);
+        let abort = tasks.spawn(async move {
+            let result = match tokio::time::timeout(model_timeout, execute(model.clone())).await {
+                Ok(result) => result,
+                Err(_) => Err(format!(
+                    "模型调用超过 {} 秒，已超时",
+                    model_timeout.as_secs()
+                )),
+            };
+            (weight, result)
         });
+        pending.insert(abort.id(), candidate.model);
     }
 
     let mut outcomes = Vec::new();
     let mut groups: BTreeMap<String, (f64, T)> = BTreeMap::new();
-    while let Some(joined) = tasks.join_next().await {
-        let (model, weight, result) =
-            joined.map_err(|error| anyhow!("并行模型任务失败：{error}"))?;
-        match result {
-            Ok(value) => {
-                let serialized = serde_json::to_value(&value)?;
-                let key = canonical_json_key(&serialized);
-                let group = groups.entry(key).or_insert_with(|| (0.0, value));
-                group.0 += weight;
+    let mut stopped_early = false;
+    while let Some(joined) = tasks.join_next_with_id().await {
+        let (task_id, result) = match joined {
+            Ok((task_id, result)) => (task_id, result),
+            Err(error) => {
+                let task_id = error.id();
+                let Some(model) = pending.remove(&task_id) else {
+                    continue;
+                };
+                let weight = pending_weights.remove(&model).unwrap_or_default();
                 outcomes.push(VoteOutcome {
                     model,
                     weight,
-                    result: Ok(serialized),
+                    result: Err(format!("模型任务异常退出：{error}")),
                 });
+                if should_stop_voting(&groups, &pending_weights, total_weight, return_on_majority) {
+                    stopped_early = true;
+                    tasks.abort_all();
+                    break;
+                }
+                continue;
             }
-            Err(error) => outcomes.push(VoteOutcome {
-                model,
-                weight,
-                result: Err(error),
-            }),
+        };
+        let Some(model) = pending.remove(&task_id) else {
+            continue;
+        };
+        pending_weights.remove(&model);
+        let (weight, result) = result;
+        record_vote_result(model, weight, result, &key, &mut groups, &mut outcomes);
+        if should_stop_voting(&groups, &pending_weights, total_weight, return_on_majority) {
+            stopped_early = true;
+            tasks.abort_all();
+            break;
         }
     }
 
+    if stopped_early {
+        while let Some(joined) = tasks.join_next_with_id().await {
+            match joined {
+                Ok((task_id, (weight, result))) => {
+                    let Some(model) = pending.remove(&task_id) else {
+                        continue;
+                    };
+                    pending_weights.remove(&model);
+                    record_vote_result(model, weight, result, &key, &mut groups, &mut outcomes);
+                }
+                Err(error) => {
+                    let task_id = error.id();
+                    let Some(model) = pending.remove(&task_id) else {
+                        continue;
+                    };
+                    let weight = pending_weights.remove(&model).unwrap_or_default();
+                    let message = if error.is_cancelled() {
+                        "投票已提前停止，模型调用已取消".to_string()
+                    } else {
+                        format!("模型任务异常退出：{error}")
+                    };
+                    outcomes.push(VoteOutcome {
+                        model,
+                        weight,
+                        result: Err(message),
+                    });
+                }
+            }
+        }
+    }
+
+    outcomes.sort_by_key(|outcome| {
+        candidate_order
+            .get(&outcome.model)
+            .copied()
+            .unwrap_or(usize::MAX)
+    });
+
+    let has_majority = groups
+        .values()
+        .any(|(weight, _)| *weight > total_weight / 2.0);
+    let early_majority = stopped_early && has_majority;
+    let stop_reason = if stopped_early {
+        Some(if has_majority {
+            "strict_majority_reached".to_string()
+        } else {
+            "strict_majority_unreachable".to_string()
+        })
+    } else {
+        None
+    };
     let winner = groups
         .into_values()
         .max_by(|left, right| left.0.total_cmp(&right.0));
@@ -728,8 +888,73 @@ where
         requires_human_review: decision.is_none(),
         decision,
         confidence,
+        early_majority,
+        stopped_early,
+        stop_reason,
         outcomes,
     })
+}
+
+fn record_vote_result<T, K>(
+    model: String,
+    weight: f64,
+    result: Result<T, String>,
+    key: &K,
+    groups: &mut BTreeMap<String, (f64, T)>,
+    outcomes: &mut Vec<VoteOutcome>,
+) where
+    T: Serialize,
+    K: Fn(&T) -> anyhow::Result<String>,
+{
+    match result {
+        Ok(value) => {
+            let normalized = serde_json::to_value(&value)
+                .map_err(|error| error.to_string())
+                .and_then(|serialized| {
+                    key(&value)
+                        .map(|group_key| (serialized, group_key))
+                        .map_err(|error| error.to_string())
+                });
+            match normalized {
+                Ok((serialized, group_key)) => {
+                    let group = groups.entry(group_key).or_insert_with(|| (0.0, value));
+                    group.0 += weight;
+                    outcomes.push(VoteOutcome {
+                        model,
+                        weight,
+                        result: Ok(serialized),
+                    });
+                }
+                Err(error) => outcomes.push(VoteOutcome {
+                    model,
+                    weight,
+                    result: Err(format!("候选结果规范化失败：{error}")),
+                }),
+            }
+        }
+        Err(error) => outcomes.push(VoteOutcome {
+            model,
+            weight,
+            result: Err(error),
+        }),
+    }
+}
+
+fn should_stop_voting<T>(
+    groups: &BTreeMap<String, (f64, T)>,
+    pending_weights: &BTreeMap<String, f64>,
+    total_weight: f64,
+    return_on_majority: bool,
+) -> bool {
+    if pending_weights.is_empty() {
+        return false;
+    }
+    let majority = total_weight / 2.0;
+    let has_majority = groups.values().any(|(weight, _)| *weight > majority);
+    let majority_cannot_be_reached = groups
+        .values()
+        .all(|(weight, _)| *weight + pending_weights.values().sum::<f64>() <= majority);
+    (return_on_majority && has_majority) || majority_cannot_be_reached
 }
 
 fn canonical_json_key(value: &serde_json::Value) -> String {
@@ -1151,6 +1376,217 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn keyed_consensus_ignores_non_key_text_but_keeps_all_outcomes() {
+        let consensus = parallel_vote_by(
+            models(),
+            |model| async move {
+                Ok::<_, String>(serde_json::json!({
+                    "schema": if model == "model-c" { "different" } else { "shared" },
+                    "wording": model,
+                }))
+            },
+            |value| Ok(value["schema"].as_str().unwrap_or_default().to_string()),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(consensus.decision.as_ref().unwrap()["schema"], "shared");
+        assert_eq!(consensus.confidence, 2.0 / 3.0);
+        assert_eq!(consensus.outcomes.len(), 3);
+        assert!(!consensus.requires_human_review);
+    }
+
+    #[tokio::test]
+    async fn early_majority_cancels_slow_remaining_model() {
+        use std::sync::atomic::AtomicBool;
+
+        struct DropFlag(Arc<AtomicBool>);
+
+        impl Drop for DropFlag {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::SeqCst);
+            }
+        }
+
+        let third_started = Arc::new(AtomicBool::new(false));
+        let slow_model_cancelled = Arc::new(AtomicBool::new(false));
+        let started = Arc::clone(&third_started);
+        let cancelled = Arc::clone(&slow_model_cancelled);
+        let consensus = tokio::time::timeout(
+            Duration::from_millis(250),
+            parallel_vote_until_majority(models(), move |model| {
+                let started = Arc::clone(&started);
+                let cancelled = Arc::clone(&cancelled);
+                async move {
+                    if model == "model-c" {
+                        started.store(true, Ordering::SeqCst);
+                        let _drop_flag = DropFlag(cancelled);
+                        return std::future::pending::<Result<&'static str, String>>().await;
+                    }
+                    while !started.load(Ordering::SeqCst) {
+                        tokio::task::yield_now().await;
+                    }
+                    Ok("approved")
+                }
+            }),
+        )
+        .await
+        .expect("the slow third model must not delay a majority")
+        .unwrap();
+
+        assert_eq!(consensus.decision, Some("approved"));
+        assert_eq!(consensus.confidence, 2.0 / 3.0);
+        assert!(consensus.early_majority);
+        assert_eq!(consensus.outcomes.len(), 3);
+        assert!(consensus.outcomes.iter().any(|outcome| {
+            outcome.model == "model-c"
+                && outcome
+                    .result
+                    .as_ref()
+                    .err()
+                    .is_some_and(|error| error.contains("调用已取消"))
+        }));
+        tokio::time::timeout(Duration::from_millis(250), async {
+            while !slow_model_cancelled.load(Ordering::SeqCst) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the unfinished model task must be cancelled");
+    }
+
+    #[tokio::test]
+    async fn early_majority_mode_waits_when_first_results_disagree() {
+        let consensus =
+            parallel_vote_until_majority(models(), |model| async move { Ok::<_, String>(model) })
+                .await
+                .unwrap();
+
+        assert!(consensus.decision.is_none());
+        assert!(!consensus.early_majority);
+        assert_eq!(consensus.outcomes.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn failed_vote_key_isolated_and_other_models_can_reach_consensus() {
+        let consensus = parallel_vote_by(
+            models(),
+            |model| async move { Ok::<_, String>(model) },
+            |model| {
+                if model == "model-c" {
+                    anyhow::bail!("invalid candidate")
+                }
+                Ok("shared".to_string())
+            },
+        )
+        .await
+        .unwrap();
+
+        assert!(consensus.decision.is_some());
+        assert_eq!(consensus.confidence, 2.0 / 3.0);
+        assert_eq!(consensus.outcomes.len(), 3);
+        assert!(consensus.outcomes.iter().any(|outcome| {
+            outcome.model == "model-c"
+                && outcome
+                    .result
+                    .as_ref()
+                    .err()
+                    .is_some_and(|error| error.contains("invalid candidate"))
+        }));
+    }
+
+    #[tokio::test]
+    async fn timed_out_model_is_recorded_without_discarding_other_votes() {
+        let consensus = parallel_vote_impl(
+            models(),
+            |model| async move {
+                if model == "model-c" {
+                    std::future::pending::<Result<&'static str, String>>().await
+                } else {
+                    Ok("approved")
+                }
+            },
+            false,
+            Duration::from_millis(10),
+            |value| Ok(value.to_string()),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(consensus.decision, Some("approved"));
+        assert!(consensus.outcomes.iter().any(|outcome| {
+            outcome.model == "model-c"
+                && outcome
+                    .result
+                    .as_ref()
+                    .err()
+                    .is_some_and(|error| error.contains("超时"))
+        }));
+    }
+
+    #[tokio::test]
+    async fn panicked_model_is_recorded_without_losing_successful_votes() {
+        let consensus = parallel_vote(models(), |model| async move {
+            if model == "model-c" {
+                panic!("model adapter panicked");
+            }
+            Ok::<_, String>("approved")
+        })
+        .await
+        .unwrap();
+
+        assert_eq!(consensus.decision, Some("approved"));
+        assert_eq!(consensus.outcomes.len(), 3);
+        assert!(consensus.outcomes.iter().any(|outcome| {
+            outcome.model == "model-c"
+                && outcome
+                    .result
+                    .as_ref()
+                    .err()
+                    .is_some_and(|error| error.contains("异常退出"))
+        }));
+    }
+
+    #[tokio::test]
+    async fn voting_stops_when_failures_make_strict_majority_unreachable() {
+        let candidates = ["model-a", "model-b", "model-c", "model-d"]
+            .into_iter()
+            .map(|model| VoteCandidate {
+                model: model.into(),
+                weight: 1.0,
+            })
+            .collect();
+        let consensus = parallel_vote(candidates, |model| async move {
+            if model == "model-a" {
+                Ok("approved")
+            } else if model == "model-d" {
+                std::future::pending::<Result<&'static str, String>>().await
+            } else {
+                Err("provider unavailable".into())
+            }
+        })
+        .await
+        .unwrap();
+
+        assert!(consensus.decision.is_none());
+        assert!(consensus.requires_human_review);
+        assert!(consensus.stopped_early);
+        assert!(!consensus.early_majority);
+        assert_eq!(
+            consensus.stop_reason.as_deref(),
+            Some("strict_majority_unreachable")
+        );
+        assert!(consensus.outcomes.iter().any(|outcome| {
+            outcome.model == "model-d"
+                && outcome
+                    .result
+                    .as_ref()
+                    .err()
+                    .is_some_and(|error| error.contains("调用已取消"))
+        }));
+    }
+
+    #[tokio::test]
     async fn tie_or_insufficient_successes_requires_review() {
         let tied = parallel_vote(models(), |model| async move { Ok::<_, String>(model) })
             .await
@@ -1220,6 +1656,20 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn non_finite_total_weight_is_rejected_before_starting_models() {
+        let candidates = ["model-a", "model-b"]
+            .into_iter()
+            .map(|model| VoteCandidate {
+                model: model.into(),
+                weight: f64::MAX,
+            })
+            .collect();
+        let result = parallel_vote(candidates, |model| async move { Ok::<_, String>(model) }).await;
+
+        assert!(result.unwrap_err().to_string().contains("总权重超出"));
+    }
+
+    #[tokio::test]
     async fn equivalent_json_objects_reach_consensus_regardless_of_field_order() {
         let consensus = parallel_vote(models(), |model| async move {
             let json = if model == "model-a" {
@@ -1235,5 +1685,36 @@ mod tests {
         assert!(consensus.decision.is_some());
         assert_eq!(consensus.confidence, 1.0);
         assert!(!consensus.requires_human_review);
+    }
+
+    #[tokio::test]
+    async fn outcomes_keep_candidate_order_when_models_finish_out_of_order() {
+        let candidates = [" model-a ", "model-b", "model-c"]
+            .into_iter()
+            .map(|model| VoteCandidate {
+                model: model.into(),
+                weight: 1.0,
+            })
+            .collect();
+        let consensus = parallel_vote(candidates, |model| async move {
+            let delay = match model.as_str() {
+                "model-a" => 15,
+                "model-b" => 5,
+                _ => 1,
+            };
+            tokio::time::sleep(Duration::from_millis(delay)).await;
+            Ok::<_, String>(model)
+        })
+        .await
+        .unwrap();
+
+        assert_eq!(
+            consensus
+                .outcomes
+                .iter()
+                .map(|outcome| outcome.model.as_str())
+                .collect::<Vec<_>>(),
+            ["model-a", "model-b", "model-c"]
+        );
     }
 }

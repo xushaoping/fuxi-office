@@ -98,7 +98,7 @@ pub fn Header(
                     disabled=move || xml.get().is_none() || validation_running.get()
                 >
                     <WorkbenchIcon name="validation" />
-                    {move || if validation_running.get() { "核验中..." } else { "人工核验" }}
+                    {move || if validation_running.get() { "规则验证中..." } else { "人工验证规则" }}
                 </button>
                 <details class="user-menu">
                     <summary

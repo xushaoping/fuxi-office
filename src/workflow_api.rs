@@ -24,7 +24,7 @@ use tokio_stream::{StreamExt as _, wrappers::ReceiverStream};
 
 use crate::agent_runtime::ExperimentAssignment;
 use crate::agent_runtime::orchestration::{
-    AgentEvent, AgentStatus, AgentTool, Consensus, PipelineStage, VoteCandidate, parallel_vote,
+    AgentEvent, AgentStatus, AgentTool, Consensus, PipelineStage, VoteCandidate, parallel_vote_by,
     run_pipeline, run_pipeline_stream,
 };
 use crate::api::{LlmState, LlmTask};
@@ -38,9 +38,10 @@ use crate::requirement_complexity::{RequirementComplexity, classify_requirement_
 use crate::types::{AppState, Claims};
 use crate::workflow::{
     AnalyzeRequirementRequest, Clarification, ClarificationAnswer, ConfirmDecisionPlanRequest,
-    ContinueClarificationRequest, CreateDecisionPlanRequest, DecisionBrief, DecisionPlan,
-    DecisionWorkflowState, DetectedBusinessPattern, OrchestrateDecisionWorkflowRequest,
-    RequirementAnalysis, RequirementItem, SemanticTestProposal, TesterReport,
+    ConfirmRequirementReviewRequest, ContinueClarificationRequest, CreateDecisionPlanRequest,
+    DecisionBrief, DecisionField, DecisionPlan, DecisionWorkflowState, DetectedBusinessPattern,
+    OrchestrateDecisionWorkflowRequest, PendingRequirementReview, RequirementAnalysis,
+    RequirementItem, RequirementReviewCandidate, SemanticTestProposal, TesterReport,
 };
 use anyhow::anyhow;
 
@@ -416,6 +417,28 @@ fn next_clarification_round(
         }
     }
     next
+}
+
+fn facilitator_review_update(
+    existing: &[Clarification],
+    proposed: Vec<Clarification>,
+    answers: Vec<ClarificationAnswer>,
+) -> (&'static str, Vec<Clarification>, Vec<ClarificationAnswer>) {
+    let round = existing
+        .iter()
+        .map(|item| item.round)
+        .max()
+        .unwrap_or(1)
+        .saturating_add(1);
+    let next = next_clarification_round(proposed, existing, round);
+    let status = if next.is_empty() {
+        "analyzed"
+    } else {
+        "clarification"
+    };
+    let mut clarifications = existing.to_vec();
+    clarifications.extend(next);
+    (status, clarifications, answers)
 }
 
 fn merge_clarification_answers(
@@ -1628,6 +1651,7 @@ pub(crate) fn is_retryable_agent_failure(message: &str) -> bool {
         return false;
     }
     [
+        "未返回有效需求分析候选",
         "http 429",
         "http 500",
         "http 502",
@@ -1886,6 +1910,9 @@ pub(crate) async fn record_model_vote<T: Serialize>(
     .bind(json!({
         "confidence": consensus.confidence,
         "requiresHumanReview": consensus.requires_human_review,
+        "earlyMajority": consensus.early_majority,
+        "stoppedEarly": consensus.stopped_early,
+        "stopReason": consensus.stop_reason,
     }))
     .bind(json!({"outcomes": consensus.outcomes}))
     .bind(serde_json::to_value(&consensus.decision).unwrap_or(Value::Null))
@@ -2059,28 +2086,61 @@ async fn analyze_requirement_with_consensus(
     let requirement = requirement.to_string();
     let knowledge_text = enriched_knowledge;
     let model_context = model_context.map(str::to_string);
-    let voting = parallel_vote(candidates, move |model| {
-        let agent = model_agents
-            .iter()
-            .find(|agent| agent.model() == model)
-            .cloned();
-        let requirement = requirement.clone();
-        let knowledge_text = knowledge_text.clone();
-        let model_context = model_context.clone();
-        async move {
-            let Some(agent) = agent else {
-                return Err(format!("并行模型不存在：{model}"));
-            };
-            agent
-                .analyze_requirement(
-                    &requirement,
-                    Some(&knowledge_text),
-                    model_context.as_deref(),
-                )
-                .await
-                .map_err(|error| error.to_string())
-        }
-    });
+    let progress_tx = tx.cloned();
+    let consensus_key: fn(&RequirementAnalysis) -> anyhow::Result<String> =
+        if agent_role == "facilitator" {
+            facilitator_consensus_key
+        } else {
+            requirement_analysis_consensus_key
+        };
+    let voting = parallel_vote_by(
+        candidates,
+        move |model| {
+            let agent = model_agents
+                .iter()
+                .find(|agent| agent.model() == model)
+                .cloned();
+            let requirement = requirement.clone();
+            let knowledge_text = knowledge_text.clone();
+            let model_context = model_context.clone();
+            let progress_tx = progress_tx.clone();
+            async move {
+                if let Some(tx) = &progress_tx {
+                    let _ = tx
+                        .send(StreamEvent::Step(format!("模型 {model} 开始需求分析")))
+                        .await;
+                }
+                let result = match agent {
+                    Some(agent) => agent
+                        .analyze_requirement(
+                            &requirement,
+                            Some(&knowledge_text),
+                            model_context.as_deref(),
+                        )
+                        .await
+                        .map_err(|error| error.to_string())
+                        .and_then(|analysis| {
+                            validate_analysis(&analysis)
+                                .map(|()| analysis)
+                                .map_err(|error| error.message)
+                        }),
+                    None => Err(format!("并行模型不存在：{model}")),
+                };
+                if let Some(tx) = progress_tx {
+                    let status = if result.is_ok() {
+                        "完成需求分析"
+                    } else {
+                        "需求分析失败"
+                    };
+                    let _ = tx
+                        .send(StreamEvent::Step(format!("模型 {model} {status}")))
+                        .await;
+                }
+                result
+            }
+        },
+        consensus_key,
+    );
     let consensus = run_until_stream_disconnect(
         tx,
         wait_for_orchestration_cancellation(&state.db, orchestration_id),
@@ -2089,10 +2149,397 @@ async fn analyze_requirement_with_consensus(
     .await?;
 
     record_model_vote(&state.db, run_id, "analyze", &consensus).await?;
-    let analysis = consensus
-        .decision
-        .ok_or_else(|| anyhow!("高风险需求分析的模型结果未达成多数共识，已标记为需人工复核"))?;
-    postprocess_requirement_analysis(analysis, detected_patterns, tx).await
+    if consensus
+        .outcomes
+        .iter()
+        .all(|outcome| outcome.result.is_err())
+    {
+        return Err(anyhow!(
+            "多模型均未返回有效需求分析候选，请检查模型配置后重试"
+        ));
+    }
+    let strict_majority = consensus.decision.is_some();
+    let mut analysis = match consensus.decision {
+        Some(analysis) => analysis,
+        None => plurality_requirement_analysis(&consensus.outcomes, consensus_key)?
+            .ok_or_else(|| anyhow!("多模型均未返回有效需求分析候选，请检查模型配置后重试"))?,
+    };
+    if !strict_majority && let Some(tx) = tx {
+        let _ = tx
+            .send(StreamEvent::Step(
+                "模型结果未形成严格多数，已按票数选择代表候选（平票按配置顺序），并将分歧转为业务澄清项".into(),
+            ))
+            .await;
+    }
+    if agent_role == "facilitator" {
+        merge_facilitator_clarifications(&mut analysis, &consensus.outcomes);
+    } else {
+        add_consensus_divergence_clarifications(&mut analysis, &consensus.outcomes);
+    }
+    let valid_models = consensus
+        .outcomes
+        .iter()
+        .filter(|outcome| outcome.result.is_ok())
+        .count();
+    if !strict_majority && valid_models == 1 {
+        add_single_model_confirmation(&mut analysis, agent_role == "facilitator");
+    }
+    let analysis = postprocess_requirement_analysis(analysis, detected_patterns, tx).await?;
+    if !strict_majority {
+        sqlx::query(
+            r#"UPDATE agent_model_votes
+               SET divergence_detail = divergence_detail || jsonb_build_object(
+                       'resolution', jsonb_build_object(
+                           'strategy', $1::TEXT, 'requiresBusinessConfirmation', TRUE
+                       )
+                   )
+               WHERE run_id = $2 AND task_type = 'analyze'"#,
+        )
+        .bind(if agent_role == "facilitator" {
+            "plurality_with_merged_clarifications"
+        } else {
+            "plurality_with_required_business_clarifications"
+        })
+        .bind(run_id)
+        .execute(&state.db)
+        .await?;
+    }
+    Ok(analysis)
+}
+
+fn plurality_requirement_analysis(
+    outcomes: &[crate::agent_runtime::orchestration::VoteOutcome],
+    key: fn(&RequirementAnalysis) -> anyhow::Result<String>,
+) -> anyhow::Result<Option<RequirementAnalysis>> {
+    let mut groups = HashMap::<String, (f64, usize, RequirementAnalysis)>::new();
+    for (index, outcome) in outcomes.iter().enumerate() {
+        let Ok(value) = &outcome.result else {
+            continue;
+        };
+        let Ok(analysis) = serde_json::from_value::<RequirementAnalysis>(value.clone()) else {
+            continue;
+        };
+        validate_analysis(&analysis).map_err(|error| anyhow!(error.message))?;
+        let group_key = key(&analysis)?;
+        let group = groups
+            .entry(group_key)
+            .or_insert_with(|| (0.0, index, analysis.clone()));
+        group.0 += outcome.weight;
+    }
+    Ok(groups
+        .into_values()
+        .max_by(|left, right| {
+            left.0
+                .total_cmp(&right.0)
+                .then_with(|| right.1.cmp(&left.1))
+        })
+        .map(|(_, _, analysis)| analysis))
+}
+
+fn add_single_model_confirmation(analysis: &mut RequirementAnalysis, facilitator: bool) {
+    let question = if facilitator {
+        "本轮只有一个模型返回有效澄清结果。请确认是否还需补充业务问题；如无需补充，请回答“无”。"
+    } else {
+        "本轮只有一个模型返回有效需求分析，尚未形成交叉验证。请确认当前需求摘要是否准确；如需修正，请说明差异。"
+    };
+    let mut digest = Sha256::new();
+    digest.update(question.as_bytes());
+    let id = format!("consensus-{}", &format!("{:x}", digest.finalize())[..12]);
+    if analysis.clarifications.iter().any(|item| item.id == id) {
+        return;
+    }
+    analysis.clarifications.insert(
+        0,
+        Clarification {
+            id,
+            question: question.into(),
+            required: true,
+            reason: "仅有一个有效模型结果，需要业务人员确认".into(),
+            ..Default::default()
+        },
+    );
+}
+
+fn merge_facilitator_clarifications(
+    analysis: &mut RequirementAnalysis,
+    outcomes: &[crate::agent_runtime::orchestration::VoteOutcome],
+) {
+    let mut by_question = HashMap::<String, usize>::new();
+    let mut merged = Vec::<Clarification>::new();
+    for item in analysis.clarifications.drain(..) {
+        let key = normalize_clarification_question(&item.question);
+        if key.is_empty() {
+            continue;
+        }
+        by_question.insert(key, merged.len());
+        merged.push(item);
+    }
+    for outcome in outcomes {
+        let Ok(value) = &outcome.result else {
+            continue;
+        };
+        let Ok(candidate) = serde_json::from_value::<RequirementAnalysis>(value.clone()) else {
+            continue;
+        };
+        for item in candidate.clarifications {
+            let key = normalize_clarification_question(&item.question);
+            if key.is_empty() {
+                continue;
+            }
+            if let Some(index) = by_question.get(&key).copied() {
+                let current = &mut merged[index];
+                let mut options = current.options.iter().cloned().collect::<HashSet<_>>();
+                current.options.extend(
+                    item.options
+                        .into_iter()
+                        .filter(|option| options.insert(option.clone())),
+                );
+                current.required |= item.required;
+                if current.reason.trim().is_empty() {
+                    current.reason = item.reason;
+                }
+            } else {
+                by_question.insert(key, merged.len());
+                merged.push(item);
+            }
+        }
+    }
+    analysis.clarifications = merged;
+}
+
+fn requirement_analysis_consensus_key(analysis: &RequirementAnalysis) -> anyhow::Result<String> {
+    fn normalized(value: &str) -> String {
+        value
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+            .to_lowercase()
+    }
+
+    fn fields(fields: &[DecisionField]) -> Vec<Value> {
+        let mut fields = fields
+            .iter()
+            .map(|field| {
+                json!({
+                    "name": normalized(&field.name),
+                    "type": normalized(&field.type_ref),
+                    "unit": normalized(&field.unit),
+                    "required": field.required,
+                })
+            })
+            .collect::<Vec<_>>();
+        fields.sort_by_key(Value::to_string);
+        fields
+    }
+
+    Ok(serde_json::to_string(&json!({
+        "name": normalized(&analysis.brief.name),
+        "riskLevel": normalized(&analysis.brief.risk_level),
+        "inputs": fields(&analysis.brief.inputs),
+        "outputs": fields(&analysis.brief.outputs),
+    }))?)
+}
+
+fn facilitator_consensus_key(analysis: &RequirementAnalysis) -> anyhow::Result<String> {
+    let mut clarifications = analysis
+        .clarifications
+        .iter()
+        .map(|item| {
+            let mut options = item
+                .options
+                .iter()
+                .map(|value| normalize_clarification_question(value))
+                .collect::<Vec<_>>();
+            options.sort();
+            options.dedup();
+            json!({
+                "question": normalize_clarification_question(&item.question),
+                "options": options,
+                "required": item.required,
+            })
+        })
+        .collect::<Vec<_>>();
+    clarifications.sort_by_key(Value::to_string);
+    Ok(serde_json::to_string(&clarifications)?)
+}
+
+fn add_consensus_divergence_clarifications(
+    analysis: &mut RequirementAnalysis,
+    outcomes: &[crate::agent_runtime::orchestration::VoteOutcome],
+) {
+    fn normalized(value: &str) -> String {
+        value
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+            .to_lowercase()
+    }
+
+    let candidates = outcomes
+        .iter()
+        .filter_map(|outcome| {
+            let value = outcome.result.as_ref().ok()?;
+            serde_json::from_value::<RequirementAnalysis>(value.clone())
+                .ok()
+                .map(|candidate| (outcome.model.as_str(), candidate))
+        })
+        .collect::<Vec<_>>();
+    if candidates.len() < 2 {
+        return;
+    }
+
+    let mut questions = Vec::new();
+    let unique_values = |values: Vec<String>| {
+        let mut seen = HashSet::new();
+        values
+            .into_iter()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty() && seen.insert(value.to_lowercase()))
+            .collect::<Vec<_>>()
+    };
+
+    let risks = unique_values(
+        candidates
+            .iter()
+            .map(|(_, candidate)| candidate.brief.risk_level.clone())
+            .collect(),
+    );
+    if risks.len() > 1 {
+        let risk_rank = |risk: &str| match risk.to_lowercase().as_str() {
+            "high" => 3,
+            "medium" => 2,
+            _ => 1,
+        };
+        if let Some(highest) = risks.iter().max_by_key(|risk| risk_rank(risk)) {
+            analysis.brief.risk_level = highest.to_lowercase();
+        }
+        questions.push((
+            "请确认该决策的风险等级。模型对风险判断不一致；在确认前按较高风险等级处理。"
+                .to_string(),
+            risks,
+        ));
+    }
+
+    let goals = unique_values(
+        candidates
+            .iter()
+            .map(|(_, candidate)| candidate.brief.goal.clone())
+            .collect(),
+    );
+    if goals.len() > 1 {
+        questions.push(("请确认本决策需要实现的业务目标。".to_string(), goals));
+    }
+
+    let names = unique_values(
+        candidates
+            .iter()
+            .map(|(_, candidate)| candidate.brief.name.clone())
+            .collect(),
+    );
+    let mut business_differences = if names.len() > 1 {
+        names
+            .into_iter()
+            .map(|name| format!("决策名称：{name}"))
+            .collect::<Vec<_>>()
+    } else {
+        Vec::new()
+    };
+
+    let render_fields = |fields: &[DecisionField]| {
+        let mut fields = fields
+            .iter()
+            .map(|field| {
+                format!(
+                    "{}:{}{}{}",
+                    normalized(&field.name),
+                    normalized(&field.type_ref),
+                    if field.unit.trim().is_empty() {
+                        String::new()
+                    } else {
+                        format!(" [{}]", normalized(&field.unit))
+                    },
+                    if field.required { "（必填）" } else { "" }
+                )
+            })
+            .collect::<Vec<_>>();
+        fields.sort();
+        fields.join("、")
+    };
+    let selected_schema = format!(
+        "输入：{}；输出：{}",
+        render_fields(&analysis.brief.inputs),
+        render_fields(&analysis.brief.outputs)
+    );
+    let field_differences = unique_values(
+        candidates
+            .iter()
+            .map(|(model, candidate)| {
+                let schema = format!(
+                    "输入：{}；输出：{}",
+                    render_fields(&candidate.brief.inputs),
+                    render_fields(&candidate.brief.outputs)
+                );
+                if schema == selected_schema {
+                    String::new()
+                } else {
+                    format!("{model}：{schema}")
+                }
+            })
+            .collect(),
+    );
+    business_differences.extend(field_differences);
+
+    let constraint_sets = candidates
+        .iter()
+        .map(|(_, candidate)| {
+            let mut constraints = candidate
+                .brief
+                .constraints
+                .iter()
+                .map(|constraint| normalized(constraint))
+                .collect::<Vec<_>>();
+            constraints.sort();
+            constraints.join("\0")
+        })
+        .collect::<HashSet<_>>();
+    if constraint_sets.len() > 1 {
+        business_differences.extend(candidates.iter().flat_map(|(_, candidate)| {
+            candidate
+                .brief
+                .constraints
+                .iter()
+                .map(|constraint| format!("业务约束：{}", constraint))
+                .collect::<Vec<_>>()
+        }));
+        business_differences = unique_values(business_differences);
+    }
+    if !business_differences.is_empty() {
+        questions.push((
+            "模型对输入输出字段或业务规则存在分歧，请逐项确认适用内容。".to_string(),
+            business_differences,
+        ));
+    }
+
+    for (question, options) in questions {
+        let key = format!("{}:{}", question, options.join("|"));
+        let mut digest = Sha256::new();
+        digest.update(key.as_bytes());
+        let id = format!("consensus-{}", &format!("{:x}", digest.finalize())[..12]);
+        if analysis.clarifications.iter().any(|item| item.id == id) {
+            continue;
+        }
+        analysis.clarifications.insert(
+            0,
+            Clarification {
+                id,
+                question,
+                options,
+                required: true,
+                reason: "多模型共识外的差异需要业务确认".into(),
+                round: 1,
+            },
+        );
+    }
 }
 
 async fn postprocess_requirement_analysis(
@@ -2424,6 +2871,408 @@ pub(crate) async fn simple_direct_generation_prompt(
     Ok((prompt, parent_orchestration_id, plan))
 }
 
+async fn load_pending_requirement_review(
+    state: &AppState,
+    project_id: i64,
+) -> Result<Option<PendingRequirementReview>, WorkflowApiError> {
+    let row = sqlx::query_as::<_, (i64, Value, Value)>(
+        r#"SELECT run.id, run.input_json, vote.divergence_detail
+           FROM agent_model_votes vote
+           JOIN agent_runs run ON run.id = vote.run_id
+           WHERE run.project_id = $1
+             AND run.stage = 'requirement_analysis'
+             AND run.status IN ('failed', 'running')
+             AND vote.task_type = 'analyze'
+             AND (vote.final_decision IS NULL OR vote.final_decision = 'null'::JSONB)
+             AND vote.consensus_result->>'requiresHumanReview' = 'true'
+           ORDER BY run.started_at DESC
+           LIMIT 1"#,
+    )
+    .bind(project_id)
+    .fetch_optional(&state.db)
+    .await
+    .map_err(|error| WorkflowApiError::database("读取待人工复核的需求分析", error))?;
+    let Some((run_id, input, divergence)) = row else {
+        return Ok(None);
+    };
+    let requirement_text = input
+        .get("requirement")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    let candidates = requirement_review_candidates(&divergence);
+    if candidates.is_empty() {
+        return Ok(None);
+    }
+    let purpose = if input
+        .get("facilitatorRound")
+        .and_then(Value::as_u64)
+        .is_some_and(|round| round > 1)
+    {
+        "facilitator"
+    } else {
+        "analysis"
+    };
+    Ok(Some(PendingRequirementReview {
+        run_id,
+        purpose: purpose.into(),
+        requirement_text,
+        candidates,
+    }))
+}
+
+fn requirement_review_candidates(divergence: &Value) -> Vec<RequirementReviewCandidate> {
+    let mut seen = HashSet::new();
+    divergence
+        .get("outcomes")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|outcome| {
+            let model = outcome.get("model")?.as_str()?.to_string();
+            let result = outcome.get("result")?;
+            let analysis_value = result
+                .get("Ok")
+                .or_else(|| result.get("ok"))
+                .or_else(|| result.get("success"))
+                .or_else(|| result.get("analysis"))
+                .unwrap_or(result);
+            let analysis =
+                serde_json::from_value::<RequirementAnalysis>(analysis_value.clone()).ok()?;
+            validate_analysis(&analysis).ok()?;
+            if !seen.insert(model.clone()) {
+                return None;
+            }
+            Some(RequirementReviewCandidate { model, analysis })
+        })
+        .collect()
+}
+
+fn requirement_review_baseline_is_current(
+    baseline_recorded: bool,
+    run_baseline: Option<i64>,
+    current_baseline: Option<i64>,
+    run_started_at: DateTime<Utc>,
+    project_updated_at: DateTime<Utc>,
+    current_version_created_at: Option<DateTime<Utc>>,
+) -> bool {
+    if baseline_recorded {
+        return run_baseline == current_baseline;
+    }
+
+    if project_updated_at > run_started_at {
+        return false;
+    }
+    match current_version_created_at {
+        Some(created_at) => created_at <= run_started_at,
+        None => current_baseline.is_none(),
+    }
+}
+
+async fn pending_requirement_review(
+    State(state): State<AppState>,
+    Extension(claims): Extension<Claims>,
+    Path(project_id): Path<i64>,
+) -> Result<Json<Option<PendingRequirementReview>>, WorkflowApiError> {
+    ensure_model_permission(&state, project_id, &claims.sub).await?;
+    Ok(Json(
+        load_pending_requirement_review(&state, project_id).await?,
+    ))
+}
+
+async fn confirm_requirement_review(
+    State(state): State<AppState>,
+    Extension(claims): Extension<Claims>,
+    Path(project_id): Path<i64>,
+    Json(payload): Json<ConfirmRequirementReviewRequest>,
+) -> Result<Json<DecisionWorkflowState>, WorkflowApiError> {
+    ensure_model_permission(&state, project_id, &claims.sub).await?;
+    let pending = load_pending_requirement_review(&state, project_id)
+        .await?
+        .filter(|pending| pending.run_id == payload.run_id)
+        .ok_or_else(|| WorkflowApiError::conflict("待复核分析已变化，请刷新后重新分析"))?;
+    let candidate = pending
+        .candidates
+        .iter()
+        .find(|candidate| candidate.model == payload.model)
+        .ok_or_else(|| WorkflowApiError::bad_request("所选模型结果不在待复核候选中"))?;
+    validate_analysis(&candidate.analysis)?;
+
+    let previous = load_workflow(&state, project_id, &claims.sub).await?;
+    let (base_revision, _) = model_baseline(&state, project_id).await?;
+    let baseline_row = sqlx::query_as::<
+        _,
+        (
+            Value,
+            bool,
+            Option<i64>,
+            DateTime<Utc>,
+            DateTime<Utc>,
+            Option<DateTime<Utc>>,
+        ),
+    >(
+        r#"SELECT run.input_json,
+                  run.input_json ? 'baseRevision',
+                  NULLIF(run.input_json->>'baseRevision', '')::BIGINT,
+                  run.started_at, project.updated_at, version.created_at
+           FROM agent_runs run
+           JOIN decision_projects project ON project.id = run.project_id
+           LEFT JOIN decision_versions version
+             ON version.id = project.current_draft_version_id
+           WHERE run.id = $1 AND run.project_id = $2"#,
+    )
+    .bind(payload.run_id)
+    .bind(project_id)
+    .fetch_optional(&state.db)
+    .await
+    .map_err(|error| WorkflowApiError::database("读取需求分析基线", error))?
+    .ok_or_else(WorkflowApiError::not_found)?;
+    let run_input = &baseline_row.0;
+    if !requirement_review_baseline_is_current(
+        baseline_row.1,
+        baseline_row.2,
+        base_revision,
+        baseline_row.3,
+        baseline_row.4,
+        baseline_row.5,
+    ) {
+        return Err(WorkflowApiError::conflict(
+            "模型基线已变化，该候选不再适用于当前项目，请重新分析需求",
+        ));
+    }
+    let orchestration_id = sqlx::query_scalar::<_, Option<i64>>(
+        "SELECT orchestration_id FROM agent_runs WHERE id = $1 AND project_id = $2",
+    )
+    .bind(payload.run_id)
+    .bind(project_id)
+    .fetch_optional(&state.db)
+    .await
+    .map_err(|error| WorkflowApiError::database("读取需求分析编排记录", error))?
+    .flatten()
+    .ok_or_else(WorkflowApiError::not_found)?;
+    if run_input
+        .get("facilitatorRound")
+        .and_then(Value::as_u64)
+        .is_some_and(|round| round > 1)
+    {
+        let previous = previous
+            .ok_or_else(|| WorkflowApiError::conflict("原澄清工作流已不存在，请重新分析需求"))?;
+        return Ok(Json(
+            confirm_facilitator_requirement_review(
+                &state,
+                project_id,
+                &claims.sub,
+                payload.run_id,
+                orchestration_id,
+                base_revision,
+                run_input,
+                &previous,
+                candidate,
+            )
+            .await?,
+        ));
+    }
+    let detector = load_pattern_detector(&state.db).await;
+    let detected_patterns = detector.detect_patterns(&pending.requirement_text);
+    let analysis =
+        postprocess_requirement_analysis(candidate.analysis.clone(), detected_patterns, None)
+            .await
+            .map_err(|error| WorkflowApiError::bad_request(format!("复核候选处理失败：{error}")))?;
+    let workflow = save_requirement_analysis(
+        &state,
+        project_id,
+        &claims.sub,
+        &pending.requirement_text,
+        &analysis,
+        orchestration_id,
+        base_revision,
+        previous.as_ref(),
+    )
+    .await?;
+    let updated = sqlx::query(
+        r#"UPDATE agent_model_votes
+           SET final_decision = $1,
+               divergence_detail = divergence_detail || jsonb_build_object(
+                   'humanReview', jsonb_build_object(
+                       'reviewer', $2::TEXT, 'selectedModel', $3::TEXT, 'reviewedAt', NOW()
+                   )
+               )
+           WHERE run_id = $4 AND task_type = 'analyze'
+             AND (final_decision IS NULL OR final_decision = 'null'::JSONB)"#,
+    )
+    .bind(serde_json::to_value(&analysis).unwrap_or(Value::Null))
+    .bind(&claims.sub)
+    .bind(&payload.model)
+    .bind(payload.run_id)
+    .execute(&state.db)
+    .await
+    .map_err(|error| WorkflowApiError::database("记录需求分析人工复核", error))?;
+    if updated.rows_affected() == 0 {
+        return Err(WorkflowApiError::conflict("该分析已完成复核，请刷新页面"));
+    }
+    sqlx::query(
+        "UPDATE agent_runs SET status = 'succeeded', output_json = $1, error_json = NULL, finished_at = NOW() WHERE id = $2 AND project_id = $3 AND status = 'failed'",
+    )
+    .bind(serde_json::to_value(&analysis).unwrap_or(Value::Null))
+    .bind(payload.run_id)
+    .bind(project_id)
+    .execute(&state.db)
+    .await
+    .map_err(|error| WorkflowApiError::database("更新人工复核运行状态", error))?;
+    sqlx::query(
+        r#"UPDATE agent_steps
+           SET status = 'succeeded', error_json = NULL, finished_at = NOW()
+           WHERE agent_run_id = $1 AND status = 'failed'"#,
+    )
+    .bind(payload.run_id)
+    .execute(&state.db)
+    .await
+    .map_err(|error| WorkflowApiError::database("更新人工复核步骤状态", error))?;
+    sqlx::query(
+        "UPDATE agent_orchestrations SET status = 'succeeded', current_stage = 'requirement_analysis', finished_at = NOW() WHERE id = $1 AND status = 'failed'",
+    )
+    .bind(orchestration_id)
+    .execute(&state.db)
+    .await
+    .map_err(|error| WorkflowApiError::database("更新人工复核编排状态", error))?;
+    Ok(Json(workflow))
+}
+
+async fn confirm_facilitator_requirement_review(
+    state: &AppState,
+    project_id: i64,
+    username: &str,
+    run_id: i64,
+    orchestration_id: i64,
+    base_revision: Option<i64>,
+    run_input: &Value,
+    previous: &DecisionWorkflowState,
+    candidate: &RequirementReviewCandidate,
+) -> Result<DecisionWorkflowState, WorkflowApiError> {
+    if previous.status != "clarification" || previous.base_revision != base_revision {
+        return Err(WorkflowApiError::conflict(
+            "澄清状态或模型基线已变化，请刷新后重新处理",
+        ));
+    }
+    let answers = run_input
+        .get("answeredClarifications")
+        .cloned()
+        .and_then(|value| serde_json::from_value::<Vec<ClarificationAnswer>>(value).ok())
+        .unwrap_or_else(|| previous.answers.clone());
+    validate_answers(&previous.clarifications, &answers)?;
+    let (status, clarifications, answers) = facilitator_review_update(
+        &previous.clarifications,
+        candidate.analysis.clarifications.clone(),
+        answers,
+    );
+    let detector = load_pattern_detector(&state.db).await;
+    let detected = detector.detect_patterns(&previous.requirement_text);
+    let analysis = postprocess_requirement_analysis(candidate.analysis.clone(), detected, None)
+        .await
+        .map_err(|error| WorkflowApiError::bad_request(format!("复核候选处理失败：{error}")))?;
+
+    let mut transaction = state
+        .db
+        .begin()
+        .await
+        .map_err(|error| WorkflowApiError::database("开始提交澄清主持人工复核", error))?;
+    let workflow_update = sqlx::query(
+        r#"UPDATE decision_workflows
+           SET status = $1, clarifications_json = $2, answers_json = $3,
+               decision_plan_json = NULL, tester_report_json = NULL,
+               plan_orchestration_id = NULL, confirmed_at = NULL, updated_at = NOW()
+           WHERE project_id = $4 AND updated_at = $5 AND status = 'clarification'
+             AND base_revision IS NOT DISTINCT FROM $6
+             AND EXISTS (SELECT 1 FROM decision_projects project WHERE project.id = $4
+                 AND project.current_draft_version_id IS NOT DISTINCT FROM $6)"#,
+    )
+    .bind(status)
+    .bind(serde_json::to_value(&clarifications).unwrap_or(Value::Array(vec![])))
+    .bind(serde_json::to_value(&answers).unwrap_or(Value::Array(vec![])))
+    .bind(project_id)
+    .bind(previous.updated_at)
+    .bind(base_revision)
+    .execute(&mut *transaction)
+    .await
+    .map_err(|error| WorkflowApiError::database("保存澄清主持人工复核结果", error))?;
+    if workflow_update.rows_affected() == 0 {
+        return Err(WorkflowApiError::conflict(
+            "需求或模型基线已变化，本轮澄清未保存",
+        ));
+    }
+
+    let final_decision = serde_json::to_value(&analysis).unwrap_or(Value::Null);
+    let vote_update = sqlx::query(
+        r#"UPDATE agent_model_votes
+           SET final_decision = $1,
+               divergence_detail = divergence_detail || jsonb_build_object(
+                   'humanReview', jsonb_build_object(
+                       'reviewer', $2::TEXT, 'selectedModel', $3::TEXT,
+                       'reviewedAt', NOW(), 'taskKind', 'clarification_facilitation'
+                   )
+               )
+           WHERE run_id = $4 AND task_type = 'analyze'
+             AND (final_decision IS NULL OR final_decision = 'null'::JSONB)"#,
+    )
+    .bind(&final_decision)
+    .bind(username)
+    .bind(&candidate.model)
+    .bind(run_id)
+    .execute(&mut *transaction)
+    .await
+    .map_err(|error| WorkflowApiError::database("记录澄清主持人工复核", error))?;
+    if vote_update.rows_affected() == 0 {
+        return Err(WorkflowApiError::conflict("该澄清主持结果已完成复核"));
+    }
+    let run_update = sqlx::query(
+        r#"UPDATE agent_runs
+           SET status = 'succeeded', output_json = $1, error_json = NULL, finished_at = NOW()
+           WHERE id = $2 AND project_id = $3 AND status IN ('failed', 'running')"#,
+    )
+    .bind(final_decision)
+    .bind(run_id)
+    .bind(project_id)
+    .execute(&mut *transaction)
+    .await
+    .map_err(|error| WorkflowApiError::database("更新澄清主持运行状态", error))?;
+    if run_update.rows_affected() == 0 {
+        return Err(WorkflowApiError::conflict(
+            "澄清主持运行状态已变化，请刷新后重试",
+        ));
+    }
+    sqlx::query(
+        r#"UPDATE agent_steps
+           SET status = 'succeeded', error_json = NULL, finished_at = NOW()
+           WHERE agent_run_id = $1 AND status IN ('pending', 'running', 'failed')"#,
+    )
+    .bind(run_id)
+    .execute(&mut *transaction)
+    .await
+    .map_err(|error| WorkflowApiError::database("更新澄清主持步骤状态", error))?;
+    let orchestration_update = sqlx::query(
+        r#"UPDATE agent_orchestrations
+           SET status = 'succeeded', current_stage = 'facilitator', finished_at = NOW()
+           WHERE id = $1 AND status IN ('failed', 'running')"#,
+    )
+    .bind(orchestration_id)
+    .execute(&mut *transaction)
+    .await
+    .map_err(|error| WorkflowApiError::database("更新澄清主持编排状态", error))?;
+    if orchestration_update.rows_affected() == 0 {
+        return Err(WorkflowApiError::conflict(
+            "澄清主持编排状态已变化，请刷新后重试",
+        ));
+    }
+    transaction
+        .commit()
+        .await
+        .map_err(|error| WorkflowApiError::database("提交澄清主持人工复核", error))?;
+
+    load_workflow(state, project_id, username)
+        .await?
+        .ok_or_else(WorkflowApiError::not_found)
+}
+
 async fn analyze_requirement(
     State(state): State<AppState>,
     Extension(llm_state): Extension<Arc<LlmState>>,
@@ -2477,6 +3326,7 @@ async fn analyze_requirement(
         json!({
             "requirement": requirement,
             "complexity": complexity.as_str(),
+            "baseRevision": base_revision,
             "knowledgeCitations": knowledge_citations,
         }),
     )
@@ -2601,6 +3451,7 @@ async fn analyze_requirement_stream(
         json!({
             "requirement": requirement,
             "complexity": complexity.as_str(),
+            "baseRevision": base_revision,
             "knowledgeCitations": citations(&knowledge_sources),
         }),
     )
@@ -2873,6 +3724,7 @@ async fn continue_clarifications(
         payload.retry_of_orchestration_id,
         json!({
             "requirement": workflow.requirement_text,
+            "baseRevision": workflow.base_revision,
             "facilitatorRound": current_round.saturating_add(1),
             "answeredClarifications": answers,
             "previousClarifications": workflow.clarifications,
@@ -4018,6 +4870,14 @@ pub fn routes(llm_state: Arc<LlmState>) -> Router<AppState> {
             post(analyze_requirement),
         )
         .route(
+            "/projects/{project_id}/workflow/pending-review",
+            get(pending_requirement_review),
+        )
+        .route(
+            "/projects/{project_id}/workflow/review",
+            post(confirm_requirement_review),
+        )
+        .route(
             "/projects/{project_id}/workflow/clarify",
             post(continue_clarifications),
         )
@@ -4036,6 +4896,395 @@ pub fn routes(llm_state: Arc<LlmState>) -> Router<AppState> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pending_requirement_review_reads_successful_vote_outcomes() {
+        let divergence = json!({
+            "outcomes": [
+                {
+                    "model": "model-a",
+                    "result": {"Ok": {"brief": {"name": "贷款审批", "goal": "判断是否通过", "riskLevel": "medium"}}}
+                },
+                {"model": "model-b", "result": {"Err": "provider timeout"}}
+            ]
+        });
+
+        let candidates = requirement_review_candidates(&divergence);
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].model, "model-a");
+        assert_eq!(candidates[0].analysis.brief.name, "贷款审批");
+        assert_eq!(candidates[0].analysis.brief.goal, "判断是否通过");
+    }
+
+    #[test]
+    fn pending_requirement_review_accepts_wrapped_and_direct_candidates_once_per_model() {
+        let analysis =
+            json!({"brief": {"name": "贷款审批", "goal": "判断是否通过", "riskLevel": "medium"}});
+        let divergence = json!({
+            "outcomes": [
+                {"model": "model-a", "result": {"success": analysis}},
+                {"model": "model-a", "result": {"Ok": analysis}},
+                {"model": "model-b", "result": analysis},
+                {"model": "model-c", "result": {"Err": "provider timeout"}},
+                {"model": "model-d", "result": {"Ok": {"brief": {"name": "", "goal": ""}}}}
+            ]
+        });
+
+        let candidates = requirement_review_candidates(&divergence);
+        assert_eq!(candidates.len(), 2);
+        assert_eq!(candidates[0].model, "model-a");
+        assert_eq!(candidates[1].model, "model-b");
+    }
+
+    #[test]
+    fn requirement_consensus_ignores_prose_but_preserves_dissent_as_required_clarification() {
+        let base = RequirementAnalysis {
+            brief: DecisionBrief {
+                name: "LoanApproval".into(),
+                goal: "判断贷款是否通过".into(),
+                risk_level: "medium".into(),
+                inputs: vec![DecisionField {
+                    name: "amount".into(),
+                    type_ref: "number".into(),
+                    required: true,
+                    ..Default::default()
+                }],
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let differently_worded = RequirementAnalysis {
+            brief: DecisionBrief {
+                goal: "评估贷款申请是否批准".into(),
+                description: "模型给出不同的说明文案".into(),
+                ..base.brief.clone()
+            },
+            ..Default::default()
+        };
+        assert_eq!(
+            requirement_analysis_consensus_key(&base).unwrap(),
+            requirement_analysis_consensus_key(&differently_worded).unwrap()
+        );
+
+        let dissent = RequirementAnalysis {
+            brief: DecisionBrief {
+                goal: "判断贷款是否通过并检查逾期".into(),
+                risk_level: "high".into(),
+                inputs: vec![
+                    base.brief.inputs[0].clone(),
+                    DecisionField {
+                        name: "overdueDays".into(),
+                        type_ref: "integer".into(),
+                        ..Default::default()
+                    },
+                ],
+                constraints: vec!["逾期超过 30 天时拒绝".into()],
+                ..base.brief.clone()
+            },
+            ..Default::default()
+        };
+        let outcomes = [base.clone(), differently_worded, dissent]
+            .into_iter()
+            .enumerate()
+            .map(
+                |(index, analysis)| crate::agent_runtime::orchestration::VoteOutcome {
+                    model: format!("model-{index}"),
+                    weight: 1.0,
+                    result: Ok(serde_json::to_value(analysis).unwrap()),
+                },
+            )
+            .collect::<Vec<_>>();
+        let mut selected = base;
+        add_consensus_divergence_clarifications(&mut selected, &outcomes);
+
+        assert_eq!(selected.brief.risk_level, "high");
+        assert!(
+            selected
+                .clarifications
+                .iter()
+                .any(|item| { item.required && item.question.contains("业务目标") })
+        );
+        assert!(
+            selected
+                .clarifications
+                .iter()
+                .any(|item| { item.required && item.question.contains("字段或业务规则") })
+        );
+    }
+
+    #[test]
+    fn requirement_plurality_fallback_selects_a_candidate_when_every_model_differs() {
+        let candidate =
+            |model: &str, name: &str| crate::agent_runtime::orchestration::VoteOutcome {
+                model: model.into(),
+                weight: 1.0,
+                result: Ok(serde_json::to_value(RequirementAnalysis {
+                    brief: DecisionBrief {
+                        name: name.into(),
+                        goal: "判断申请是否通过".into(),
+                        risk_level: "high".into(),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                })
+                .unwrap()),
+            };
+        let outcomes = vec![
+            candidate("model-a", "LoanApproval"),
+            candidate("model-b", "LoanDecision"),
+            candidate("model-c", "CreditEligibility"),
+        ];
+
+        let selected =
+            plurality_requirement_analysis(&outcomes, requirement_analysis_consensus_key)
+                .unwrap()
+                .unwrap();
+
+        assert_eq!(selected.brief.name, "LoanApproval");
+    }
+
+    #[test]
+    fn single_valid_requirement_model_adds_required_business_confirmation() {
+        let mut analysis = RequirementAnalysis {
+            brief: DecisionBrief {
+                name: "LoanApproval".into(),
+                goal: "判断申请是否通过".into(),
+                risk_level: "high".into(),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        add_single_model_confirmation(&mut analysis, false);
+
+        assert_eq!(analysis.clarifications.len(), 1);
+        assert!(analysis.clarifications[0].required);
+        assert!(
+            analysis.clarifications[0]
+                .question
+                .contains("尚未形成交叉验证")
+        );
+    }
+
+    #[test]
+    fn facilitator_merges_distinct_questions_and_combines_duplicate_options() {
+        let first = Clarification {
+            id: "a".into(),
+            question: "逾期记录是否包含已结清记录？".into(),
+            options: vec!["包含".into()],
+            required: false,
+            ..Default::default()
+        };
+        let outcomes = vec![
+            crate::agent_runtime::orchestration::VoteOutcome {
+                model: "model-a".into(),
+                weight: 1.0,
+                result: Ok(serde_json::to_value(RequirementAnalysis {
+                    brief: DecisionBrief {
+                        name: "LoanApproval".into(),
+                        goal: "判断是否通过".into(),
+                        risk_level: "high".into(),
+                        ..Default::default()
+                    },
+                    clarifications: vec![first.clone()],
+                })
+                .unwrap()),
+            },
+            crate::agent_runtime::orchestration::VoteOutcome {
+                model: "model-b".into(),
+                weight: 1.0,
+                result: Ok(serde_json::to_value(RequirementAnalysis {
+                    brief: DecisionBrief {
+                        name: "LoanDecision".into(),
+                        goal: "评估申请".into(),
+                        risk_level: "high".into(),
+                        ..Default::default()
+                    },
+                    clarifications: vec![
+                        Clarification {
+                            id: "b".into(),
+                            question: " 逾期记录是否包含已结清记录? ".into(),
+                            options: vec!["不包含".into()],
+                            required: true,
+                            ..Default::default()
+                        },
+                        Clarification {
+                            id: "c".into(),
+                            question: "逾期次数按哪个时间范围计算？".into(),
+                            required: true,
+                            ..Default::default()
+                        },
+                    ],
+                })
+                .unwrap()),
+            },
+        ];
+        let mut selected = RequirementAnalysis {
+            clarifications: vec![first],
+            ..Default::default()
+        };
+
+        merge_facilitator_clarifications(&mut selected, &outcomes);
+
+        assert_eq!(selected.clarifications.len(), 2);
+        assert_eq!(selected.clarifications[0].options, vec!["包含", "不包含"]);
+        assert!(selected.clarifications[0].required);
+        assert!(selected.clarifications[1].question.contains("时间范围"));
+    }
+
+    #[test]
+    fn facilitator_consensus_uses_clarification_content_not_repeated_brief_fields() {
+        let clarification = Clarification {
+            id: "model-a-id".into(),
+            question: "逾期记录是否包含已结清记录？".into(),
+            options: vec!["包含".into(), "不包含".into()],
+            required: true,
+            reason: "影响风险判断".into(),
+            round: 2,
+        };
+        let base = RequirementAnalysis {
+            brief: DecisionBrief {
+                name: "LoanApproval".into(),
+                goal: "判断贷款是否通过".into(),
+                risk_level: "high".into(),
+                ..Default::default()
+            },
+            clarifications: vec![clarification.clone()],
+            ..Default::default()
+        };
+        let changed_brief = RequirementAnalysis {
+            brief: DecisionBrief {
+                name: "LoanDecision".into(),
+                goal: "评估贷款申请".into(),
+                inputs: vec![DecisionField {
+                    name: "latePayments".into(),
+                    type_ref: "integer".into(),
+                    ..Default::default()
+                }],
+                ..base.brief.clone()
+            },
+            clarifications: vec![Clarification {
+                id: "model-b-id".into(),
+                question: " 逾期记录 是否包含已结清记录? ".into(),
+                reason: "其他解释".into(),
+                ..clarification.clone()
+            }],
+            ..Default::default()
+        };
+        let different_question = RequirementAnalysis {
+            clarifications: vec![Clarification {
+                question: "逾期次数如何计算？".into(),
+                ..clarification
+            }],
+            ..base.clone()
+        };
+
+        assert_eq!(
+            facilitator_consensus_key(&base).unwrap(),
+            facilitator_consensus_key(&changed_brief).unwrap()
+        );
+        assert_ne!(
+            facilitator_consensus_key(&base).unwrap(),
+            facilitator_consensus_key(&different_question).unwrap()
+        );
+    }
+
+    #[test]
+    fn facilitator_review_preserves_answers_and_adds_only_new_questions() {
+        let existing = vec![Clarification {
+            id: "round-1".into(),
+            question: "是否包含已结清记录？".into(),
+            required: true,
+            round: 1,
+            ..Default::default()
+        }];
+        let answers = vec![ClarificationAnswer {
+            clarification_id: "round-1".into(),
+            answer: "包含".into(),
+        }];
+        let proposed = vec![
+            Clarification {
+                id: "round-1".into(),
+                question: "是否包含已结清记录？".into(),
+                required: true,
+                ..Default::default()
+            },
+            Clarification {
+                id: "round-2".into(),
+                question: "逾期次数按自然年还是滚动一年计算？".into(),
+                required: true,
+                ..Default::default()
+            },
+        ];
+
+        let (status, clarifications, preserved_answers) =
+            facilitator_review_update(&existing, proposed, answers.clone());
+
+        assert_eq!(status, "clarification");
+        assert_eq!(clarifications.len(), 2);
+        assert_eq!(clarifications[0].id, "round-1");
+        assert_eq!(clarifications[1].round, 2);
+        assert_eq!(preserved_answers, answers);
+    }
+
+    #[test]
+    fn requirement_review_baseline_supports_legacy_runs_only_when_project_state_is_unchanged() {
+        let timestamp = |seconds| DateTime::from_timestamp(seconds, 0).unwrap();
+        let run_started = timestamp(200);
+        let before_run = timestamp(100);
+        let after_run = timestamp(300);
+
+        assert!(requirement_review_baseline_is_current(
+            true,
+            Some(7),
+            Some(7),
+            run_started,
+            before_run,
+            Some(before_run),
+        ));
+        assert!(!requirement_review_baseline_is_current(
+            true,
+            None,
+            Some(7),
+            run_started,
+            before_run,
+            Some(before_run),
+        ));
+        assert!(requirement_review_baseline_is_current(
+            false,
+            None,
+            Some(7),
+            run_started,
+            before_run,
+            Some(before_run),
+        ));
+        assert!(!requirement_review_baseline_is_current(
+            false,
+            None,
+            Some(7),
+            run_started,
+            after_run,
+            Some(before_run),
+        ));
+        assert!(!requirement_review_baseline_is_current(
+            false,
+            None,
+            Some(7),
+            run_started,
+            before_run,
+            Some(after_run),
+        ));
+    }
+
+    #[test]
+    fn missing_requirement_candidates_are_retryable_but_disagreement_is_reviewable() {
+        assert!(is_retryable_agent_failure(
+            "多模型均未返回有效需求分析候选，请检查模型配置后重试"
+        ));
+        assert!(!is_retryable_agent_failure(
+            "澄清主持的模型结果未达成多数共识，已标记为需人工复核"
+        ));
+    }
 
     #[test]
     fn unified_orchestrator_routes_by_saved_workflow_and_preserves_human_gates() {

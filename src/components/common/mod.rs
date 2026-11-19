@@ -2,6 +2,7 @@
 
 mod a11y;
 mod button;
+mod checkbox;
 mod date_picker;
 mod input;
 mod lazy_image;
@@ -15,6 +16,7 @@ mod virtual_list;
 
 pub use a11y::{LivePoliteness, LiveRegion};
 pub use button::{Button, ButtonSize, ButtonVariant};
+pub use checkbox::WorkbenchCheckbox;
 pub use date_picker::WorkbenchDatePicker;
 pub use input::AccessibleInput;
 pub use lazy_image::LazyImage;

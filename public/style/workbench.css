@@ -1,4 +1,4 @@
-.app-shell.workbench-shell {
+:is(.app-shell.workbench-shell, .auth-shell) {
     --bg: #f5f7fa;
     --surface: #fafbfc;
     --surface-raised: #ffffff;
@@ -27,7 +27,7 @@
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
 }
 
-.app-shell.workbench-shell.theme-dark {
+:is(.app-shell.workbench-shell.theme-dark, .auth-shell.theme-dark) {
     --bg: #10141c;
     --surface: #171d28;
     --surface-raised: #1c2330;
@@ -94,6 +94,7 @@
 
 .app-shell.workbench-shell .button,
 .app-shell.workbench-shell .theme-toggle {
+    min-width: 120px;
     min-height: 34px;
     border: 1px solid var(--border-strong);
     border-radius: 6px;
@@ -225,6 +226,111 @@
     font-size: 11px;
 }
 
+.app-shell.workbench-shell .wb-checkbox {
+    position: relative;
+    display: inline-flex;
+    min-width: 0;
+    min-height: 28px;
+    align-items: center;
+    gap: 7px;
+    color: var(--text);
+    font-size: 11px;
+    line-height: 1.35;
+    cursor: pointer;
+}
+
+.app-shell.workbench-shell .wb-checkbox-input {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: 0;
+    overflow: hidden;
+    appearance: none;
+    -webkit-appearance: none;
+    opacity: 0;
+    pointer-events: none;
+    clip-path: inset(50%);
+    white-space: nowrap;
+}
+
+.app-shell.workbench-shell .wb-checkbox-indicator {
+    position: relative;
+    display: grid;
+    width: 16px;
+    height: 16px;
+    flex: 0 0 16px;
+    box-sizing: border-box;
+    place-items: center;
+    border: 1px solid var(--border-strong);
+    border-radius: 4px;
+    background: var(--surface-raised);
+    transition: background 140ms ease, border-color 140ms ease, box-shadow 140ms ease;
+}
+
+.app-shell.workbench-shell .wb-checkbox-indicator::after {
+    width: 7px;
+    height: 4px;
+    content: "";
+    border-bottom: 2px solid var(--surface-raised);
+    border-left: 2px solid var(--surface-raised);
+    opacity: 0;
+    transform: translateY(-1px) rotate(-45deg);
+}
+
+.app-shell.workbench-shell .wb-checkbox-input:checked + .wb-checkbox-indicator {
+    border-color: var(--accent);
+    background: var(--accent);
+}
+
+.app-shell.workbench-shell .wb-checkbox-input:checked + .wb-checkbox-indicator::after {
+    opacity: 1;
+}
+
+.app-shell.workbench-shell .wb-checkbox-input:focus-visible + .wb-checkbox-indicator {
+    outline: 2px solid color-mix(in srgb, var(--accent) 24%, transparent);
+    outline-offset: 2px;
+}
+
+.app-shell.workbench-shell .wb-checkbox:has(.wb-checkbox-input:disabled) {
+    cursor: not-allowed;
+    opacity: .58;
+}
+
+.app-shell.workbench-shell .wb-checkbox.is-switch {
+    min-height: 30px;
+    gap: 9px;
+}
+
+.app-shell.workbench-shell .wb-checkbox.is-switch .wb-checkbox-indicator {
+    width: 34px;
+    height: 20px;
+    flex-basis: 34px;
+    justify-items: start;
+    padding: 2px;
+    border: 0;
+    border-radius: 999px;
+    background: var(--border-strong);
+}
+
+.app-shell.workbench-shell .wb-checkbox.is-switch .wb-checkbox-indicator::after {
+    width: 16px;
+    height: 16px;
+    border: 0;
+    border-radius: 50%;
+    background: var(--surface-raised);
+    opacity: 1;
+    transform: translateX(0);
+    transition: transform 140ms ease;
+}
+
+.app-shell.workbench-shell .wb-checkbox.is-switch .wb-checkbox-input:checked + .wb-checkbox-indicator {
+    background: var(--success);
+}
+
+.app-shell.workbench-shell .wb-checkbox.is-switch .wb-checkbox-input:checked + .wb-checkbox-indicator::after {
+    transform: translateX(14px);
+}
+
 :is(.app-shell.workbench-shell, .project-management-page, .admin-page) .wb-number-field {
     display: grid;
     min-width: 0;
@@ -242,6 +348,7 @@
     display: grid;
     grid-template-columns: 34px minmax(0, 1fr) 34px;
     min-width: 0;
+    width: 120px;
     min-height: 36px;
     overflow: hidden;
     border: 1px solid var(--border-strong);
@@ -1572,4 +1679,123 @@
         min-height: 25px;
         padding: 0 7px;
     }
+}
+.requirement-human-review {
+  margin-top: 16px;
+  padding: 16px;
+  border: 1px solid var(--warning-border, #d6a64a);
+  border-radius: 6px;
+  background: var(--warning-surface, #fff9e8);
+}
+
+.requirement-review-candidates {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr));
+  gap: 10px;
+  margin: 12px 0;
+}
+
+.requirement-review-requirement {
+  max-height: 180px;
+  overflow: auto;
+  padding: 10px 12px;
+  border-left: 3px solid var(--warning-border, #d6a64a);
+  background: var(--surface, #fff);
+  color: var(--text-primary, #26332e);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.requirement-review-candidate {
+  display: grid;
+  gap: 7px;
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid var(--border-color, #d7dedb);
+  border-radius: 6px;
+  background: var(--surface, #fff);
+  color: var(--text-primary, #26332e);
+  text-align: left;
+  cursor: pointer;
+}
+
+.requirement-review-option {
+  min-width: 0;
+}
+
+.requirement-review-option:has(.requirement-review-detail[open]) {
+  grid-column: 1 / -1;
+}
+
+.requirement-review-detail {
+  padding: 8px 0;
+}
+
+.requirement-review-detail > summary {
+  padding: 4px 0;
+  color: var(--text-secondary, #5d6b65);
+  cursor: pointer;
+}
+
+.app-shell.workbench-shell .requirement-review-detail .analysis-result {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin-top: 10px;
+}
+
+.app-shell.workbench-shell .requirement-review-detail .analysis-result > :is(.analysis-business-summary, .analysis-priority-grid, .analysis-information-grid, .analysis-patterns, .analysis-details) {
+  grid-column: 1 / -1;
+}
+
+.app-shell.workbench-shell .requirement-review-detail .analysis-result .analysis-business-summary {
+  grid-template-columns: minmax(0, 1fr) minmax(180px, 0.3fr);
+  gap: 16px;
+  padding: 16px 18px;
+}
+
+.app-shell.workbench-shell .requirement-review-detail .analysis-result :is(.analysis-priority-grid, .analysis-information-grid) {
+  gap: 12px;
+}
+
+.app-shell.workbench-shell .requirement-review-detail .analysis-result :is(.analysis-priority-grid, .analysis-information-grid) > .analysis-card {
+  padding: 14px 16px;
+}
+
+.requirement-review-clarifications {
+  padding-left: 22px;
+  color: var(--text-secondary, #5d6b65);
+}
+
+.requirement-review-candidate.is-selected {
+  border-color: var(--accent-color, #16835d);
+  box-shadow: inset 0 0 0 1px var(--accent-color, #16835d);
+}
+
+.requirement-review-candidate > span:not(.requirement-review-model) {
+  overflow-wrap: anywhere;
+  color: var(--text-secondary, #5d6b65);
+}
+
+.requirement-review-candidate small,
+.requirement-review-model {
+  color: var(--text-muted, #74817b);
+}
+
+.requirement-review-model {
+  font-size: 12px;
+  font-weight: 600;
+}
+
+@media (max-width: 640px) {
+  .requirement-human-review {
+    padding: 12px;
+  }
+
+  .app-shell.workbench-shell .requirement-review-detail .analysis-result {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .app-shell.workbench-shell .requirement-review-detail .analysis-result .analysis-business-summary {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }

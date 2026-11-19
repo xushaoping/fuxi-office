@@ -1,4 +1,4 @@
-@import url("/style/workbench.css?v=20261116-admin-workbench-4");
+@import url("/style/workbench.css?v=20261119-wb-checkbox-1");
 
 /* Shared interaction primitives (frontend UX optimization). */
 .loading-container {
@@ -1809,7 +1809,6 @@ button:focus-visible, textarea:focus-visible {
 }
 
 .drift-rule-toggle,
-.drift-rule-options label,
 .drift-cooldown-field {
     display: flex;
     align-items: center;
@@ -1818,25 +1817,27 @@ button:focus-visible, textarea:focus-visible {
     font-size: 9px;
 }
 
-.drift-rule-toggle input,
-.drift-rule-options input {
-    accent-color: var(--success);
-}
-
 .drift-rule-options {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
     gap: 5px 8px;
 }
 
-.drift-cooldown-field input {
-    width: 90px;
-    min-height: 28px;
-    padding: 3px 6px;
+.drift-rule-option {
+    min-height: 32px;
+    padding: 4px 7px;
     border: 1px solid var(--border);
-    border-radius: 3px;
-    background: var(--surface);
-    color: var(--text);
+    border-radius: 4px;
+    background: var(--surface-soft);
+}
+
+.drift-rule-option:hover {
+    border-color: var(--border-strong);
+    background: var(--surface-raised);
+}
+
+.drift-rule-controls .drift-cooldown-field {
+    width: min(100%, 180px);
 }
 
 .drift-webhook-field {
@@ -2495,6 +2496,7 @@ button:focus-visible, textarea:focus-visible {
     flex-direction: row;
     align-items: center;
     flex-wrap: wrap;
+    justify-content: flex-end;
     gap: 6px;
 }
 
@@ -2502,12 +2504,12 @@ button:focus-visible, textarea:focus-visible {
     display: flex;
     flex-wrap: wrap;
     gap: 4px 12px;
-    padding: 7px 9px;
+    padding: 9px 12px;
     border-left: 2px solid var(--warning);
     color: var(--text-muted);
     background: color-mix(in srgb, var(--warning) 6%, var(--surface-soft));
-    font-size: 9px;
-    line-height: 1.45;
+    font-size: 11px;
+    line-height: 1.5;
 }
 
 .business-test-approval-hint span + span {
@@ -2552,14 +2554,14 @@ button:focus-visible, textarea:focus-visible {
 .business-test-stats {
     display: grid;
     grid-template-columns: repeat(5, minmax(0, 1fr));
-    gap: 6px;
+    gap: 8px;
 }
 
 .business-test-stats > div {
     display: grid;
     gap: 2px;
     min-width: 0;
-    padding: 7px 9px;
+    padding: 10px 12px;
     border: 1px solid var(--border);
     border-radius: 4px;
     background: var(--surface-soft);
@@ -2567,7 +2569,7 @@ button:focus-visible, textarea:focus-visible {
 
 .business-test-stats strong {
     color: var(--text);
-    font-size: 15px;
+    font-size: 18px;
     line-height: 1;
 }
 
@@ -3606,13 +3608,14 @@ button:focus-visible, textarea:focus-visible {
     font-size: 9px;
 }
 
-.simulation-version-picker select {
+.simulation-version-picker .wb-select-field {
     min-width: 0;
-    padding: 6px 8px;
-    border: 1px solid var(--border);
-    border-radius: 3px;
-    background: var(--surface);
-    color: var(--text);
+    gap: 5px;
+}
+
+.simulation-version-picker .wb-select-label {
+    color: var(--text-muted);
+    font-size: 9px;
 }
 
 .optimization-simulation-result span,
@@ -4356,9 +4359,14 @@ button:focus-visible, textarea:focus-visible {
 
 .tester-report {
     display: grid;
-    gap: 8px;
-    padding-top: 10px;
-    border-top: 1px solid var(--border);
+    gap: 12px;
+    width: calc(100% - 36px);
+    margin: 0 18px 12px;
+    padding: 16px;
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--warning);
+    border-radius: 4px;
+    background: var(--surface-raised);
 }
 
 .tester-report-heading,
@@ -4372,7 +4380,7 @@ button:focus-visible, textarea:focus-visible {
 .tester-report-heading h3 {
     margin: 0;
     color: var(--text);
-    font-size: 11px;
+    font-size: 15px;
 }
 
 .tester-report-actions {
@@ -4385,7 +4393,7 @@ button:focus-visible, textarea:focus-visible {
 
 .tester-report-actions > span {
     color: var(--warning);
-    font-size: 9px;
+    font-size: 11px;
 }
 
 .tester-execution-status {
@@ -4402,23 +4410,92 @@ button:focus-visible, textarea:focus-visible {
 .tester-report > p {
     margin: 0;
     color: var(--text-muted);
-    font-size: 9px;
-    line-height: 1.5;
+    font-size: 12px;
+    line-height: 1.55;
 }
 
 .tester-proposal-list {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-    gap: 6px;
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr));
+    gap: 10px;
+}
+
+.tester-proposal-tabs {
+    display: flex;
+    gap: 4px;
+    min-width: 0;
+    overflow-x: auto;
+    border-bottom: 1px solid var(--border);
+    scrollbar-width: thin;
+}
+
+.tester-proposal-tab {
+    display: inline-flex;
+    flex: 0 0 auto;
+    align-items: center;
+    gap: 7px;
+    min-height: 40px;
+    padding: 0 12px;
+    border: 0;
+    border-bottom: 2px solid transparent;
+    color: var(--text-muted);
+    background: transparent;
+    font: inherit;
+    font-size: 12px;
+    font-weight: 700;
+    cursor: pointer;
+}
+
+.tester-proposal-tab:hover {
+    color: var(--text);
+    background: var(--surface-soft);
+}
+
+.tester-proposal-tab.is-active {
+    border-bottom-color: var(--accent);
+    color: var(--accent-strong);
+}
+
+.tester-proposal-tab b {
+    display: inline-grid;
+    min-width: 20px;
+    height: 20px;
+    padding: 0 5px;
+    place-items: center;
+    border-radius: 10px;
+    color: var(--text-muted);
+    background: var(--surface-soft);
+    font-size: 10px;
+    font-weight: 700;
+}
+
+.tester-proposal-tab.is-active b {
+    color: var(--accent-ink);
+    background: var(--accent);
+}
+
+.tester-proposal-tab:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: -2px;
+}
+
+.tester-proposal-empty {
+    grid-column: 1 / -1;
+    margin: 0;
+    padding: 20px 12px;
+    color: var(--text-muted);
+    background: var(--surface-soft);
+    text-align: center;
 }
 
 .tester-proposal {
     display: grid;
-    gap: 4px;
+    gap: 8px;
     min-width: 0;
-    padding: 8px;
+    padding: 12px;
     border: 1px solid var(--border);
-    border-radius: 3px;
+    border-left: 2px solid color-mix(in srgb, var(--warning) 55%, var(--border));
+    border-radius: 4px;
     background: var(--surface-soft);
 }
 
@@ -4431,14 +4508,14 @@ button:focus-visible, textarea:focus-visible {
 
 .tester-proposal-title strong {
     color: var(--text);
-    font-size: 10px;
+    font-size: 13px;
 }
 
 .tester-proposal > p,
 .tester-proposal > small {
     margin: 0;
     color: var(--text-faint);
-    font-size: 9px;
+    font-size: 11px;
     line-height: 1.5;
 }
 
@@ -4456,14 +4533,14 @@ button:focus-visible, textarea:focus-visible {
 .tester-proposal-convert > summary {
     color: var(--accent);
     cursor: pointer;
-    font-size: 9px;
+    font-size: 11px;
 }
 
 .tester-proposal-convert > label {
     display: grid;
     gap: 3px;
     color: var(--text-muted);
-    font-size: 9px;
+    font-size: 11px;
 }
 
 .tester-proposal-convert textarea {
@@ -4475,11 +4552,12 @@ button:focus-visible, textarea:focus-visible {
     border-radius: 3px;
     background: var(--surface);
     color: var(--text);
-    font: 10px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+    font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 
 .tester-proposal-convert button {
     justify-self: start;
+    margin-top: 4px;
 }
 
 .tester-proposal-error {
@@ -6706,12 +6784,20 @@ h3 {
 
 /* The login page uses the same tokens as the workspace but a quieter card layout. */
 .auth-shell {
-    width: min(100% - 32px, 560px);
-    margin: 10vh auto 0;
+    display: grid;
+    min-height: 100vh;
+    place-items: center;
+    padding: 24px 16px;
+    background: var(--bg);
+    color: var(--text);
+}
+
+.auth-panel {
+    width: min(100%, 560px);
     padding: 32px;
     border: 1px solid var(--border);
     border-radius: 8px;
-    /*background: var(--surface);*/
+    background: var(--surface-raised);
     box-shadow: var(--shadow);
 }
 
@@ -7703,8 +7789,10 @@ h3 {
     }
 
     .auth-shell {
-        width: min(100% - 24px, 560px);
-        margin-top: 7vh;
+        padding: 16px 12px;
+    }
+
+    .auth-panel {
         padding: 24px;
     }
 }
@@ -9045,8 +9133,8 @@ body {
 
 .business-tests-panel {
     display: grid;
-    gap: 10px;
-    padding: 11px 12px;
+    gap: 14px;
+    padding: 16px;
     border: 1px solid var(--border);
     border-left: 3px solid var(--accent);
     border-radius: 4px;
@@ -9054,6 +9142,88 @@ body {
     width: calc(100% - 36px);
     max-width: none;
     margin: 0 18px;
+}
+
+.acceptance-workspace {
+    display: grid;
+    gap: 0;
+    min-width: 0;
+}
+
+.acceptance-workspace-tabs {
+    display: flex;
+    gap: 6px;
+    width: calc(100% - 36px);
+    min-width: 0;
+    margin: 0 auto 12px;
+    overflow-x: auto;
+    border-bottom: 1px solid var(--border);
+    scrollbar-width: thin;
+}
+
+.acceptance-workspace-tab {
+    display: inline-flex;
+    flex: 0 0 auto;
+    align-items: center;
+    gap: 8px;
+    min-height: 44px;
+    padding: 0 14px;
+    border: 0;
+    border-bottom: 2px solid transparent;
+    color: var(--text-muted);
+    background: transparent;
+    font: inherit;
+    font-size: 13px;
+    font-weight: 700;
+    cursor: pointer;
+}
+
+.acceptance-workspace-tab:hover {
+    color: var(--text);
+    background: var(--surface-soft);
+}
+
+.acceptance-workspace-tab.is-active {
+    border-bottom-color: var(--accent);
+    color: var(--accent-strong);
+}
+
+.acceptance-workspace-tab b {
+    display: inline-grid;
+    min-width: 22px;
+    height: 22px;
+    padding: 0 6px;
+    place-items: center;
+    border-radius: 11px;
+    color: var(--text-muted);
+    background: var(--surface-soft);
+    font-size: 11px;
+    font-weight: 700;
+}
+
+.acceptance-workspace-tab.is-active b {
+    color: var(--accent-ink);
+    background: var(--accent);
+}
+
+.acceptance-workspace-tab:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: -2px;
+}
+
+.acceptance-tab-panel[hidden] {
+    display: none;
+}
+
+.acceptance-tab-empty {
+    width: calc(100% - 36px);
+    margin: 0 18px;
+    padding: 22px 16px;
+    border: 1px dashed var(--border-strong);
+    color: var(--text-muted);
+    background: var(--surface-soft);
+    font-size: 12px;
+    text-align: center;
 }
 
 .business-tests-panel + .verification-panel,
@@ -9064,7 +9234,7 @@ body {
 
 .business-test-list {
     display: grid;
-    gap: 7px;
+    gap: 10px;
     grid-template-columns: minmax(0, 1fr);
 }
 
@@ -9156,6 +9326,53 @@ body {
         width: calc(100% - 20px);
         margin-right: 10px;
         margin-left: 10px;
+    }
+
+    .acceptance-workspace-tabs {
+        width: calc(100% - 20px);
+        margin-bottom: 8px;
+    }
+
+    .acceptance-workspace-tab {
+        min-height: 46px;
+        padding-inline: 11px;
+        font-size: 12px;
+    }
+
+    .acceptance-tab-empty {
+        width: calc(100% - 20px);
+        margin-right: 10px;
+        margin-left: 10px;
+    }
+
+    .tester-report {
+        width: calc(100% - 20px);
+        margin-right: 10px;
+        margin-left: 10px;
+        padding: 12px;
+    }
+
+    .tester-report-heading {
+        align-items: flex-start;
+        flex-direction: column;
+    }
+
+    .tester-report-actions {
+        justify-content: flex-start;
+        flex-wrap: wrap;
+    }
+
+    .tester-proposal-tabs {
+        margin-inline: -4px;
+    }
+
+    .tester-proposal-tab {
+        min-height: 44px;
+        padding-inline: 10px;
+    }
+
+    .business-tests-heading-actions {
+        justify-content: flex-start;
     }
 
     .business-test-values {
@@ -9667,18 +9884,42 @@ body {
     width: 34px;
     height: 34px;
     border: 1px solid var(--border);
-    border-radius: 4px;
+    border-radius: 50%;
     color: var(--text-muted);
     background: var(--surface-raised);
     font: inherit;
     font-size: 22px;
     line-height: 1;
     cursor: pointer;
+    transition:
+        transform 140ms ease,
+        border-color 140ms ease,
+        color 140ms ease,
+        background-color 140ms ease,
+        box-shadow 140ms ease;
+}
+
+.knowledge-diagnostics-close-icon {
+    display: block;
+    line-height: 20px;
+    transform: translateY(-2px);
 }
 
 .knowledge-diagnostics-close:hover {
-    border-color: var(--border-strong);
-    color: var(--text);
+    transform: scale(1.08);
+    border-color: color-mix(in srgb, var(--danger) 55%, var(--border));
+    color: var(--danger);
+    background: color-mix(in srgb, var(--danger) 9%, var(--surface-raised));
+    box-shadow: 0 2px 8px color-mix(in srgb, var(--danger) 18%, transparent);
+}
+
+.knowledge-diagnostics-close:active {
+    transform: scale(0.94);
+}
+
+.knowledge-diagnostics-close:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
 }
 
 .knowledge-diagnostics-drawer-body {

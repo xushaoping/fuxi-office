@@ -1,6 +1,12 @@
 use leptos::prelude::*;
 use leptos::task::spawn_local;
-use std::collections::HashSet;
+use std::{
+    collections::HashSet,
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
+};
 
 use crate::api;
 use crate::components::common::{SelectOption, WorkbenchDatePicker, WorkbenchSelect};
@@ -165,8 +171,14 @@ pub fn KnowledgeLibraryPanel(
     let debug_error = RwSignal::new(None::<String>);
     let knowledge_diagnostics = RwSignal::new(None::<KnowledgeSearchDiagnostics>);
     let pattern_diagnostics = RwSignal::new(None::<PatternSearchDiagnostics>);
-    let debug_generation = RwSignal::new(0_u64);
-    let source_load_generation = RwSignal::new(0_u64);
+    let debug_generation = Arc::new(AtomicUsize::new(0));
+    let source_load_generation = Arc::new(AtomicUsize::new(0));
+    let cleanup_debug_generation = debug_generation.clone();
+    let cleanup_source_load_generation = source_load_generation.clone();
+    on_cleanup(move || {
+        cleanup_debug_generation.fetch_add(1, Ordering::Relaxed);
+        cleanup_source_load_generation.fetch_add(1, Ordering::Relaxed);
+    });
 
     let clear_form = move || {
         selected_id.set(None);
@@ -183,7 +195,7 @@ pub fn KnowledgeLibraryPanel(
     Effect::new(move |_| {
         index_refresh.get();
         let Some(token_value) = token.get() else {
-            source_load_generation.update(|generation| *generation = generation.wrapping_add(1));
+            source_load_generation.fetch_add(1, Ordering::Relaxed);
             sources.set(Vec::new());
             index_status.set(None);
             index_error.set(None);
@@ -192,8 +204,8 @@ pub fn KnowledgeLibraryPanel(
             return;
         };
         let project_id = current_project.get().map(|project| project.id);
-        source_load_generation.update(|generation| *generation = generation.wrapping_add(1));
-        let request_generation = source_load_generation.get();
+        let request_generation = source_load_generation.fetch_add(1, Ordering::Relaxed) + 1;
+        let request_generation_guard = source_load_generation.clone();
         busy.set(true);
         error.set(None);
         index_status.set(None);
@@ -213,9 +225,7 @@ pub fn KnowledgeLibraryPanel(
             } else {
                 Ok(HashSet::new())
             };
-            if source_load_generation.get() != request_generation
-                || current_project.get().map(|project| project.id) != project_id
-            {
+            if request_generation_guard.load(Ordering::Relaxed) != request_generation {
                 return;
             }
             match source_result {
@@ -234,9 +244,10 @@ pub fn KnowledgeLibraryPanel(
         });
     });
 
+    let project_change_debug_generation = debug_generation.clone();
     Effect::new(move |_| {
         current_project.get();
-        debug_generation.update(|generation| *generation = generation.wrapping_add(1));
+        project_change_debug_generation.fetch_add(1, Ordering::Relaxed);
         knowledge_diagnostics.set(None);
         pattern_diagnostics.set(None);
         debug_error.set(None);
@@ -604,7 +615,7 @@ pub fn KnowledgeLibraryPanel(
         });
     };
 
-    let run_search_diagnostics = move |_| {
+    let run_search_diagnostics = Callback::new(move |_| {
         let (Some(token_value), Some(project)) = (token.get(), current_project.get()) else {
             debug_error.set(Some("请先选择决策项目".into()));
             return;
@@ -614,8 +625,8 @@ pub fn KnowledgeLibraryPanel(
             debug_error.set(Some("请输入 1–500 个字符的检索词".into()));
             return;
         }
-        debug_generation.update(|generation| *generation = generation.wrapping_add(1));
-        let request_generation = debug_generation.get();
+        let request_generation = debug_generation.fetch_add(1, Ordering::Relaxed) + 1;
+        let request_generation_guard = debug_generation.clone();
         let project_id = project.id;
         let selected_kind = debug_kind.get();
         debug_busy.set(true);
@@ -623,18 +634,14 @@ pub fn KnowledgeLibraryPanel(
         knowledge_diagnostics.set(None);
         pattern_diagnostics.set(None);
         spawn_local(async move {
-            if debug_generation.get() != request_generation
-                || current_project.get().map(|item| item.id) != Some(project_id)
-            {
+            if request_generation_guard.load(Ordering::Relaxed) != request_generation {
                 return;
             }
             if selected_kind == "knowledge" {
                 let result =
                     api::debug_project_knowledge_search(&token_value, project_id, &query_value)
                         .await;
-                if debug_generation.get() == request_generation
-                    && current_project.get().map(|item| item.id) == Some(project_id)
-                {
+                if request_generation_guard.load(Ordering::Relaxed) == request_generation {
                     match result {
                         Ok(diagnostics) => knowledge_diagnostics.set(Some(diagnostics)),
                         Err(message) => debug_error.set(Some(message)),
@@ -644,9 +651,7 @@ pub fn KnowledgeLibraryPanel(
             } else {
                 let result =
                     api::debug_pattern_search(&token_value, project_id, &query_value).await;
-                if debug_generation.get() == request_generation
-                    && current_project.get().map(|item| item.id) == Some(project_id)
-                {
+                if request_generation_guard.load(Ordering::Relaxed) == request_generation {
                     match result {
                         Ok(diagnostics) => pattern_diagnostics.set(Some(diagnostics)),
                         Err(message) => debug_error.set(Some(message)),
@@ -655,7 +660,7 @@ pub fn KnowledgeLibraryPanel(
                 }
             }
         });
-    };
+    });
 
     view! {
         <section class="knowledge-library-panel" aria-label="企业知识库">
@@ -981,7 +986,7 @@ pub fn KnowledgeLibraryPanel(
                             autofocus
                             on:click=move |_| debug_open.set(false)
                         >
-                            "×"
+                            <span class="knowledge-diagnostics-close-icon" aria-hidden="true">"×"</span>
                         </button>
                     </header>
                     <div class="knowledge-diagnostics-drawer-body">
@@ -989,7 +994,7 @@ pub fn KnowledgeLibraryPanel(
                 <div class="knowledge-search-debug-heading">
                     <form class="knowledge-search-debug-form" on:submit=move |event| {
                         event.prevent_default();
-                        run_search_diagnostics(());
+                        run_search_diagnostics.run(());
                     }>
                         <input
                             type="search"

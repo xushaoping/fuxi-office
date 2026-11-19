@@ -28,6 +28,9 @@ use wasm_bindgen::{JsCast, closure::Closure};
 use wasm_bindgen_futures::JsFuture;
 
 use crate::api::{self, ChangeSummary, EvaluateResult, RunResult, SseEvent};
+use crate::components::common::{
+    SelectOption, WorkbenchCheckbox, WorkbenchNumberInput, WorkbenchSelect,
+};
 use crate::models::{
     AdminUser, AuditEvent, BehaviorComparisonReport, CreateDecisionTestCase, CreateDecisionVersion,
     CreateUser, DecisionAnalyticsReport, DecisionDriftAutomationRule, DecisionDriftEvent,
@@ -47,8 +50,9 @@ use crate::state::WorkspaceDraftSnapshot;
 use crate::utils::use_keyboard_shortcut;
 use crate::workflow::{
     Clarification, ClarificationAnswer, DecisionBrief, DecisionField, DecisionPlan,
-    DecisionWorkflowState, MAX_MODEL_CHANGE_REPAIRS, append_orchestration_progress,
-    is_repairable_model_change_error, optimization_proposal_handoff_prompt,
+    DecisionWorkflowState, MAX_MODEL_CHANGE_REPAIRS, PendingRequirementReview,
+    append_orchestration_progress, is_repairable_model_change_error,
+    optimization_proposal_handoff_prompt,
 };
 use web_sys::AbortController;
 
@@ -400,6 +404,7 @@ pub fn DmnApp() -> impl IntoView {
     let (verification_busy, set_verification_busy) = signal(false);
     let (publish_confirmed, set_publish_confirmed) = signal(false);
     let (release_error, set_release_error) = signal(Option::<String>::None);
+    let (acceptance_tab, set_acceptance_tab) = signal("cases".to_string());
     let (decision_test_cases, set_decision_test_cases) = signal(Vec::<DecisionTestCase>::new());
     let (selected_test_case_ids, set_selected_test_case_ids) = signal(HashSet::<i64>::new());
     let (test_case_name, set_test_case_name) = signal(String::new());
@@ -455,7 +460,7 @@ pub fn DmnApp() -> impl IntoView {
     let (drift_rule, set_drift_rule) = signal(Option::<DecisionDriftAutomationRule>::None);
     let (drift_rule_enabled, set_drift_rule_enabled) = signal(false);
     let (drift_rule_codes, set_drift_rule_codes) = signal(Vec::<String>::new());
-    let (drift_rule_cooldown, set_drift_rule_cooldown) = signal("24".to_string());
+    let drift_rule_cooldown = RwSignal::new("24".to_string());
     let (drift_webhook_url, set_drift_webhook_url) = signal(String::new());
     let (drift_rule_busy, set_drift_rule_busy) = signal(false);
     let (drift_rule_error, set_drift_rule_error) = signal(Option::<String>::None);
@@ -497,6 +502,10 @@ pub fn DmnApp() -> impl IntoView {
     let (workflow_planning, set_workflow_planning) = signal(false);
     let (workflow_confirming, set_workflow_confirming) = signal(false);
     let (workflow_error, set_workflow_error) = signal(Option::<String>::None);
+    let (pending_requirement_review, set_pending_requirement_review) =
+        signal(Option::<PendingRequirementReview>::None);
+    let (selected_review_model, set_selected_review_model) = signal(Option::<String>::None);
+    let (review_busy, set_review_busy) = signal(false);
     let (engineer_retry_id, set_engineer_retry_id) = signal(Option::<i64>::None);
     let (workflow_retry_id, set_workflow_retry_id) = signal(Option::<i64>::None);
     let (plan_retry_id, set_plan_retry_id) = signal(Option::<i64>::None);
@@ -980,6 +989,27 @@ pub fn DmnApp() -> impl IntoView {
 
     Effect::new(move |_| {
         let (Some(token_value), Some(project)) = (token.get(), current_project.get()) else {
+            set_pending_requirement_review.set(None);
+            set_selected_review_model.set(None);
+            return;
+        };
+        spawn_local(async move {
+            if let Ok(review) = api::get_pending_requirement_review(&token_value, project.id).await
+                && current_project
+                    .get_untracked()
+                    .is_some_and(|current| current.id == project.id)
+            {
+                if review.is_some() {
+                    set_workspace_view.set(WorkspaceView::Discovery);
+                }
+                set_pending_requirement_review.set(review);
+                set_selected_review_model.set(None);
+            }
+        });
+    });
+
+    Effect::new(move |_| {
+        let (Some(token_value), Some(project)) = (token.get(), current_project.get()) else {
             set_project_members.set(Vec::new());
             set_member_status.set(None);
             return;
@@ -1262,7 +1292,7 @@ pub fn DmnApp() -> impl IntoView {
                             .map(|rule| rule.finding_codes.clone())
                             .unwrap_or_default(),
                     );
-                    set_drift_rule_cooldown.set(
+                    drift_rule_cooldown.set(
                         rule.as_ref()
                             .map(|rule| rule.cooldown_hours.to_string())
                             .unwrap_or_else(|| "24".into()),
@@ -1648,7 +1678,7 @@ pub fn DmnApp() -> impl IntoView {
                 {
                     set_drift_rule_enabled.set(rule.enabled);
                     set_drift_rule_codes.set(rule.finding_codes.clone());
-                    set_drift_rule_cooldown.set(rule.cooldown_hours.to_string());
+                    drift_rule_cooldown.set(rule.cooldown_hours.to_string());
                     set_drift_webhook_url.set(rule.webhook_url.clone().unwrap_or_default());
                     set_drift_rule.set(Some(rule));
                     set_version_save_status.set(Some("漂移扫描规则已保存".into()));
@@ -4494,6 +4524,8 @@ pub fn DmnApp() -> impl IntoView {
         set_workspace_view.set(WorkspaceView::Discovery);
         set_mobile_model_focus.set(MobileModelFocus::Conversation);
         set_workflow_error.set(None);
+        set_pending_requirement_review.set(None);
+        set_selected_review_model.set(None);
     });
 
     let analyze_requirement_action = move |retry_of_orchestration_id: Option<i64>| {
@@ -4531,6 +4563,8 @@ pub fn DmnApp() -> impl IntoView {
         set_workflow_orchestration_stage.set(0);
         set_workflow_orchestration_events.set(Vec::new());
         set_workflow_error.set(None);
+        set_pending_requirement_review.set(None);
+        set_selected_review_model.set(None);
         set_workflow_retry_id.set(None);
         set_workflow_orchestration_id.set(None);
         set_workspace_view.set(WorkspaceView::Discovery);
@@ -4546,6 +4580,7 @@ pub fn DmnApp() -> impl IntoView {
         let set_workflow_orchestration_events = set_workflow_orchestration_events;
         let set_workflow_orchestration_id = set_workflow_orchestration_id;
         spawn_local(async move {
+            let mut analysis_failed = false;
             let result = api::analyze_requirement_stream(
                 &token_value,
                 project.id,
@@ -4583,11 +4618,13 @@ pub fn DmnApp() -> impl IntoView {
                         scroll_to_workflow_anchor("workflow-clarifications");
                     }
                     SseEvent::Error(message) => {
+                        analysis_failed = true;
                         set_workflow_retry_id.set(None);
                         set_workflow_error.set(Some(message));
                         set_agent_activity.set("需求分析未完成".into());
                     }
                     SseEvent::RetryableFailure { message, retryable } => {
+                        analysis_failed = true;
                         if !retryable {
                             set_workflow_retry_id.set(None);
                         }
@@ -4607,9 +4644,35 @@ pub fn DmnApp() -> impl IntoView {
             .await;
             if !controller.signal().aborted() {
                 if let Err(message) = result {
+                    analysis_failed = true;
                     set_workflow_retry_id.set(None);
                     set_workflow_error.set(Some(message));
                     set_agent_activity.set("需求分析未完成".into());
+                }
+                if analysis_failed {
+                    match api::get_pending_requirement_review(&token_value, project.id).await {
+                        Ok(Some(review)) => {
+                            set_workspace_view.set(WorkspaceView::Discovery);
+                            set_selected_review_model.set(None);
+                            set_pending_requirement_review.set(Some(review));
+                        }
+                        Ok(None) => {
+                            set_workflow_error.update(|error| {
+                                if let Some(error) = error
+                                    && (error.contains("多数共识") || error.contains("人工复核"))
+                                {
+                                    error.push_str("；未读取到可展示的模型候选，请刷新后重试分析");
+                                }
+                            });
+                        }
+                        Err(message) => {
+                            set_workflow_error.update(|error| {
+                                if let Some(error) = error {
+                                    error.push_str(&format!("；读取候选结果失败：{message}"));
+                                }
+                            });
+                        }
+                    }
                 }
             }
             set_workflow_orchestration_id.set(None);
@@ -4666,6 +4729,37 @@ pub fn DmnApp() -> impl IntoView {
         if let Some(orchestration_id) = workflow_retry_id.get() {
             analyze_requirement_action(Some(orchestration_id));
         }
+    };
+    let confirm_human_requirement_review = move |_| {
+        let (Some(project), Some(token_value), Some(review), Some(model)) = (
+            current_project.get(),
+            token.get(),
+            pending_requirement_review.get(),
+            selected_review_model.get(),
+        ) else {
+            return;
+        };
+        if review_busy.get() {
+            return;
+        }
+        set_review_busy.set(true);
+        spawn_local(async move {
+            match api::confirm_requirement_review(&token_value, project.id, review.run_id, model)
+                .await
+            {
+                Ok(workflow) => {
+                    set_prompt_checkpoint.set(workflow.requirement_text.clone());
+                    set_prompt.set(workflow.requirement_text.clone());
+                    set_decision_workflow.set(Some(workflow));
+                    set_pending_requirement_review.set(None);
+                    set_selected_review_model.set(None);
+                    set_workflow_error.set(None);
+                    set_agent_activity.set("人工复核完成，请继续核对需求摘要与澄清问题".into());
+                }
+                Err(message) => set_workflow_error.set(Some(message)),
+            }
+            set_review_busy.set(false);
+        });
     };
     let stop_workflow_operation = move |_| {
         if let Some(active) = workflow_controller.get() {
@@ -4779,6 +4873,12 @@ pub fn DmnApp() -> impl IntoView {
                     }
                     SseEvent::WorkflowResult(workflow) => {
                         set_plan_retry_id.set(None);
+                        let answer_values = workflow
+                            .answers
+                            .iter()
+                            .map(|answer| (answer.clarification_id.clone(), answer.answer.clone()))
+                            .collect();
+                        set_clarification_answers.set(answer_values);
                         set_prompt_checkpoint.set(workflow.requirement_text.clone());
                         set_decision_workflow.set(Some(workflow));
                         set_agent_activity.set("决策方案已生成，等待确认".into());
@@ -4866,6 +4966,8 @@ pub fn DmnApp() -> impl IntoView {
         set_workflow_orchestration_stage.set(0);
         set_workflow_orchestration_events.set(Vec::new());
         set_workflow_error.set(None);
+        set_pending_requirement_review.set(None);
+        set_selected_review_model.set(None);
         set_facilitator_retry_id.set(None);
         set_agent_activity.set("澄清主持人正在根据本轮回答检查未决歧义".into());
         let set_workflow_busy = set_workflow_busy;
@@ -4879,6 +4981,10 @@ pub fn DmnApp() -> impl IntoView {
         let set_orchestration_events = set_workflow_orchestration_events;
         let set_controller = set_workflow_controller;
         let set_facilitator_retry_id = set_facilitator_retry_id;
+        let set_pending_requirement_review = set_pending_requirement_review;
+        let set_selected_review_model = set_selected_review_model;
+        let set_workspace_view = set_workspace_view;
+        let mut facilitator_failed = false;
         spawn_local(async move {
             let result = api::continue_workflow_clarifications(
                 &token_value,
@@ -4898,6 +5004,8 @@ pub fn DmnApp() -> impl IntoView {
                     }
                     SseEvent::WorkflowResult(updated) => {
                         set_facilitator_retry_id.set(None);
+                        set_pending_requirement_review.set(None);
+                        set_selected_review_model.set(None);
                         let answer_values = updated
                             .answers
                             .iter()
@@ -4913,11 +5021,13 @@ pub fn DmnApp() -> impl IntoView {
                         });
                     }
                     SseEvent::Error(message) => {
+                        facilitator_failed = true;
                         set_facilitator_retry_id.set(None);
                         set_workflow_error.set(Some(message));
                         set_activity.set("澄清主持未完成".into());
                     }
                     SseEvent::RetryableFailure { message, retryable } => {
+                        facilitator_failed = true;
                         if !retryable {
                             set_facilitator_retry_id.set(None);
                         }
@@ -4937,9 +5047,41 @@ pub fn DmnApp() -> impl IntoView {
             .await;
             if !controller.signal().aborted() {
                 if let Err(message) = result {
+                    facilitator_failed = true;
                     set_facilitator_retry_id.set(None);
                     set_workflow_error.set(Some(message));
                     set_activity.set("澄清主持未完成".into());
+                }
+                if facilitator_failed {
+                    match api::get_pending_requirement_review(&token_value, project.id).await {
+                        Ok(Some(review)) => {
+                            set_workspace_view.set(WorkspaceView::Discovery);
+                            set_selected_review_model.set(None);
+                            let activity = if review.purpose == "facilitator" {
+                                "澄清主持结果未达成多数共识，请选择候选并保留本轮回答"
+                            } else {
+                                "多模型未达成共识，请选择候选结果进行人工复核"
+                            };
+                            set_pending_requirement_review.set(Some(review));
+                            set_activity.set(activity.into());
+                        }
+                        Ok(None) => {
+                            set_workflow_error.update(|error| {
+                                if let Some(error) = error
+                                    && error.contains("未达成多数共识")
+                                {
+                                    error.push_str("；未读取到可展示的模型候选，请刷新后重试");
+                                }
+                            });
+                        }
+                        Err(message) => {
+                            set_workflow_error.update(|error| {
+                                if let Some(error) = error {
+                                    error.push_str(&format!("；读取人工复核候选失败：{message}"));
+                                }
+                            });
+                        }
+                    }
                 }
             }
             set_orchestration_id.set(None);
@@ -6009,14 +6151,14 @@ pub fn DmnApp() -> impl IntoView {
                             <Show when=move || can_model.get() fallback=|| view! {
                                 <div class="drift-rule-readonly">"当前角色可查看规则，只有项目建模者可以修改。"</div>
                             }>
-                                <label class="drift-rule-toggle">
-                                    <input
-                                        type="checkbox"
-                                        prop:checked=move || drift_rule_enabled.get()
-                                        on:change=move |event| set_drift_rule_enabled.set(event_target_checked(&event))
-                                    />
-                                    <span>"启用每日漂移扫描"</span>
-                                </label>
+                                <WorkbenchCheckbox
+                                    class="drift-rule-toggle"
+                                    label="启用每日漂移扫描"
+                                    checked=Signal::derive(move || drift_rule_enabled.get())
+                                    disabled=Signal::derive(move || drift_rule_busy.get())
+                                    on_change=Callback::new(move |checked| set_drift_rule_enabled.set(checked))
+                                    switch=true
+                                />
                                 <div class="drift-rule-options">
                                     <For
                                         each=move || DRIFT_AUTOMATION_OPTIONS.to_vec()
@@ -6026,14 +6168,14 @@ pub fn DmnApp() -> impl IntoView {
                                         {
                                             let code = option.0.to_string();
                                             let checked_code = code.clone();
-                                            let label = option.1;
+                                            let label = option.1.to_string();
                                             view! {
-                                                <label>
-                                                    <input
-                                                        type="checkbox"
-                                                        prop:checked=move || drift_rule_codes.get().contains(&checked_code)
-                                                        on:change=move |event| {
-                                                            let checked = event_target_checked(&event);
+                                                <WorkbenchCheckbox
+                                                    class="drift-rule-option"
+                                                    label=label
+                                                    checked=Signal::derive(move || drift_rule_codes.get().contains(&checked_code))
+                                                    disabled=Signal::derive(move || drift_rule_busy.get())
+                                                    on_change=Callback::new(move |checked| {
                                                             let selected_code = code.clone();
                                                             set_drift_rule_codes.update(|codes| {
                                                                 if checked && !codes.contains(&selected_code) {
@@ -6043,25 +6185,21 @@ pub fn DmnApp() -> impl IntoView {
                                                                     codes.retain(|item| item != &selected_code);
                                                                 }
                                                             });
-                                                        }
-                                                    />
-                                                    <span>{label}</span>
-                                                </label>
+                                                    })
+                                                />
                                             }
                                         }
                                     </For>
                                 </div>
-                                <label class="drift-cooldown-field">
-                                    <span>"冷却时间（小时）"</span>
-                                    <input
-                                        type="number"
-                                        min="1"
-                                        max="720"
-                                        step="1"
-                                        prop:value=move || drift_rule_cooldown.get()
-                                        on:input=move |event| set_drift_rule_cooldown.set(event_target_value(&event))
-                                    />
-                                </label>
+                                <WorkbenchNumberInput
+                                    class="drift-cooldown-field"
+                                    label="冷却时间（小时）"
+                                    value=drift_rule_cooldown
+                                    min=1
+                                    max=720
+                                    step=1
+                                    disabled=Signal::derive(move || drift_rule_busy.get())
+                                />
                                 <label class="drift-webhook-field">
                                     <span>"Webhook HTTPS 地址"</span>
                                     <input
@@ -6364,25 +6502,29 @@ pub fn DmnApp() -> impl IntoView {
                                 </div>
                                 <span>{move || optimization_proposals.get().iter().filter(|proposal| proposal.status == "open").count()}</span>
                             </div>
-                            <label class="simulation-version-picker">
-                                <span>"效果模拟候选版本"</span>
-                                <select
-                                    prop:value=move || simulation_candidate_version_id.get().map(|id| id.to_string()).unwrap_or_default()
-                                    on:change=move |event| {
-                                        set_simulation_candidate_version_id.set(
-                                            event_target_value(&event).parse::<i64>().ok(),
-                                        );
+                            <div class="simulation-version-picker">
+                                <WorkbenchSelect
+                                    label="效果模拟候选版本"
+                                    class="optimization-version-select"
+                                    options=Signal::derive(move || {
+                                        versions
+                                            .get()
+                                            .into_iter()
+                                            .map(|version| SelectOption::new(
+                                                version.id.to_string(),
+                                                format!("v{} · {}", version.version_number, version.status),
+                                            ))
+                                            .collect()
+                                    })
+                                    value=Signal::derive(move || simulation_candidate_version_id.get().map(|id| id.to_string()).unwrap_or_default())
+                                    disabled=Signal::derive(move || versions.get().is_empty())
+                                    placeholder=Signal::derive(|| "请选择候选版本".to_string())
+                                    on_change=Callback::new(move |value: String| {
+                                        set_simulation_candidate_version_id.set(value.parse::<i64>().ok());
                                         set_optimization_simulation.set(None);
-                                    }
-                                >
-                                    <option value="">"请选择候选版本"</option>
-                                    <For each=move || versions.get() key=|version| version.id let:version>
-                                        <option value=version.id.to_string()>
-                                            {format!("v{} · {}", version.version_number, version.status)}
-                                        </option>
-                                    </For>
-                                </select>
-                            </label>
+                                    })
+                                />
+                            </div>
                             <Show when=move || proposal_error.get().is_some()>
                                 <div class="analytics-error">{move || proposal_error.get().unwrap_or_default()}</div>
                             </Show>
@@ -6601,6 +6743,84 @@ pub fn DmnApp() -> impl IntoView {
                 </div>
             </Show>
             <Show when=move || current_version.get().is_some() && (pending_review.get().is_none() || !can_model.get())>
+                <section class="acceptance-workspace" aria-label="案例验收工作区">
+                <div class="acceptance-workspace-tabs" role="tablist" aria-label="验收工作区内容">
+                    <button
+                        type="button"
+                        role="tab"
+                        id="acceptance-tab-cases"
+                        aria-controls="acceptance-panel-cases"
+                        aria-selected=move || acceptance_tab.get() == "cases"
+                        class=move || if acceptance_tab.get() == "cases" { "acceptance-workspace-tab is-active" } else { "acceptance-workspace-tab" }
+                        on:click=move |_| set_acceptance_tab.set("cases".into())
+                    >
+                        <span>"业务验收测试套件"</span>
+                        <b>{move || decision_test_cases.get().len()}</b>
+                    </button>
+                    <button
+                        type="button"
+                        role="tab"
+                        id="acceptance-tab-proposals"
+                        aria-controls="acceptance-panel-proposals"
+                        aria-selected=move || acceptance_tab.get() == "proposals"
+                        class=move || if acceptance_tab.get() == "proposals" { "acceptance-workspace-tab is-active" } else { "acceptance-workspace-tab" }
+                        on:click=move |_| set_acceptance_tab.set("proposals".into())
+                    >
+                        <span>"测试工程提案"</span>
+                        <b>{move || decision_workflow.get().and_then(|workflow| workflow.tester_report).map(|report| report.proposals.len()).unwrap_or(0)}</b>
+                    </button>
+                </div>
+                <div
+                    id="acceptance-panel-proposals"
+                    class="acceptance-tab-panel"
+                    role="tabpanel"
+                    aria-labelledby="acceptance-tab-proposals"
+                    hidden=move || acceptance_tab.get() != "proposals"
+                >
+                <Show
+                    when=move || decision_workflow.get().and_then(|workflow| workflow.tester_report).is_some()
+                    fallback=|| view! { <div class="acceptance-tab-empty">"完成需求分析与方案规划后，测试工程提案会显示在这里。"</div> }
+                >
+                    {move || decision_workflow.get().and_then(|workflow| workflow.tester_report).map(|report| {
+                        let project = current_project.get();
+                        let draft_version_id = project.as_ref().and_then(|project| {
+                            current_version.get().filter(|version| {
+                                project.current_draft_version_id == Some(version.id)
+                            }).map(|version| version.id)
+                        });
+                        let project_id = project.map(|project| project.id);
+                        view! {
+                            <TesterReportView
+                                report=report
+                                project_id=project_id
+                                version_id=draft_version_id
+                                token=token.get()
+                                can_model=can_model
+                                on_converted=Callback::new(move |test_case: DecisionTestCase| {
+                                    set_decision_test_cases.update(|cases| {
+                                        if !cases.iter().any(|existing| existing.id == test_case.id) {
+                                            cases.push(test_case.clone());
+                                        }
+                                    });
+                                    set_verification_report.set(None);
+                                    set_publish_confirmed.set(false);
+                                    set_workspace_view.set(WorkspaceView::Validation);
+                                    mark_version_draft(test_case.version_id);
+                                    set_version_save_status.set(Some("Tester 提案已转为待执行用例，请运行并交由复核者批准".into()));
+                                    set_audit_revision.update(|revision| *revision += 1);
+                                })
+                            />
+                        }
+                    })}
+                </Show>
+                </div>
+                <div
+                    id="acceptance-panel-cases"
+                    class="acceptance-tab-panel"
+                    role="tabpanel"
+                    aria-labelledby="acceptance-tab-cases"
+                    hidden=move || acceptance_tab.get() != "cases"
+                >
                 <section class="business-tests-panel" aria-label="业务验收测试套件">
                     <div class="business-tests-heading">
                         <div>
@@ -6874,6 +7094,8 @@ pub fn DmnApp() -> impl IntoView {
                         <div class="business-test-error">{move || test_case_error.get().unwrap_or_default()}</div>
                     </Show>
                 </section>
+                </div>
+                </section>
             </Show>
 
             <Show when=move || workspace_view.get() == WorkspaceView::Validation && current_version.get().is_some() && (pending_review.get().is_none() || !can_model.get())>
@@ -7112,39 +7334,6 @@ pub fn DmnApp() -> impl IntoView {
                                 Some(view! { <DecisionPlanView plan=plan requirements=workflow.brief.requirement_items /> })
                             })}
                         </Show>
-                        <Show when=move || decision_workflow.get().and_then(|workflow| workflow.tester_report).is_some()>
-                            {move || decision_workflow.get().and_then(|workflow| workflow.tester_report).map(|report| {
-                                let project = current_project.get();
-                                let draft_version_id = project.as_ref().and_then(|project| {
-                                    current_version.get().filter(|version| {
-                                        project.current_draft_version_id == Some(version.id)
-                                    }).map(|version| version.id)
-                                });
-                                let project_id = project.map(|project| project.id);
-                                view! {
-                                    <TesterReportView
-                                        report=report
-                                        project_id=project_id
-                                        version_id=draft_version_id
-                                        token=token.get()
-                                        can_model=can_model
-                                        on_converted=Callback::new(move |test_case: DecisionTestCase| {
-                                            set_decision_test_cases.update(|cases| {
-                                                if !cases.iter().any(|existing| existing.id == test_case.id) {
-                                                    cases.push(test_case.clone());
-                                                }
-                                            });
-                                            set_verification_report.set(None);
-                                            set_publish_confirmed.set(false);
-                                            set_workspace_view.set(WorkspaceView::Validation);
-                                            mark_version_draft(test_case.version_id);
-                                            set_version_save_status.set(Some("Tester 提案已转为待执行用例，请运行并交由复核者批准".into()));
-                                            set_audit_revision.update(|revision| *revision += 1);
-                                        })
-                                    />
-                                }
-                            })}
-                        </Show>
                         <Show when=move || decision_workflow.get().is_some()>
                             <details class="analysis-details analysis-requirement-details" open=move || !workflow_current.get()>
                                 <summary>"查看 / 调整业务需求"<span>"重新分析后将重新规划与确认，不会直接覆盖当前模型"</span></summary>
@@ -7162,14 +7351,16 @@ pub fn DmnApp() -> impl IntoView {
                                 </div>
                             </details>
                         </Show>
-                        <Show when=move || workflow_error.get().is_some()>
-                            <div class="workflow-error" role="alert">
-                                <span class="workflow-error-icon" aria-hidden="true">"!"</span>
-                                <div>
-                                    <strong>{move || if workflow_error.get().is_some_and(|message| message.contains("决策项目")) { "需要先选择项目" } else { "需求与方案处理未完成" }}</strong>
-                                    <span>{move || workflow_error.get().unwrap_or_default()}</span>
+                        <Show when=move || workflow_error.get().is_some() || pending_requirement_review.get().is_some()>
+                            <Show when=move || workflow_error.get().is_some()>
+                                <div class="workflow-error" role="alert">
+                                    <span class="workflow-error-icon" aria-hidden="true">"!"</span>
+                                    <div>
+                                        <strong>{move || if workflow_error.get().is_some_and(|message| message.contains("决策项目")) { "需要先选择项目" } else { "需求与方案处理未完成" }}</strong>
+                                        <span>{move || workflow_error.get().unwrap_or_default()}</span>
+                                    </div>
                                 </div>
-                            </div>
+                            </Show>
                             <Show when=move || workflow_retry_id.get().is_some()>
                                 <button
                                     class="button button-quiet"
@@ -7199,6 +7390,61 @@ pub fn DmnApp() -> impl IntoView {
                                 >
                                     "重试澄清主持"
                                 </button>
+                            </Show>
+                            <Show when=move || pending_requirement_review.get().is_some()>
+                                <section class="requirement-human-review" aria-label="需求分析人工复核">
+                                    <div class="analysis-card-heading">
+                                        <h3>{move || if pending_requirement_review.get().is_some_and(|review| review.purpose == "facilitator") { "选择澄清主持结果" } else { "选择需求分析结果" }}</h3>
+                                        <span>"多模型结果未达成共识"</span>
+                                    </div>
+                                    <p class="requirement-review-requirement">{move || pending_requirement_review.get().map(|review| review.requirement_text).unwrap_or_default()}</p>
+                                    <p class="workflow-action-hint">{move || if pending_requirement_review.get().is_some_and(|review| review.purpose == "facilitator") { "请比较各模型提出的新澄清问题；确认后会保留本轮已提交的回答。" } else { "请比较各模型的需求摘要，选择一份作为本项目后续方案规划的依据。所选结果仍会经过结构校验。" }}</p>
+                                    <div class="requirement-review-candidates">
+                                        <For
+                                            each=move || pending_requirement_review.get().map(|review| review.candidates).unwrap_or_default()
+                                            key=|candidate| candidate.model.clone()
+                                            children=move |candidate| {
+                                                let model = candidate.model.clone();
+                                                let selected_model = candidate.model.clone();
+                                                let brief = candidate.analysis.brief.clone();
+                                                let clarifications = RwSignal::new(candidate.analysis.clarifications);
+                                                let has_clarifications = !clarifications.get_untracked().is_empty();
+                                                view! {
+                                                    <div class="requirement-review-option">
+                                                        <button
+                                                            type="button"
+                                                            class=move || if selected_review_model.get().as_deref() == Some(selected_model.as_str()) { "requirement-review-candidate is-selected" } else { "requirement-review-candidate" }
+                                                            on:click=move |_| set_selected_review_model.set(Some(model.clone()))
+                                                        >
+                                                            <span class="requirement-review-model">{candidate.model}</span>
+                                                            <strong>{candidate.analysis.brief.name}</strong>
+                                                            <span>{candidate.analysis.brief.goal}</span>
+                                                            <small>{format!("输入 {} 项 · 输出 {} 项 · 风险 {}", candidate.analysis.brief.inputs.len(), candidate.analysis.brief.outputs.len(), candidate.analysis.brief.risk_level)}</small>
+                                                        </button>
+                                                        <details class="requirement-review-detail">
+                                                            <summary>"查看完整摘要与澄清问题"</summary>
+                                                            <DecisionBriefView brief=brief />
+                                                            <Show when=move || has_clarifications>
+                                                                <ul class="requirement-review-clarifications">
+                                                                    <For each=move || clarifications.get() key=|item| item.id.clone() let:item>
+                                                                        <li>{item.question}</li>
+                                                                    </For>
+                                                                </ul>
+                                                            </Show>
+                                                        </details>
+                                                    </div>
+                                                }
+                                            }
+                                        />
+                                    </div>
+                                    <button
+                                        class="button button-primary"
+                                        on:click=confirm_human_requirement_review
+                                        disabled=move || review_busy.get() || selected_review_model.get().is_none()
+                                    >
+                                        {move || if review_busy.get() { "正在提交复核..." } else { "采用所选结果并继续" }}
+                                    </button>
+                                </section>
                             </Show>
                         </Show>
                         <Show when=move || workflow_analyzing.get() || workflow_planning.get() || workflow_facilitating.get()>
@@ -7551,16 +7797,26 @@ pub fn DmnApp() -> impl IntoView {
 
             <Show when=move || show_test.get()>
                 <div class="test-drawer-backdrop" on:click=move |_| set_show_test.set(false)></div>
-                <aside class="test-drawer" aria-label="DMN 核验与测试">
+                <aside class="test-drawer" aria-label="DMN 逻辑验证">
                     <div class="test-drawer-heading">
                         <div class="test-title-block">
                             <span class="test-title-icon">"D"</span>
-                            <div><p class="eyebrow">"DMN QUALITY & EVALUATION"</p><h2>"核验与测试"</h2></div>
+                            <div><p class="eyebrow">"DMN QUALITY & EVALUATION"</p><h2>"规则逻辑验证"</h2></div>
                         </div>
-                        <button class="button button-quiet test-close" on:click=move |_| set_show_test.set(false) title="关闭核验与测试面板">"关闭"</button>
+                        // <button class="button button-quiet test-close" on:click=move |_| set_show_test.set(false) title="关闭核验与测试面板">"关闭"</button>
+                        <button
+                            class="knowledge-diagnostics-close"
+                            type="button"
+                            aria-label="关闭核验与测试面板"
+                            title="关闭核验与测试面板"
+                            autofocus
+                            on:click=move |_| set_show_test.set(false)
+                        >
+                            <span class="knowledge-diagnostics-close-icon" aria-hidden="true">"×"</span>
+                        </button>
                     </div>
                     <div class="test-body" node_ref=test_drawer_body>
-                        <section class="test-workbench">
+                        <section class="test-workbenfch">
                             <div class="test-model-editor">
                                 <div class="test-section-label"><span>"01"</span><strong>"DMN 内容"</strong></div>
                                 <pre class="code-view code-view-xml test-xml-preview" tabindex="0" aria-label="当前 DMN XML 源码"><code inner_html=move || {

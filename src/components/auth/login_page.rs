@@ -201,22 +201,23 @@ pub fn LoginPage() -> impl IntoView {
 
     view! {
         <div class=move || format!("auth-shell {}", app_state.ui.theme.get().class())>
-            <div class="auth-card">
-                <div class="auth-brand">
-                    <div class="brand-mark">
-                        <img src="/images/fuxi.png" alt="" />
+            <section class="auth-panel">
+                <div class="auth-card">
+                    <div class="auth-brand">
+                        <div class="brand-mark">
+                            <img src="/images/fuxi.png" alt="" />
+                        </div>
+                        <div>
+                            <p class="eyebrow">"DMN DECISION WORKSPACE"</p>
+                            <h1>"伏羲智能决策"</h1>
+                        </div>
                     </div>
-                    <div>
-                        <p class="eyebrow">"DMN DECISION WORKSPACE"</p>
-                        <h1>"伏羲智能决策"</h1>
+                    <div class="auth-heading">
+                        <h2 class="title">"欢迎登录"</h2>
+                        <p>"进入你的决策建模工作台"</p>
                     </div>
                 </div>
-                <div class="auth-heading">
-                    <h2 class="title">"欢迎登录"</h2>
-                    <p>"进入你的决策建模工作台"</p>
-                </div>
-            </div>
-            <form on:submit=on_submit>
+                <form on:submit=on_submit>
                 <div class="form-group">
                     <div class="auth-field-label">
                         <label for="login-username">"用户名"</label>
@@ -326,7 +327,8 @@ pub fn LoginPage() -> impl IntoView {
                 {move || error_msg.get().map(|e| view! {
                     <div id="login-error" class="error-msg" role="alert">{e}</div>
                 })}
-            </form>
+                </form>
+            </section>
         </div>
     }
 }

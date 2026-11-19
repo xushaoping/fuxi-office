@@ -293,6 +293,30 @@ pub struct RequirementAnalysis {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
+pub struct RequirementReviewCandidate {
+    pub model: String,
+    pub analysis: RequirementAnalysis,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PendingRequirementReview {
+    pub run_id: i64,
+    #[serde(default)]
+    pub purpose: String,
+    pub requirement_text: String,
+    pub candidates: Vec<RequirementReviewCandidate>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ConfirmRequirementReviewRequest {
+    pub run_id: i64,
+    pub model: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct DecisionWorkflowState {
     pub project_id: i64,
     #[serde(default)]

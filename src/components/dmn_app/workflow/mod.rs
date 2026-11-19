@@ -357,6 +357,23 @@ fn tester_category_label(category: &str) -> &'static str {
     }
 }
 
+fn tester_proposal_group(category: &str) -> &'static str {
+    match category {
+        "static_analysis" => "model",
+        "acceptance_criterion" | "decision_contract" | "adversarial" => "rules",
+        _ => "business",
+    }
+}
+
+fn tester_proposal_group_label(group: &str) -> &'static str {
+    match group {
+        "business" => "业务场景",
+        "model" => "模型发现",
+        "rules" => "规则与边界",
+        _ => "全部提案",
+    }
+}
+
 fn tester_proposal_matches_version(
     proposal: &SemanticTestProposal,
     version_id: Option<i64>,
@@ -393,6 +410,8 @@ pub fn TesterReportView(
     );
     let (run_busy, set_run_busy) = signal(false);
     let (run_message, set_run_message) = signal(None::<String>);
+    let (active_group, set_active_group) = signal("all".to_string());
+    let proposal_token = StoredValue::new(token.clone());
     let run_token = token.clone();
     let run_cases = Callback::new(move |_| {
         let (Some(project_id), Some(version_id), Some(token)) =
@@ -478,17 +497,83 @@ pub fn TesterReportView(
                 <p class="tester-execution-status" role="status">{move || run_message.get().unwrap_or_default()}</p>
             </Show>
             <p>"提案仅用于补充覆盖范围；期望结果由业务人员确认后录入正式测试用例。"</p>
-            <div class="tester-proposal-list">
-                <For each=move || proposals.get() key=|item| item.id.clone() let:item>
-                    <TesterProposalRow
-                        item=item
-                        project_id=project_id
-                        version_id=version_id
-                        token=token.clone()
-                        can_model=can_model
-                        on_proposal_converted=on_proposal_converted
-                    />
+            <div class="tester-proposal-tabs" role="tablist" aria-label="按提案类型筛选">
+                <button
+                    type="button"
+                    role="tab"
+                    id="tester-proposal-tab-all"
+                    aria-controls="tester-proposal-panel"
+                    aria-selected=move || active_group.get() == "all"
+                    class=move || if active_group.get() == "all" { "tester-proposal-tab is-active" } else { "tester-proposal-tab" }
+                    on:click=move |_| set_active_group.set("all".into())
+                >
+                    <span>"全部提案"</span>
+                    <b>{move || proposals.get().len()}</b>
+                </button>
+                <For
+                    each=move || {
+                        ["business", "model", "rules"]
+                        .into_iter()
+                        .filter(|group| proposals.get().iter().any(|item| tester_proposal_group(&item.category) == *group))
+                        .map(str::to_string)
+                        .collect::<Vec<_>>()
+                    }
+                    key=|group| group.clone()
+                    let:group
+                >
+                    {
+                        let tab_id = format!("tester-proposal-tab-{group}");
+                        let tab_label = tester_proposal_group_label(&group).to_string();
+                        let selected_key = group.clone();
+                        let class_key = group.clone();
+                        let count_key = group.clone();
+                        let tab_key = group;
+                        view! {
+                            <button
+                                type="button"
+                                role="tab"
+                                id=tab_id
+                                aria-controls="tester-proposal-panel"
+                                aria-selected=move || active_group.get() == selected_key
+                                class=move || if active_group.get() == class_key { "tester-proposal-tab is-active" } else { "tester-proposal-tab" }
+                                on:click=move |_| set_active_group.set(tab_key.clone())
+                            >
+                                <span>{tab_label}</span>
+                                <b>{move || proposals.get().iter().filter(|item| tester_proposal_group(&item.category) == count_key).count()}</b>
+                            </button>
+                        }
+                    }
                 </For>
+            </div>
+            <div
+                id="tester-proposal-panel"
+                class="tester-proposal-list"
+                role="tabpanel"
+                aria-labelledby=move || format!("tester-proposal-tab-{}", active_group.get())
+            >
+                <Show
+                    when=move || !proposals.get().is_empty()
+                    fallback=|| view! { <p class="tester-proposal-empty">"当前版本没有可展示的测试提案。"</p> }
+                >
+                    <For
+                        each=move || {
+                            proposals.get().into_iter().filter(|item| {
+                                active_group.get() == "all" || tester_proposal_group(&item.category) == active_group.get()
+                            }).collect::<Vec<_>>()
+                        }
+                        key=|item| item.id.clone()
+                        let:item
+                    >
+                        <TesterProposalRow
+                            item=item
+                            project_id=project_id
+                            version_id=version_id
+                            token=proposal_token.get_value()
+                            can_model=can_model
+                            on_proposal_converted=on_proposal_converted
+                        />
+                    </For>
+                </Show>
             </div>
         </section>
     }

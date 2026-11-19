@@ -6,13 +6,22 @@ pub fn WorkbenchNumberInput(
     value: RwSignal<String>,
     #[prop(default = 1)] min: i32,
     #[prop(default = 1)] step: i32,
+    #[prop(optional)] max: Option<i32>,
     #[prop(into)] disabled: Signal<bool>,
+    #[prop(optional, into)] class: Option<String>,
 ) -> impl IntoView {
     let decrement_value = value;
     let increment_value = value;
     let minimum = min.max(0);
+    let maximum = max.map(|maximum| maximum.max(minimum));
     let step = step.max(1);
     let aria_label = label.clone();
+    let increment_disabled = Signal::derive(move || {
+        disabled.get()
+            || maximum.is_some_and(|maximum| {
+                increment_value.get().parse::<i32>().unwrap_or(minimum) >= maximum
+            })
+    });
     let decrement_disabled = Signal::derive(move || {
         disabled.get() || decrement_value.get().parse::<i32>().unwrap_or(minimum) <= minimum
     });
@@ -27,11 +36,19 @@ pub fn WorkbenchNumberInput(
             .unwrap_or(minimum)
             .max(minimum);
         let next = current.saturating_add(amount).max(minimum);
+        let next = maximum.map_or(next, |maximum| next.min(maximum));
         value.set(next.to_string());
     };
 
     view! {
-        <div class="wb-number-field">
+        <div class=move || {
+            let mut classes = String::from("wb-number-field");
+            if let Some(class) = &class {
+                classes.push(' ');
+                classes.push_str(class);
+            }
+            classes
+        }>
             <label class="wb-number-label">{label}</label>
             <div
                 class="wb-number-control"
@@ -56,6 +73,7 @@ pub fn WorkbenchNumberInput(
                     role="spinbutton"
                     aria-label=aria_label.clone()
                     aria-valuemin=minimum
+                    aria-valuemax=maximum.map(|maximum| maximum.to_string())
                     aria-valuenow=move || value.get()
                     prop:value=move || value.get()
                     disabled=move || disabled.get()
@@ -71,6 +89,7 @@ pub fn WorkbenchNumberInput(
                             .parse::<i32>()
                             .unwrap_or(minimum)
                             .max(minimum);
+                        let next = maximum.map_or(next, |maximum| next.min(maximum));
                         value.set(next.to_string());
                     }
                     on:keydown=move |event: leptos::ev::KeyboardEvent| {
@@ -91,14 +110,15 @@ pub fn WorkbenchNumberInput(
                     type="button"
                     class="wb-number-stepper"
                     aria-label="增加"
-                    disabled=move || disabled.get()
+                    disabled=increment_disabled
                     on:click=move |_| {
                         let current = increment_value
                             .get_untracked()
                             .parse::<i32>()
                             .unwrap_or(minimum)
                             .max(minimum);
-                        increment_value.set(current.saturating_add(step).to_string());
+                        let next = current.saturating_add(step);
+                        increment_value.set(maximum.map_or(next, |maximum| next.min(maximum)).to_string());
                     }
                 >
                     <span aria-hidden="true">"+"</span>
